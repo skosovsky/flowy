@@ -1,0 +1,10 @@
+coverage.out
+*.test
+*.exe
+.idea/
+.vscode/
+.DS_Store
+tmp/
+*.prof
+*.cpu
+*.mem

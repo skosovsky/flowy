@@ -1,0 +1,14 @@
+// Package flowy provides a type-safe directed graph engine for orchestrating
+// AI agents with support for conditional routing, parallel execution (fan-out/fan-in),
+// checkpointing, and human-in-the-loop interrupts.
+//
+// Example:
+//
+//	ctx := context.Background()
+//	b := flowy.NewGraph[string](func(_, u string) string { return u })
+//	b.AddNode("greet", func(ctx context.Context, s string) (string, error) { return "hello " + s, nil })
+//	b.SetEntryPoint("greet")
+//	b.SetFinishPoint("greet")
+//	graph, _ := b.Compile()
+//	result, _ := graph.Invoke(ctx, "world")
+package flowy
