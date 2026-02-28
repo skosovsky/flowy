@@ -1,4 +1,5 @@
-// Package main shows composition: seller graph embeds analyst graph as a node via AsNode().
+// Package main shows composition: the seller graph embeds the analyst graph
+// as a node via AsNode(), so the inner graph runs with the same state type.
 package main
 
 import (
@@ -12,22 +13,24 @@ import (
 func main() {
 	ctx := context.Background()
 
-	type analystState struct {
-		Query  string
-		Report string
+	// Shared state type so the analyst subgraph can be used as a node via AsNode().
+	type state struct {
+		Query        string
+		ResearchData string
 	}
-	analystReducer := func(c, u analystState) analystState {
-		if u.Report != "" {
-			c.Report = u.Report
+	reducer := func(c, u state) state {
+		if u.ResearchData != "" {
+			c.ResearchData = u.ResearchData
 		}
 		if u.Query != "" {
 			c.Query = u.Query
 		}
 		return c
 	}
-	analystBuilder := flowy.NewGraph[analystState](analystReducer)
-	analystBuilder.AddNode("research", func(_ context.Context, s analystState) (analystState, error) {
-		s.Report = "report:" + s.Query
+
+	analystBuilder := flowy.NewGraph[state](reducer)
+	analystBuilder.AddNode("research", func(_ context.Context, s state) (state, error) {
+		s.ResearchData = "report:" + s.Query
 		return s, nil
 	})
 	analystBuilder.SetEntryPoint("research")
@@ -37,28 +40,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	type sellerState struct {
-		PatientQuestion string
-		ResearchData    string
-	}
-	sellerReducer := func(c, u sellerState) sellerState {
-		if u.ResearchData != "" {
-			c.ResearchData = u.ResearchData
-		}
-		if u.PatientQuestion != "" {
-			c.PatientQuestion = u.PatientQuestion
-		}
-		return c
-	}
-	sellerBuilder := flowy.NewGraph[sellerState](sellerReducer)
-	sellerBuilder.AddNode("ask_analyst", func(ctx context.Context, state sellerState) (sellerState, error) {
-		in := analystState{Query: state.PatientQuestion}
-		out, err := analystGraph.Invoke(ctx, in)
-		if err != nil {
-			return state, err
-		}
-		return sellerState{ResearchData: out.Report}, nil
-	})
+	sellerBuilder := flowy.NewGraph[state](reducer)
+	sellerBuilder.AddNode("ask_analyst", analystGraph.AsNode())
 	sellerBuilder.SetEntryPoint("ask_analyst")
 	sellerBuilder.SetFinishPoint("ask_analyst")
 
@@ -67,7 +50,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	initial := sellerState{PatientQuestion: "drug X"}
+	initial := state{Query: "drug X"}
 	final, err := sellerGraph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)

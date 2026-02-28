@@ -14,6 +14,7 @@ type Graph[T any] struct {
 	edges            map[string]string
 	conditionalEdges map[string]ConditionalEdge[T]
 	fanOuts          map[string]*fanOutDef
+	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
 	entryPoint       string
 	finishPoints     map[string]bool
 	interruptBefore  map[string]bool
@@ -29,15 +30,26 @@ func (g *Graph[T]) Invoke(ctx context.Context, state T, opts ...Option[T]) (T, e
 }
 
 func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanOutDef, cfg *runConfig[T]) (T, error) {
+	// Pre-validate all targets before starting any goroutine (avoids partial execution on invalid list).
+	for _, targetName := range fo.targets {
+		if g.interruptBefore[targetName] {
+			return state, fmt.Errorf("flowy: interruptBefore on fan-out target %q is not supported (execution from %q)", targetName, from)
+		}
+		if g.interruptAfter[targetName] {
+			return state, fmt.Errorf("flowy: interruptAfter on fan-out target %q is not supported (execution from %q)", targetName, from)
+		}
+		if g.nodes[targetName] == nil {
+			return state, fmt.Errorf("flowy: fan-out target node %q not found", targetName)
+		}
+	}
+
 	results := make([]T, len(fo.targets))
 	gEg, gCtx := errgroup.WithContext(ctx)
 	for i, targetName := range fo.targets {
-		node := g.nodes[targetName]
-		if node == nil {
-			return state, fmt.Errorf("flowy: fan-out target node %q not found", targetName)
-		}
+		i, targetName := i, targetName
+		node := g.nodes[targetName] // already validated above
 		gEg.Go(func() error {
-			nodeCtx, cancel := nodeContext(gCtx, cfg)
+			nodeCtx, cancel := nodeContextWithTimeout(gCtx, cfg)
 			defer cancel()
 			delta, err := node(nodeCtx, state)
 			if err != nil {
@@ -72,7 +84,9 @@ func (g *Graph[T]) resolveNext(ctx context.Context, current string, state T) (st
 		}
 		if _, hasNode := g.nodes[next]; !hasNode {
 			if _, hasFan := g.fanOuts[next]; !hasFan {
-				return "", fmt.Errorf("flowy: conditional edge from %q returned unknown node %q", current, next)
+				if _, hasDyn := g.dynamicFanOuts[next]; !hasDyn {
+					return "", fmt.Errorf("flowy: conditional edge from %q returned unknown node %q", current, next)
+				}
 			}
 		}
 		return next, nil
@@ -128,8 +142,10 @@ func (g *Graph[T]) Resume(ctx context.Context, threadID string, delta T, opts ..
 	}
 	if _, hasNode := g.nodes[cp.NodeName]; !hasNode {
 		if _, hasFan := g.fanOuts[cp.NodeName]; !hasFan {
-			var zero T
-			return zero, fmt.Errorf("flowy: checkpoint node %q not found in graph", cp.NodeName)
+			if _, hasDyn := g.dynamicFanOuts[cp.NodeName]; !hasDyn {
+				var zero T
+				return zero, fmt.Errorf("flowy: checkpoint node %q not found in graph", cp.NodeName)
+			}
 		}
 	}
 	state := g.reducer(cp.State, delta)
@@ -154,7 +170,9 @@ func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg r
 		if !skipInterruptBefore && g.interruptBefore[current] && cfg.checkpointer != nil && cfg.threadID != "" {
 			cp := Checkpoint[T]{State: state, NodeName: current}
 			if err := cfg.checkpointer.Save(ctx, cfg.threadID, cp); err != nil {
-				return state, fmt.Errorf("flowy: save checkpoint: %w", err)
+				wrapped := fmt.Errorf("flowy: save checkpoint: %w", err)
+				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+				return state, wrapped
 			}
 			sendEvent(ctx, eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
 			return state, ErrInterrupt
@@ -170,13 +188,33 @@ func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg r
 			}
 			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
 			current = fo.joinNode
+		} else if dfo, isDynFanOut := g.dynamicFanOuts[current]; isDynFanOut {
+			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
+			targets, err := dfo.router(ctx, state)
+			if err != nil {
+				wrapped := fmt.Errorf("flowy: dynamic fan-out router %q failed: %w", current, err)
+				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+				return state, wrapped
+			}
+			if len(targets) > 0 {
+				tempFo := &fanOutDef{targets: targets, joinNode: dfo.joinNode}
+				state, err = g.runFanOut(ctx, current, state, tempFo, &cfg)
+				if err != nil {
+					sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+					return state, err
+				}
+			}
+			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
+			current = dfo.joinNode
 		} else {
 			node, ok := g.nodes[current]
 			if !ok {
-				return state, fmt.Errorf("flowy: node %q not found", current)
+				err := fmt.Errorf("flowy: node %q not found", current)
+				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+				return state, err
 			}
 			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
-			nodeCtx, cancel := nodeContext(ctx, &cfg)
+			nodeCtx, cancel := nodeContextWithTimeout(ctx, &cfg)
 			delta, err := node(nodeCtx, state)
 			cancel()
 			if err != nil {
@@ -198,7 +236,9 @@ func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg r
 				}
 				cp := Checkpoint[T]{State: state, NodeName: next}
 				if err := cfg.checkpointer.Save(ctx, cfg.threadID, cp); err != nil {
-					return state, fmt.Errorf("flowy: save checkpoint: %w", err)
+					wrapped := fmt.Errorf("flowy: save checkpoint: %w", err)
+					sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+					return state, wrapped
 				}
 				sendEvent(ctx, eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
 				return state, ErrInterrupt

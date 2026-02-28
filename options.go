@@ -63,8 +63,9 @@ func applyOptions[T any](defaultCfg *runConfig[T], opts []Option[T]) runConfig[T
 	return c
 }
 
-// nodeContext returns ctx or a context with nodeTimeout if set.
-func nodeContext[T any](ctx context.Context, cfg *runConfig[T]) (context.Context, func()) {
+// nodeContextWithTimeout returns ctx unchanged, or a context with nodeTimeout if set.
+// When no timeout is set, the second return is a no-op cancel func.
+func nodeContextWithTimeout[T any](ctx context.Context, cfg *runConfig[T]) (context.Context, func()) {
 	if cfg.nodeTimeout > 0 {
 		return context.WithTimeout(ctx, cfg.nodeTimeout)
 	}

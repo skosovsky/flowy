@@ -15,6 +15,14 @@ type ConditionalEdge[T any] func(ctx context.Context, state T) (string, error)
 // Reducer defines how to merge the current state with the update returned by a node.
 type Reducer[T any] func(current T, update T) T
 
+// Middleware wraps a Node to provide cross-cutting concerns (logging, tracing, metrics).
+// It receives the node name and the next handler in the chain.
+type Middleware[T any] func(nodeName string, next Node[T]) Node[T]
+
+// DynamicRouter decides at runtime which nodes should be executed in parallel (dynamic fan-out).
+// Returned node names must be registered nodes; nodes run as dynamic targets do not support InterruptBefore/InterruptAfter.
+type DynamicRouter[T any] func(ctx context.Context, state T) ([]string, error)
+
 // EventType identifies the kind of stream event.
 type EventType string
 
