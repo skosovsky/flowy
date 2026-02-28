@@ -42,6 +42,16 @@ func TestApplyOptions_WithThreadID_WithNodeTimeout(t *testing.T) {
 	assert.Equal(t, defaultMaxSteps, cfg.maxSteps)
 }
 
+func TestApplyOptions_WithMaxConcurrency(t *testing.T) {
+	cfg := applyOptions[string](nil, []Option[string]{WithMaxConcurrency[string](5)})
+	assert.Equal(t, 5, cfg.maxConcurrency)
+	cfgZero := applyOptions[string](nil, []Option[string]{WithMaxConcurrency[string](0)})
+	assert.Equal(t, 0, cfgZero.maxConcurrency)
+	defaultCfg := runConfig[string]{maxConcurrency: 3}
+	cfgOverride := applyOptions(&defaultCfg, []Option[string]{WithMaxConcurrency[string](2)})
+	assert.Equal(t, 2, cfgOverride.maxConcurrency)
+}
+
 func TestOptions_InvokeRespectsPerCallMaxSteps(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })

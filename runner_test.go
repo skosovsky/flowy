@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,6 +212,106 @@ func TestInvoke_FanOut(t *testing.T) {
 	assert.Equal(t, "[db][web][merge]", out)
 }
 
+// TestInvoke_FanOut_MaxConcurrency verifies that at most N goroutines run at once when WithMaxConcurrency(N) is set.
+// Uses atomic CAS to record max concurrent active; a short hold (Sleep) gives the scheduler time to overlap goroutines so we observe the cap.
+func TestInvoke_FanOut_MaxConcurrency(t *testing.T) {
+	const limit = 2
+	var active, maxObserved atomic.Int32
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	for i := 0; i < 10; i++ {
+		name := string(rune('a' + i))
+		b.AddNode(name, func(_ context.Context, s string) (string, error) {
+			active.Add(1)
+			defer active.Add(-1)
+			for {
+				c := active.Load()
+				m := maxObserved.Load()
+				if c <= m {
+					break
+				}
+				if maxObserved.CompareAndSwap(m, c) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return s + "[" + name + "]", nil
+		})
+	}
+	targets := []string{"a", "b", "c", "d", "e", "f", "g", "h", "i", "j"}
+	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
+	b.AddFanOut("start", targets, "merge")
+	b.SetEntryPoint("start")
+	b.SetFinishPoint("merge")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	_, err = graph.Invoke(context.Background(), "", WithMaxConcurrency[string](limit))
+	require.NoError(t, err)
+	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "observed concurrent goroutines must not exceed limit")
+}
+
+// TestInvoke_DynamicFanOut_MaxConcurrency verifies max concurrency applies to dynamic fan-out as well.
+// Same atomic + short Sleep to observe concurrency cap.
+func TestInvoke_DynamicFanOut_MaxConcurrency(t *testing.T) {
+	const limit = 2
+	var active, maxObserved atomic.Int32
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	for i := 0; i < 6; i++ {
+		name := string(rune('a' + i))
+		b.AddNode(name, func(_ context.Context, s string) (string, error) {
+			active.Add(1)
+			defer active.Add(-1)
+			for {
+				c := active.Load()
+				m := maxObserved.Load()
+				if c <= m {
+					break
+				}
+				if maxObserved.CompareAndSwap(m, c) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return s + "[" + name + "]", nil
+		})
+	}
+	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
+	b.AddDynamicFanOut("start", func(_ context.Context, _ string) ([]string, error) {
+		return []string{"a", "b", "c", "d", "e", "f"}, nil
+	}, "merge")
+	b.SetEntryPoint("start")
+	b.SetFinishPoint("merge")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	_, err = graph.Invoke(context.Background(), "", WithMaxConcurrency[string](limit))
+	require.NoError(t, err)
+	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "dynamic fan-out must respect max concurrency")
+}
+
+// TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset preserves default behavior (no limit).
+func TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	b.AddNode("db", func(_ context.Context, s string) (string, error) { return s + "[db]", nil })
+	b.AddNode("web", func(_ context.Context, s string) (string, error) { return s + "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddFanOut("start", []string{"db", "web"}, "merge")
+	b.SetEntryPoint("start")
+	b.SetFinishPoint("merge")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	// Without option: same result as before.
+	out, err := graph.Invoke(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, "[db][web][merge]", out)
+	// With explicit zero: same.
+	out2, err2 := graph.Invoke(ctx, "", WithMaxConcurrency[string](0))
+	require.NoError(t, err2)
+	assert.Equal(t, "[db][web][merge]", out2)
+}
+
 func TestStream_Events(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
@@ -229,6 +330,47 @@ func TestStream_Events(t *testing.T) {
 	}
 	assert.Contains(t, events, EventNodeStart)
 	assert.Contains(t, events, EventNodeEnd)
+}
+
+// TestStream_FanOut_MaxConcurrency verifies Stream with WithMaxConcurrency limits concurrent fan-out and the event channel closes.
+func TestStream_FanOut_MaxConcurrency(t *testing.T) {
+	const limit = 2
+	var active, maxObserved atomic.Int32
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	for i := 0; i < 6; i++ {
+		name := string(rune('a' + i))
+		b.AddNode(name, func(_ context.Context, s string) (string, error) {
+			active.Add(1)
+			defer active.Add(-1)
+			for {
+				c := active.Load()
+				m := maxObserved.Load()
+				if c <= m {
+					break
+				}
+				if maxObserved.CompareAndSwap(m, c) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return s + "[" + name + "]", nil
+		})
+	}
+	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
+	b.AddFanOut("start", []string{"a", "b", "c", "d", "e", "f"}, "merge")
+	b.SetEntryPoint("start")
+	b.SetFinishPoint("merge")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	ch := graph.Stream(ctx, "", WithMaxConcurrency[string](limit))
+	eventCount := 0
+	for range ch {
+		eventCount++
+	}
+	assert.Positive(t, eventCount, "Stream must emit events")
+	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "Stream fan-out must respect WithMaxConcurrency")
 }
 
 // TestStream_WithMaxSteps_EmitsEventError verifies Stream with WithMaxSteps emits EventError when limit is hit.

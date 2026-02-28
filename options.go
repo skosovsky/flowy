@@ -10,10 +10,11 @@ const defaultMaxSteps = 25
 // runConfig holds options for a single run (Invoke, Stream, or Resume).
 // Options can be set at Compile time (defaults) and overridden per call.
 type runConfig[T any] struct {
-	threadID     string
-	maxSteps     int
-	nodeTimeout  time.Duration
-	checkpointer Checkpointer[T]
+	threadID       string
+	maxSteps       int
+	nodeTimeout    time.Duration
+	checkpointer   Checkpointer[T]
+	maxConcurrency int // max concurrent goroutines in fan-out; <= 0 means no limit
 }
 
 // Option configures a run (Invoke, Stream, Resume) or compile defaults.
@@ -44,6 +45,14 @@ func WithNodeTimeout[T any](d time.Duration) Option[T] {
 func WithCheckpointer[T any](cp Checkpointer[T]) Option[T] {
 	return func(c *runConfig[T]) {
 		c.checkpointer = cp
+	}
+}
+
+// WithMaxConcurrency sets the maximum number of goroutines that can run concurrently
+// during a fan-out (both static and dynamic). If n <= 0, there is no limit (default behavior).
+func WithMaxConcurrency[T any](n int) Option[T] {
+	return func(c *runConfig[T]) {
+		c.maxConcurrency = n
 	}
 }
 

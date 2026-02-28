@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -173,6 +174,54 @@ func TestStream_SaveCheckpointError_EmitsEventError(t *testing.T) {
 	require.NotNil(t, gotErr, "Stream must emit EventError when Save fails")
 	assert.Contains(t, gotErr.Err.Error(), "save checkpoint")
 	assert.Contains(t, gotErr.Err.Error(), "save failed")
+}
+
+// TestResume_MaxConcurrency verifies that WithMaxConcurrency is applied when execution continues via Resume into a fan-out.
+// We interrupt before the fan-out node so the first Invoke never runs the fan-out; Resume then runs from that node and runFanOut respects the limit.
+func TestResume_MaxConcurrency(t *testing.T) {
+	const limit = 2
+	var active, maxObserved atomic.Int32
+	concat := func(current, update string) string { return current + update }
+	cp := testutil.NewInMemoryCheckpointer[string]()
+	b := flowy.NewGraph[string](concat)
+	for i := 0; i < 5; i++ {
+		name := string(rune('a' + i))
+		b.AddNode(name, func(_ context.Context, s string) (string, error) {
+			active.Add(1)
+			defer active.Add(-1)
+			for {
+				c := active.Load()
+				m := maxObserved.Load()
+				if c <= m {
+					break
+				}
+				if maxObserved.CompareAndSwap(m, c) {
+					break
+				}
+			}
+			time.Sleep(20 * time.Millisecond)
+			return s + "[" + name + "]", nil
+		})
+	}
+	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
+	b.AddNode("pre", func(_ context.Context, s string) (string, error) { return s, nil })
+	b.AddEdge("pre", "start")
+	b.AddFanOut("start", []string{"a", "b", "c", "d", "e"}, "merge")
+	b.SetEntryPoint("pre")
+	b.SetFinishPoint("merge")
+	b.InterruptBefore("pre")
+	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	_, err = graph.Invoke(ctx, "")
+	require.Error(t, err)
+	require.ErrorIs(t, err, flowy.ErrInterrupt)
+
+	final, err := graph.Resume(ctx, "tid1", "", flowy.WithMaxConcurrency[string](limit))
+	require.NoError(t, err)
+	assert.Contains(t, final, "[merge]")
+	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "Resume fan-out must respect WithMaxConcurrency")
 }
 
 // TestResume_WithNodeTimeout_Completes verifies Resume respects WithNodeTimeout (positive: node completes within timeout).

@@ -45,6 +45,10 @@ func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanO
 
 	results := make([]T, len(fo.targets))
 	gEg, gCtx := errgroup.WithContext(ctx)
+	// Set limit before any gEg.Go() so fan-out never exceeds maxConcurrency goroutines.
+	if cfg.maxConcurrency > 0 {
+		gEg.SetLimit(cfg.maxConcurrency)
+	}
 	for i, targetName := range fo.targets {
 		i, targetName := i, targetName
 		node := g.nodes[targetName] // already validated above

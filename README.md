@@ -77,6 +77,21 @@ When the set of parallel branches is known only at runtime (e.g. from an LLM), u
 
 **Note:** `InterruptBefore` and `InterruptAfter` are not supported on nodes that run as fan-out targets (static or dynamic). For static fan-out, `Compile()` fails if such a node is a target; for dynamic fan-out, `Invoke` returns an error at runtime if the router returns such a node name.
 
+**Best practice — limit concurrency:** When using dynamic fan-out, the LLM (or router) can return many targets at runtime (e.g. 50 search queries). Running all of them at once can trigger API rate limits (HTTP 429) or exhaust connections. Use `flowy.WithMaxConcurrency(n)` so that at most `n` fan-out branches run concurrently; the rest are scheduled as slots free up. Example: if the router returns 50 targets and you call `Invoke(ctx, state, flowy.WithMaxConcurrency(5))`, only 5 requests run in parallel at any time, reducing the risk of 429s while still making progress.
+
+**Scope:** `WithMaxConcurrency` applies to every execution path that runs a fan-out: `Invoke`, `Stream`, and `Resume`. When you resume into a step that is a fan-out (or that leads to one), the same limit is enforced for that fan-out.
+
+```go
+// Limit to 5 concurrent fan-out branches (e.g. 50 search tasks run in batches of 5)
+out, err := graph.Invoke(ctx, state, flowy.WithMaxConcurrency(5))
+// Or with Stream:
+for e := range graph.Stream(ctx, state, flowy.WithMaxConcurrency(5)) {
+    // ...
+}
+// Or with Resume (limit applies when continuation runs a fan-out):
+out, err = graph.Resume(ctx, threadID, delta, flowy.WithMaxConcurrency(5))
+```
+
 ## Advanced State Management (Mutation Slice Pattern)
 
 To avoid a single giant reducer, you can keep state and apply small mutators returned by nodes:
