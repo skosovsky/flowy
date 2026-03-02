@@ -1,4 +1,5 @@
 // Package main demonstrates Human-in-the-Loop: interrupt before "approve", then Resume with delta.
+// Uses testutil.InMemoryCheckpointer; in production use a persistent Checkpointer and the same threadID for Resume.
 package main
 
 import (

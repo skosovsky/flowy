@@ -219,7 +219,7 @@ func TestInvoke_FanOut_MaxConcurrency(t *testing.T) {
 	var active, maxObserved atomic.Int32
 	concat := func(current, update string) string { return current + update }
 	b := NewGraph[string](concat)
-	for i := 0; i < 10; i++ {
+	for i := range 10 {
 		name := string(rune('a' + i))
 		b.AddNode(name, func(_ context.Context, s string) (string, error) {
 			active.Add(1)
@@ -257,7 +257,7 @@ func TestInvoke_DynamicFanOut_MaxConcurrency(t *testing.T) {
 	var active, maxObserved atomic.Int32
 	concat := func(current, update string) string { return current + update }
 	b := NewGraph[string](concat)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		name := string(rune('a' + i))
 		b.AddNode(name, func(_ context.Context, s string) (string, error) {
 			active.Add(1)
@@ -338,7 +338,7 @@ func TestStream_FanOut_MaxConcurrency(t *testing.T) {
 	var active, maxObserved atomic.Int32
 	concat := func(current, update string) string { return current + update }
 	b := NewGraph[string](concat)
-	for i := 0; i < 6; i++ {
+	for i := range 6 {
 		name := string(rune('a' + i))
 		b.AddNode(name, func(_ context.Context, s string) (string, error) {
 			active.Add(1)

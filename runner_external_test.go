@@ -184,7 +184,7 @@ func TestResume_MaxConcurrency(t *testing.T) {
 	concat := func(current, update string) string { return current + update }
 	cp := testutil.NewInMemoryCheckpointer[string]()
 	b := flowy.NewGraph[string](concat)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		name := string(rune('a' + i))
 		b.AddNode(name, func(_ context.Context, s string) (string, error) {
 			active.Add(1)
@@ -260,7 +260,7 @@ func TestInvoke_Concurrent(t *testing.T) {
 
 	const concurrency = 20
 	done := make(chan struct{}, concurrency)
-	for i := 0; i < concurrency; i++ {
+	for i := range concurrency {
 		go func(seed string) {
 			defer func() { done <- struct{}{} }()
 			out, err := graph.Invoke(ctx, seed)
@@ -268,7 +268,7 @@ func TestInvoke_Concurrent(t *testing.T) {
 			assert.Equal(t, seed+"ab", out)
 		}(fmt.Sprintf("x%d", i))
 	}
-	for i := 0; i < concurrency; i++ {
+	for range concurrency {
 		<-done
 	}
 }

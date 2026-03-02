@@ -1,4 +1,5 @@
 // Package main runs a minimal ReAct-style agent: reason -> tools -> reason -> finish (with cycle).
+// The conditional edge from reason exits to finish after 2 steps; WithMaxSteps(25) caps iterations.
 package main
 
 import (

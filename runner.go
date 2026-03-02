@@ -50,7 +50,6 @@ func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanO
 		gEg.SetLimit(cfg.maxConcurrency)
 	}
 	for i, targetName := range fo.targets {
-		i, targetName := i, targetName
 		node := g.nodes[targetName] // already validated above
 		gEg.Go(func() error {
 			nodeCtx, cancel := nodeContextWithTimeout(gCtx, cfg)

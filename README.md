@@ -1,16 +1,18 @@
 # Flowy
 
-Type-safe directed graph engine for orchestrating AI agents in Go, with support for conditional routing, parallel execution (fan-out/fan-in), checkpointing, and human-in-the-loop interrupts.
+[![Go Reference](https://pkg.go.dev/badge/github.com/skosovsky/flowy.svg)](https://pkg.go.dev/github.com/skosovsky/flowy)
+
+**TL;DR** — flowy is a library for building reliable, stateful AI agents and workflows in Go as directed graphs. It supports multi-agent flows, progress persistence (checkpoints), Human-in-the-Loop (HITL), and Mermaid diagram export for visualization and debugging.
 
 ## Features
 
 - **Generics** — strictly typed state `T`, no `interface{}` or `map[string]any`
 - **Conditional edges** — routing based on state (e.g. LLM decides next step)
-- **Fan-out / fan-in** — parallel execution of nodes with reducer-based merge (static or dynamic at runtime)
+- **Fan-out / fan-in** — parallel execution with reducer-based merge (static `AddFanOut` or dynamic `AddDynamicFanOut` at runtime)
 - **Middlewares** — wrap nodes for logging, tracing, metrics without touching business logic
 - **Checkpointing** — persist and resume execution (HITL, long sessions)
 - **Streaming** — observe execution via events (node start/end, interrupt, error)
-- **Composition** — use a graph as a node in another graph (`AsNode()` when state types match; or call `Invoke` from a node to adapt state)
+- **Composition** — use a graph as a node (`AsNode()`) or call another graph’s `Invoke` from a node to adapt state
 
 ## Requirements
 
@@ -23,6 +25,8 @@ go get github.com/skosovsky/flowy
 ```
 
 ## Quick start
+
+Minimal linear graph: state is a string, two nodes append to it, then run.
 
 ```go
 package main
@@ -54,6 +58,67 @@ func main() {
 }
 ```
 
+## Key concepts
+
+### State
+
+State has type `T` and is passed between nodes. Each node returns a **delta** (update); the **reducer** merges current state with that delta to produce the next state. So mutation is done by returning deltas and defining a reducer (see [Advanced State Management](#advanced-state-management-mutation-slice-pattern) for a mutator pattern).
+
+### Nodes
+
+A node is a function `func(ctx context.Context, state T) (T, error)`: it receives context and current state, and returns the **delta** and an error. The runner applies the reducer to merge the delta into state and passes the result along the graph. On error, execution stops and the error is returned (or sent as `EventError` when using `Stream`).
+
+### Edges and conditional edges
+
+- **Edges** (`AddEdge(from, to)`) define a fixed next node.
+- **Conditional edges** (`AddConditionalEdge(from, router)`) let a router function decide the next node from `(ctx, state)`; the router returns the next node name.
+
+### Checkpointers (memory / HITL)
+
+A **checkpointer** (interface: `Save(ctx, threadID, checkpoint)` and `Load(ctx, threadID)`) stores where execution stopped (state + node name). Use `WithCheckpointer(cp)` and `WithThreadID(id)` at `Compile` time. Mark interrupt points with `InterruptBefore(node)` or `InterruptAfter(node)`. When execution hits one, the runner saves a checkpoint, returns `ErrInterrupt`, and you continue later with `Resume(ctx, threadID, delta)` — the delta is merged with the saved state via the reducer.
+
+## Run options
+
+Options can be set at `Compile(opts...)` (defaults for all runs) or overridden per `Invoke` / `Stream` / `Resume`:
+
+| Option | Description |
+|--------|-------------|
+| `WithMaxSteps(n)` | Max steps per run (prevents infinite loops; default 25). Returns `ErrMaxStepsExceeded` when exceeded. |
+| `WithNodeTimeout(d)` | Timeout for each node execution; context is cancelled after `d`. |
+| `WithCheckpointer(cp)` | Required for HITL; provides Save/Load by threadID. |
+| `WithThreadID(id)` | Thread/session ID for checkpointing. |
+| `WithMaxConcurrency(n)` | Max concurrent goroutines in fan-out; `n <= 0` means no limit. |
+
+## Visualization (Mermaid)
+
+You can export the compiled graph to Mermaid flowchart syntax for diagrams and debugging:
+
+```go
+graph, _ := b.Compile()
+mermaid := graph.ExportMermaid()
+fmt.Println(mermaid) // flowchart TD\n  a --> b ...
+```
+
+Use this to log or inspect the graph structure before running it.
+
+## Errors and interrupts
+
+- **Panics** — not recovered by the runner; a panic in a node will terminate execution.
+- **ErrInterrupt** — returned when execution is suspended at an interrupt point (HITL). State is saved in the checkpointer; continue with `Resume(ctx, threadID, delta)`.
+- **ErrMaxStepsExceeded** — returned when the step limit (`WithMaxSteps`) is reached (e.g. infinite loop in the graph).
+- **ErrThreadNotFound** — returned by `Resume` when the given `threadID` has no saved checkpoint in the checkpointer.
+
+## Streaming events
+
+`Stream(ctx, state, opts...)` returns `<-chan Event[T]`. Event types:
+
+- `EventNodeStart` — before a node runs
+- `EventNodeEnd` — after a node completes successfully
+- `EventInterrupt` — execution suspended (HITL)
+- `EventError` — a node returned an error (or another run error)
+
+The channel is closed when execution finishes (success, error, or interrupt). Drain the channel to avoid leaking the sender goroutine.
+
 ## Middlewares
 
 Use `Use(mw...)` to wrap every node (including fan-out targets) with cross-cutting logic. The first middleware added runs first (outermost in the chain).
@@ -71,24 +136,19 @@ b.Use(func(name string, next flowy.Node[string]) flowy.Node[string] {
 })
 ```
 
-## Dynamic fan-out
+## Fan-out (static and dynamic)
 
-When the set of parallel branches is known only at runtime (e.g. from an LLM), use `AddDynamicFanOut(from, router, joinNode)`. The router receives context and state and returns target node names. If it returns an empty list, execution goes straight to `joinNode`. For both static (`AddFanOut`) and dynamic fan-out, `joinNode` must be a registered executable node, not a fan-out or dynamic fan-out source.
+**Static fan-out:** `AddFanOut(from, targets, joinNode)` runs all nodes in `targets` in parallel, merges their results with the reducer in order, then continues at `joinNode`. `joinNode` must be a registered node (not a fan-out source).
 
-**Note:** `InterruptBefore` and `InterruptAfter` are not supported on nodes that run as fan-out targets (static or dynamic). For static fan-out, `Compile()` fails if such a node is a target; for dynamic fan-out, `Invoke` returns an error at runtime if the router returns such a node name.
+**Dynamic fan-out:** when the set of branches is known only at runtime (e.g. from an LLM), use `AddDynamicFanOut(from, router, joinNode)`. The router receives `(ctx, state)` and returns target node names. If it returns an empty list, execution goes straight to `joinNode`.
 
-**Best practice — limit concurrency:** When using dynamic fan-out, the LLM (or router) can return many targets at runtime (e.g. 50 search queries). Running all of them at once can trigger API rate limits (HTTP 429) or exhaust connections. Use `flowy.WithMaxConcurrency(n)` so that at most `n` fan-out branches run concurrently; the rest are scheduled as slots free up. Example: if the router returns 50 targets and you call `Invoke(ctx, state, flowy.WithMaxConcurrency(5))`, only 5 requests run in parallel at any time, reducing the risk of 429s while still making progress.
+**Note:** `InterruptBefore` and `InterruptAfter` are not supported on fan-out target nodes. For static fan-out, `Compile()` fails if a target has them; for dynamic fan-out, `Invoke` returns an error at runtime if the router returns such a node.
 
-**Scope:** `WithMaxConcurrency` applies to every execution path that runs a fan-out: `Invoke`, `Stream`, and `Resume`. When you resume into a step that is a fan-out (or that leads to one), the same limit is enforced for that fan-out.
+**Limit concurrency:** to avoid rate limits (e.g. HTTP 429) or resource exhaustion when running many branches, use `WithMaxConcurrency(n)` (e.g. 5). It applies to `Invoke`, `Stream`, and `Resume` whenever a fan-out runs.
 
 ```go
-// Limit to 5 concurrent fan-out branches (e.g. 50 search tasks run in batches of 5)
 out, err := graph.Invoke(ctx, state, flowy.WithMaxConcurrency(5))
-// Or with Stream:
-for e := range graph.Stream(ctx, state, flowy.WithMaxConcurrency(5)) {
-    // ...
-}
-// Or with Resume (limit applies when continuation runs a fan-out):
+for e := range graph.Stream(ctx, state, flowy.WithMaxConcurrency(5)) { /* ... */ }
 out, err = graph.Resume(ctx, threadID, delta, flowy.WithMaxConcurrency(5))
 ```
 
@@ -109,7 +169,6 @@ reducer := func(c State, update StateUpdate) State {
     }
     return c
 }
-// Node returns a StateUpdate instead of full state.
 b.AddNode("append", func(ctx context.Context, s State) (StateUpdate, error) {
     return func(st *State) { st.Messages = append(st.Messages, s.Query) }, nil
 })
