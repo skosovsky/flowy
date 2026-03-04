@@ -2,6 +2,9 @@
 // AI agents with support for conditional routing, parallel execution (fan-out/fan-in),
 // checkpointing, and human-in-the-loop interrupts.
 //
+// State updates can be full replace (simple types) or merge/delta (complex state);
+// see the README section "State Management Patterns" for the recommended approach.
+//
 // Example:
 //
 //	ctx := context.Background()

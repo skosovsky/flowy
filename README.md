@@ -58,11 +58,63 @@ func main() {
 }
 ```
 
+## State Management Patterns
+
+The `Reducer` in flowy has a simple signature: `func(current, update T) T`. How you implement it depends on the complexity of your state.
+
+### 1. Simple State (Full Replace)
+
+If your state is a simple primitive (like a `string` or `int`), your nodes can just return the new absolute value, and your reducer simply returns the update:
+
+```go
+func reducer(current, update string) string { return update }
+```
+
+### 2. Complex State (Delta Updates / Merge) — Recommended
+
+For real-world agents, your state will likely be a complex struct containing chat history, token counters, and pending tool calls. **Do not return a full copy of the state from your nodes.** This often leads to bugs where one node accidentally overwrites another's data.
+
+Instead, nodes should return **only the fields that changed (a delta)**. The reducer is then responsible for safely merging these changes into the current state.
+
+**Example of a Merge Reducer:**
+
+```go
+type Message struct{ Text string }
+type ToolCall struct{ Name string }
+
+type AgentState struct {
+    Messages    []Message
+    ToolCalls   []ToolCall
+    TotalTokens int
+}
+
+func mergeReducer(current, update AgentState) AgentState {
+    // 1. Append slices instead of replacing
+    if len(update.Messages) > 0 {
+        current.Messages = append(current.Messages, update.Messages...)
+    }
+
+    // 2. Replace slices only if explicitly needed (e.g., clearing queue)
+    if update.ToolCalls != nil {
+        current.ToolCalls = update.ToolCalls
+    }
+
+    // 3. Sum counters
+    if update.TotalTokens > 0 {
+        current.TotalTokens += update.TotalTokens
+    }
+
+    return current
+}
+```
+
+In this pattern, an LLM node that only generates a new message just returns `AgentState{Messages: []Message{newMsg}}`, and the reducer safely appends it without clearing the `TotalTokens` counter.
+
 ## Key concepts
 
 ### State
 
-State has type `T` and is passed between nodes. Each node returns a **delta** (update); the **reducer** merges current state with that delta to produce the next state. So mutation is done by returning deltas and defining a reducer (see [Advanced State Management](#advanced-state-management-mutation-slice-pattern) for a mutator pattern).
+State has type `T` and is passed between nodes. Each node returns a **delta** (update); the **reducer** merges current state with that delta to produce the next state. Choose full replace for simple types or merge/delta for complex state (see [State Management Patterns](#state-management-patterns)); see also [Advanced State Management](#advanced-state-management-mutation-slice-pattern) for a mutator pattern.
 
 ### Nodes
 
