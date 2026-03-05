@@ -1,6 +1,7 @@
 package flowy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -20,17 +21,18 @@ type dynamicFanOutDef[T any] struct {
 
 // GraphBuilder builds a graph before compilation. Fluent API.
 type GraphBuilder[T any] struct {
-	reducer          Reducer[T]
-	nodes            map[string]Node[T]
-	edges            map[string]string
-	conditionalEdges map[string]ConditionalEdge[T]
-	fanOuts          map[string]*fanOutDef
-	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
-	middlewares      []Middleware[T]
-	entryPoint       string
-	finishPoints     map[string]bool
-	interruptBefore  map[string]bool
-	interruptAfter   map[string]bool
+	reducer               Reducer[T]
+	nodes                 map[string]Node[T]
+	edges                 map[string]string
+	conditionalEdges      map[string]ConditionalEdge[T]
+	fanOuts               map[string]*fanOutDef
+	dynamicFanOuts        map[string]*dynamicFanOutDef[T]
+	middlewares           []Middleware[T]
+	invocationMiddlewares []InvocationMiddleware[T]
+	entryPoint            string
+	finishPoints          map[string]bool
+	interruptBefore       map[string]bool
+	interruptAfter        map[string]bool
 	// overwritten* track keys that were re-registered (overwrite); Compile reports them as errors.
 	overwrittenNodes             map[string]bool
 	overwrittenEdgeFrom          map[string]bool
@@ -103,6 +105,13 @@ func (b *GraphBuilder[T]) AddFanOut(from string, targets []string, joinNode stri
 // Use adds middlewares that wrap every node at compile time (first added runs first).
 func (b *GraphBuilder[T]) Use(mw ...Middleware[T]) *GraphBuilder[T] {
 	b.middlewares = append(b.middlewares, mw...)
+	return b
+}
+
+// UseInvocation adds middlewares that wrap the entire graph execution (Invoke, Resume, Stream).
+// First registered runs first (outermost in the chain). Optional; zero cost if never called.
+func (b *GraphBuilder[T]) UseInvocation(mw ...InvocationMiddleware[T]) *GraphBuilder[T] {
+	b.invocationMiddlewares = append(b.invocationMiddlewares, mw...)
 	return b
 }
 
@@ -371,6 +380,21 @@ func (b *GraphBuilder[T]) Compile(opts ...Option[T]) (*Graph[T], error) {
 		reducer:          b.reducer,
 		defaults:         cfg,
 	}
+	g.defaults.startNode = b.entryPoint
+	g.defaults.resumeFirst = false
+
+	if len(b.invocationMiddlewares) > 0 {
+		core := func(ctx context.Context, state T, opts ...Option[T]) (T, error) {
+			c := applyOptions(&g.defaults, opts)
+			return g.runFrom(ctx, state, c.startNode, c, c.resumeFirst)
+		}
+		handler := InvocationHandler[T](core)
+		for i := len(b.invocationMiddlewares) - 1; i >= 0; i-- {
+			handler = b.invocationMiddlewares[i](handler)
+		}
+		g.invocationHandler = handler
+	}
+
 	return g, nil
 }
 

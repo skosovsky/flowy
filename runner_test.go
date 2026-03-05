@@ -822,3 +822,195 @@ func TestStream_DynamicFanOut_EmptyTargets(t *testing.T) {
 	assert.Contains(t, types, EventNodeStart)
 	assert.Contains(t, types, EventNodeEnd)
 }
+
+// TestInvocationMiddleware_ChainOrder verifies invocation middlewares are called in FIFO order (first added = outermost).
+func TestInvocationMiddleware_ChainOrder(t *testing.T) {
+	var order []string
+	var mu sync.Mutex
+	m1 := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			mu.Lock()
+			order = append(order, "m1-before")
+			mu.Unlock()
+			out, err := next(ctx, state, opts...)
+			mu.Lock()
+			order = append(order, "m1-after")
+			mu.Unlock()
+			return out, err
+		}
+	}
+	m2 := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			mu.Lock()
+			order = append(order, "m2-before")
+			mu.Unlock()
+			out, err := next(ctx, state, opts...)
+			mu.Lock()
+			order = append(order, "m2-after")
+			mu.Unlock()
+			return out, err
+		}
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
+	b.AddEdge("a", "b")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("b")
+	b.UseInvocation(m1, m2)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	out, err := graph.Invoke(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, "ab", out)
+	mu.Lock()
+	ord := append([]string(nil), order...)
+	mu.Unlock()
+	assert.Equal(t, []string{"m1-before", "m2-before", "m2-after", "m1-after"}, ord)
+}
+
+// TestInvocationMiddleware_NodeErrorPassThrough verifies node errors pass through the middleware chain.
+func TestInvocationMiddleware_NodeErrorPassThrough(t *testing.T) {
+	nodeErr := errors.New("node failed")
+	var seenErr error
+	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			out, err := next(ctx, state, opts...)
+			seenErr = err
+			return out, err
+		}
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddNode("fail", func(_ context.Context, _ string) (string, error) { return "", nodeErr })
+	b.AddEdge("a", "fail")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("fail")
+	b.UseInvocation(mw)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = graph.Invoke(ctx, "")
+	require.Error(t, err)
+	require.ErrorIs(t, err, nodeErr)
+	assert.ErrorIs(t, seenErr, nodeErr)
+}
+
+// TestInvocationMiddleware_SystemErrorPassThrough verifies flowy system errors (e.g. ErrMaxStepsExceeded) are visible to middleware.
+func TestInvocationMiddleware_SystemErrorPassThrough(t *testing.T) {
+	var seenErr error
+	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			out, err := next(ctx, state, opts...)
+			seenErr = err
+			return out, err
+		}
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
+	b.AddNode("c", func(_ context.Context, s string) (string, error) { return s + "c", nil })
+	b.AddEdge("a", "b")
+	b.AddEdge("b", "c")
+	b.AddEdge("c", "a")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("c")
+	b.UseInvocation(mw)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, err = graph.Invoke(ctx, "", WithMaxSteps[string](2))
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrMaxStepsExceeded)
+	assert.ErrorIs(t, seenErr, ErrMaxStepsExceeded)
+}
+
+// TestInvocationMiddleware_Stream verifies Stream runs through invocation middleware and events are still emitted.
+func TestInvocationMiddleware_Stream(t *testing.T) {
+	var invoked int32
+	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			atomic.StoreInt32(&invoked, 1)
+			return next(ctx, state, opts...)
+		}
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddEdge("a", "a")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("a")
+	b.UseInvocation(mw)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	ch := graph.Stream(ctx, "", WithMaxSteps[string](3))
+	var count int
+	for range ch {
+		count++
+	}
+	assert.Positive(t, count)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&invoked))
+}
+
+// memCheckpointer is an in-memory Checkpointer for tests that need Resume (avoids importing testutil from package flowy).
+type memCheckpointer[T any] struct {
+	mu   sync.Mutex
+	data map[string]Checkpoint[T]
+}
+
+func newMemCheckpointer[T any]() *memCheckpointer[T] {
+	return &memCheckpointer[T]{data: make(map[string]Checkpoint[T])}
+}
+
+func (c *memCheckpointer[T]) Save(_ context.Context, threadID string, cp Checkpoint[T]) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[threadID] = cp
+	return nil
+}
+
+func (c *memCheckpointer[T]) Load(_ context.Context, threadID string) (Checkpoint[T], error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cp, ok := c.data[threadID]
+	if !ok {
+		var zero Checkpoint[T]
+		return zero, ErrThreadNotFound
+	}
+	return cp, nil
+}
+
+// TestInvocationMiddleware_Resume verifies Resume runs through invocation middleware (Invoke and Resume both hit the chain).
+func TestInvocationMiddleware_Resume(t *testing.T) {
+	cp := newMemCheckpointer[string]()
+	var invokeCount int32
+	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
+		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
+			atomic.AddInt32(&invokeCount, 1)
+			return next(ctx, state, opts...)
+		}
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
+	b.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
+	b.AddEdge("process", "approve")
+	b.SetEntryPoint("process")
+	b.SetFinishPoint("approve")
+	b.InterruptBefore("approve")
+	b.UseInvocation(mw)
+	graph, err := b.Compile(WithCheckpointer(cp), WithThreadID[string]("tid1"))
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	state, err := graph.Invoke(ctx, "init")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrInterrupt)
+	assert.Equal(t, "init_process", state)
+	assert.Equal(t, int32(1), atomic.LoadInt32(&invokeCount), "middleware should run once for Invoke")
+
+	final, err := graph.Resume(ctx, "tid1", "_delta")
+	require.NoError(t, err)
+	assert.Equal(t, "_delta_approve", final)
+	assert.Equal(t, int32(2), atomic.LoadInt32(&invokeCount), "middleware should run again for Resume")
+}

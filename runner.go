@@ -10,23 +10,32 @@ import (
 
 // Graph is the compiled, immutable graph. Created only via GraphBuilder.Compile.
 type Graph[T any] struct {
-	nodes            map[string]Node[T]
-	edges            map[string]string
-	conditionalEdges map[string]ConditionalEdge[T]
-	fanOuts          map[string]*fanOutDef
-	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
-	entryPoint       string
-	finishPoints     map[string]bool
-	interruptBefore  map[string]bool
-	interruptAfter   map[string]bool
-	reducer          Reducer[T]
-	defaults         runConfig[T]
+	nodes             map[string]Node[T]
+	edges             map[string]string
+	conditionalEdges  map[string]ConditionalEdge[T]
+	fanOuts           map[string]*fanOutDef
+	dynamicFanOuts    map[string]*dynamicFanOutDef[T]
+	entryPoint        string
+	finishPoints      map[string]bool
+	interruptBefore   map[string]bool
+	interruptAfter    map[string]bool
+	reducer           Reducer[T]
+	defaults          runConfig[T]
+	invocationHandler InvocationHandler[T] // nil when no UseInvocation middlewares
+}
+
+// run applies opts and runs the graph from cfg.startNode; used when no invocation middlewares.
+func (g *Graph[T]) run(ctx context.Context, state T, opts ...Option[T]) (T, error) {
+	cfg := applyOptions(&g.defaults, opts)
+	return g.runFrom(ctx, state, cfg.startNode, cfg, cfg.resumeFirst)
 }
 
 // Invoke runs the graph synchronously and returns the final state.
 func (g *Graph[T]) Invoke(ctx context.Context, state T, opts ...Option[T]) (T, error) {
-	cfg := applyOptions(&g.defaults, opts)
-	return g.runFrom(ctx, state, g.entryPoint, cfg, nil, false)
+	if g.invocationHandler != nil {
+		return g.invocationHandler(ctx, state, opts...)
+	}
+	return g.run(ctx, state, opts...)
 }
 
 func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanOutDef, cfg *runConfig[T]) (T, error) {
@@ -104,10 +113,14 @@ func (g *Graph[T]) resolveNext(ctx context.Context, current string, state T) (st
 // Otherwise the sender may block forever and the execution goroutine will leak.
 func (g *Graph[T]) Stream(ctx context.Context, state T, opts ...Option[T]) <-chan Event[T] {
 	ch := make(chan Event[T])
-	cfg := applyOptions(&g.defaults, opts)
+	streamOpts := append(append([]Option[T](nil), opts...), withEventCh[T](ch))
 	go func() {
 		defer close(ch)
-		_, _ = g.runFrom(ctx, state, g.entryPoint, cfg, ch, false)
+		if g.invocationHandler != nil {
+			_, _ = g.invocationHandler(ctx, state, streamOpts...)
+		} else {
+			_, _ = g.run(ctx, state, streamOpts...)
+		}
 	}()
 	return ch
 }
@@ -152,21 +165,22 @@ func (g *Graph[T]) Resume(ctx context.Context, threadID string, delta T, opts ..
 		}
 	}
 	state := g.reducer(cp.State, delta)
-	cfg.threadID = threadID
-
-	// Run from the saved node (the one we interrupted before); skip interruptBefore on first step.
-	return g.runFrom(ctx, state, cp.NodeName, cfg, nil, true)
+	resumeOpts := append(append([]Option[T](nil), opts...), WithThreadID[T](threadID), withStartNode[T](cp.NodeName), withResumeFirst[T](true))
+	if g.invocationHandler != nil {
+		return g.invocationHandler(ctx, state, resumeOpts...)
+	}
+	return g.run(ctx, state, resumeOpts...)
 }
 
 // runFrom executes the graph starting at startNode (used by Invoke with entryPoint and by Resume).
-// If eventCh is non-nil, events are sent via sendEvent (respecting context cancellation).
-// When resumeFirst is true, interruptBefore is skipped on the first iteration (we are resuming to run that node).
-func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg runConfig[T], eventCh chan<- Event[T], resumeFirst bool) (T, error) {
+// Events are sent via cfg.eventCh when non-nil (Stream mode). When resumeFirst is true,
+// interruptBefore is skipped on the first iteration (we are resuming to run that node).
+func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg runConfig[T], resumeFirst bool) (T, error) {
 	current := startNode
 	for step := 0; step < cfg.maxSteps; step++ {
 		if err := ctx.Err(); err != nil {
 			wrapped := fmt.Errorf("flowy: %w", err)
-			sendEvent(ctx, eventCh, Event[T]{Type: EventError, State: state, Err: wrapped})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, State: state, Err: wrapped})
 			return state, wrapped
 		}
 		skipInterruptBefore := resumeFirst && step == 0
@@ -174,59 +188,59 @@ func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg r
 			cp := Checkpoint[T]{State: state, NodeName: current}
 			if err := cfg.checkpointer.Save(ctx, cfg.threadID, cp); err != nil {
 				wrapped := fmt.Errorf("flowy: save checkpoint: %w", err)
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
 				return state, wrapped
 			}
-			sendEvent(ctx, eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
 			return state, ErrInterrupt
 		}
 
 		if fo, isFanOut := g.fanOuts[current]; isFanOut {
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
 			var err error
 			state, err = g.runFanOut(ctx, current, state, fo, &cfg)
 			if err != nil {
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
 				return state, err
 			}
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
 			current = fo.joinNode
 		} else if dfo, isDynFanOut := g.dynamicFanOuts[current]; isDynFanOut {
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
 			targets, err := dfo.router(ctx, state)
 			if err != nil {
 				wrapped := fmt.Errorf("flowy: dynamic fan-out router %q failed: %w", current, err)
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
 				return state, wrapped
 			}
 			if len(targets) > 0 {
 				tempFo := &fanOutDef{targets: targets, joinNode: dfo.joinNode}
 				state, err = g.runFanOut(ctx, current, state, tempFo, &cfg)
 				if err != nil {
-					sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+					sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
 					return state, err
 				}
 			}
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
 			current = dfo.joinNode
 		} else {
 			node, ok := g.nodes[current]
 			if !ok {
 				err := fmt.Errorf("flowy: node %q not found", current)
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
 				return state, err
 			}
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeStart, NodeName: current, State: state})
 			nodeCtx, cancel := nodeContextWithTimeout(ctx, &cfg)
 			delta, err := node(nodeCtx, state)
 			cancel()
 			if err != nil {
 				wrapped := fmt.Errorf("flowy: node %q: %w", current, err)
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
 				return state, wrapped
 			}
 			state = g.reducer(state, delta)
-			sendEvent(ctx, eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
+			sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventNodeEnd, NodeName: current, State: state})
 			// Finish point takes precedence: complete without interrupt (no resolveNext for terminal node).
 			if g.finishPoints[current] {
 				return state, nil
@@ -234,27 +248,27 @@ func (g *Graph[T]) runFrom(ctx context.Context, state T, startNode string, cfg r
 			if g.interruptAfter[current] && cfg.checkpointer != nil && cfg.threadID != "" {
 				next, err := g.resolveNext(ctx, current, state)
 				if err != nil {
-					sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+					sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
 					return state, err
 				}
 				cp := Checkpoint[T]{State: state, NodeName: next}
 				if err := cfg.checkpointer.Save(ctx, cfg.threadID, cp); err != nil {
 					wrapped := fmt.Errorf("flowy: save checkpoint: %w", err)
-					sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
+					sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: wrapped})
 					return state, wrapped
 				}
-				sendEvent(ctx, eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventInterrupt, NodeName: current, State: state})
 				return state, ErrInterrupt
 			}
 			next, err := g.resolveNext(ctx, current, state)
 			if err != nil {
-				sendEvent(ctx, eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
+				sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, NodeName: current, State: state, Err: err})
 				return state, err
 			}
 			current = next
 		}
 	}
-	sendEvent(ctx, eventCh, Event[T]{Type: EventError, State: state, Err: ErrMaxStepsExceeded})
+	sendEvent(ctx, cfg.eventCh, Event[T]{Type: EventError, State: state, Err: ErrMaxStepsExceeded})
 	return state, ErrMaxStepsExceeded
 }
 

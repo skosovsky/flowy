@@ -15,6 +15,10 @@ type runConfig[T any] struct {
 	nodeTimeout    time.Duration
 	checkpointer   Checkpointer[T]
 	maxConcurrency int // max concurrent goroutines in fan-out; <= 0 means no limit
+	// Internal: set by runner for invocation middleware and Stream.
+	startNode   string          // entry point or resume node
+	resumeFirst bool            // skip interruptBefore on first step (Resume)
+	eventCh     chan<- Event[T] // stream channel; nil for Invoke/Resume
 }
 
 // Option configures a run (Invoke, Stream, Resume) or compile defaults.
@@ -54,6 +58,21 @@ func WithMaxConcurrency[T any](n int) Option[T] {
 	return func(c *runConfig[T]) {
 		c.maxConcurrency = n
 	}
+}
+
+// withStartNode sets the starting node (internal use by runner for Resume).
+func withStartNode[T any](name string) Option[T] {
+	return func(c *runConfig[T]) { c.startNode = name }
+}
+
+// withResumeFirst skips interruptBefore on the first step (internal use by runner for Resume).
+func withResumeFirst[T any](b bool) Option[T] {
+	return func(c *runConfig[T]) { c.resumeFirst = b }
+}
+
+// withEventCh sets the event channel for Stream (internal use by runner).
+func withEventCh[T any](ch chan<- Event[T]) Option[T] {
+	return func(c *runConfig[T]) { c.eventCh = ch }
 }
 
 // applyOptions merges default config with per-call options.

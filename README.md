@@ -188,6 +188,26 @@ b.Use(func(name string, next flowy.Node[string]) flowy.Node[string] {
 })
 ```
 
+### Invocation middlewares
+
+Global middlewares wrap the **entire** graph execution (each `Invoke`, `Resume`, or `Stream` call), not individual nodes. Use them for:
+
+- A single root span for the whole run (e.g. OpenTelemetry)
+- Recovery from panics (convert panic to error)
+- Logging or metrics for system errors (`ErrMaxStepsExceeded`, checkpointer errors)
+- Propagating trace IDs or other metadata for the full invocation
+
+Register with `UseInvocation(mw...)`. The handler signature is `func(next InvocationHandler[T]) InvocationHandler[T]`; the first middleware added runs first (outermost in the chain). **Using invocation middlewares is optional:** if you never call `UseInvocation`, behavior and performance are unchanged.
+
+```go
+b.UseInvocation(func(next flowy.InvocationHandler[string]) flowy.InvocationHandler[string] {
+    return func(ctx context.Context, state string, opts ...flowy.Option[string]) (string, error) {
+        // e.g. start root span, defer span.End()
+        return next(ctx, state, opts...)
+    }
+})
+```
+
 ## Fan-out (static and dynamic)
 
 **Static fan-out:** `AddFanOut(from, targets, joinNode)` runs all nodes in `targets` in parallel, merges their results with the reducer in order, then continues at `joinNode`. `joinNode` must be a registered node (not a fan-out source).

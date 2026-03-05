@@ -19,6 +19,12 @@ type Reducer[T any] func(current T, update T) T
 // It receives the node name and the next handler in the chain.
 type Middleware[T any] func(nodeName string, next Node[T]) Node[T]
 
+// InvocationHandler runs the graph (used internally; wrapped by InvocationMiddleware).
+type InvocationHandler[T any] func(ctx context.Context, state T, opts ...Option[T]) (T, error)
+
+// InvocationMiddleware wraps the entire graph execution (tracing, recovery, metrics).
+type InvocationMiddleware[T any] func(next InvocationHandler[T]) InvocationHandler[T]
+
 // DynamicRouter decides at runtime which nodes should be executed in parallel (dynamic fan-out).
 // Returned node names must be registered nodes; nodes run as dynamic targets do not support InterruptBefore/InterruptAfter.
 type DynamicRouter[T any] func(ctx context.Context, state T) ([]string, error)
