@@ -9,15 +9,18 @@ import (
 // the updated state (or a delta to be merged by the Reducer).
 type Node[T any] func(ctx context.Context, state T) (T, error)
 
+// NodeHandler is the standard node signature; it is the same as Node and used for clarity in middleware contracts.
+type NodeHandler[T any] = Node[T]
+
 // ConditionalEdge is a routing function that decides which node to execute next.
 type ConditionalEdge[T any] func(ctx context.Context, state T) (string, error)
 
 // Reducer defines how to merge the current state with the update returned by a node.
 type Reducer[T any] func(current T, update T) T
 
-// Middleware wraps a Node to provide cross-cutting concerns (logging, tracing, metrics).
-// It receives the node name and the next handler in the chain.
-type Middleware[T any] func(nodeName string, next Node[T]) Node[T]
+// Middleware is an interceptor that wraps node execution. It receives ctx, state, node name, and the next handler.
+// Use it for logging, tracing, or metrics without changing business logic.
+type Middleware[T any] func(ctx context.Context, state T, nodeName string, next NodeHandler[T]) (T, error)
 
 // DynamicRouter decides at runtime which nodes should be executed in parallel (dynamic fan-out).
 // Returned node names must be registered nodes.

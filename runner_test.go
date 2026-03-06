@@ -86,7 +86,7 @@ func TestInvoke_MaxStepsExceeded(t *testing.T) {
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // never reached
 
-	graph, err := b.Compile(WithMaxSteps(3))
+	graph, err := b.Compile(WithMaxSteps[string](3))
 	require.NoError(t, err)
 	ctx := context.Background()
 	_, _, err = graph.Invoke(ctx, "")
@@ -243,7 +243,7 @@ func TestInvoke_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", targets, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency(limit))
+	graph, err := b.Compile(WithMaxConcurrency[string](limit))
 	require.NoError(t, err)
 	_, _, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
@@ -282,7 +282,7 @@ func TestInvoke_DynamicFanOut_MaxConcurrency(t *testing.T) {
 	}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency(limit))
+	graph, err := b.Compile(WithMaxConcurrency[string](limit))
 	require.NoError(t, err)
 	_, _, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
@@ -355,7 +355,7 @@ func TestStream_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", []string{"a", "b", "c", "d", "e", "f"}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency(limit))
+	graph, err := b.Compile(WithMaxConcurrency[string](limit))
 	require.NoError(t, err)
 	ctx := context.Background()
 	stepCount := 0
@@ -380,7 +380,7 @@ func TestStream_WithMaxSteps_YieldsError(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; graph loops a->b->a so we hit max steps
-	graph, err := b.Compile(WithMaxSteps(3))
+	graph, err := b.Compile(WithMaxSteps[string](3))
 	require.NoError(t, err)
 	ctx := context.Background()
 	var streamErr error
@@ -469,7 +469,7 @@ func TestStream_MaxStepsExceeded_YieldsError(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; loop a->b->a until max steps
-	graph, err := b.Compile(WithMaxSteps(3))
+	graph, err := b.Compile(WithMaxSteps[string](3))
 	require.NoError(t, err)
 	ctx := context.Background()
 	var streamErr error
@@ -495,7 +495,7 @@ func TestInvoke_NodeTimeout(t *testing.T) {
 	})
 	b.SetEntryPoint("slow")
 	b.SetFinishPoint("slow")
-	graph, err := b.Compile(WithNodeTimeout(10 * time.Millisecond))
+	graph, err := b.Compile(WithNodeTimeout[string](10 * time.Millisecond))
 	require.NoError(t, err)
 	ctx := context.Background()
 	_, _, err = graph.Invoke(ctx, "")
@@ -755,13 +755,11 @@ func TestMiddleware_DynamicFanOutTargets(t *testing.T) {
 		defer mu.Unlock()
 		order = append(order, s)
 	}
-	mw := func(name string, next Node[string]) Node[string] {
-		return func(ctx context.Context, s string) (string, error) {
-			appendOrder("mw-in-" + name)
-			out, err := next(ctx, s)
-			appendOrder("mw-out-" + name)
-			return out, err
-		}
+	mw := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		appendOrder("mw-in-" + nodeName)
+		out, err := next(ctx, state)
+		appendOrder("mw-out-" + nodeName)
+		return out, err
 	}
 	concat := func(current, update string) string { return current + update }
 	b := NewGraph[string](concat)

@@ -13,5 +13,8 @@
 //	b.SetEntryPoint("greet")
 //	b.SetFinishPoint("greet")
 //	graph, _ := b.Compile()
-//	result, _ := graph.Invoke(ctx, "world")
+//	result, _, err := graph.Invoke(ctx, "world")
+//	if err != nil {
+//		// handle error
+//	}
 package flowy

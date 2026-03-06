@@ -2,6 +2,8 @@ package flowy
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -295,21 +297,17 @@ func TestBuilder_FluentAPI(t *testing.T) {
 
 func TestMiddleware_ExecutionOrder(t *testing.T) {
 	var order []string
-	m1 := func(name string, next Node[string]) Node[string] {
-		return func(ctx context.Context, s string) (string, error) {
-			order = append(order, "m1-in-"+name)
-			out, err := next(ctx, s)
-			order = append(order, "m1-out-"+name)
-			return out, err
-		}
+	m1 := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		order = append(order, "m1-in-"+nodeName)
+		out, err := next(ctx, state)
+		order = append(order, "m1-out-"+nodeName)
+		return out, err
 	}
-	m2 := func(name string, next Node[string]) Node[string] {
-		return func(ctx context.Context, s string) (string, error) {
-			order = append(order, "m2-in-"+name)
-			out, err := next(ctx, s)
-			order = append(order, "m2-out-"+name)
-			return out, err
-		}
+	m2 := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		order = append(order, "m2-in-"+nodeName)
+		out, err := next(ctx, state)
+		order = append(order, "m2-out-"+nodeName)
+		return out, err
 	}
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) {
@@ -331,6 +329,97 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 	require.NoError(t, err)
 	// First added middleware runs first: m1 then m2 then node.
 	assert.Equal(t, []string{"m1-in-a", "m2-in-a", "node-a", "m2-out-a", "m1-out-a", "m1-in-b", "m2-in-b", "node-b", "m2-out-b", "m1-out-b"}, order)
+}
+
+// TestMiddleware_Chain verifies nodeName is passed correctly and middlewares can mutate state/error.
+func TestMiddleware_Chain(t *testing.T) {
+	var namesSeen []string
+	mw := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		namesSeen = append(namesSeen, nodeName)
+		out, err := next(ctx, state)
+		if err != nil {
+			return out, err
+		}
+		return out + "[" + nodeName + "]", nil
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("x", func(_ context.Context, s string) (string, error) { return s + "x", nil })
+	b.AddNode("y", func(_ context.Context, s string) (string, error) { return s + "y", nil })
+	b.AddEdge("x", "y")
+	b.SetEntryPoint("x")
+	b.SetFinishPoint("y")
+	b.Use(mw)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	final, _, err := graph.Invoke(ctx, "")
+	require.NoError(t, err)
+	assert.Equal(t, []string{"x", "y"}, namesSeen)
+	// idReducer keeps only last update; mw appends [nodeName] to each update, so final is "x[x]y[y]"
+	assert.Equal(t, "x[x]y[y]", final)
+}
+
+// TestMiddleware_UseAndWithMiddleware verifies middlewares from Use() and from Compile(WithMiddleware) are combined (Use first, then WithMiddleware).
+func TestMiddleware_UseAndWithMiddleware(t *testing.T) {
+	var order []string
+	fromUse := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		order = append(order, "use-"+nodeName)
+		return next(ctx, state)
+	}
+	fromOpt := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
+		order = append(order, "opt-"+nodeName)
+		return next(ctx, state)
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddEdge("a", "a")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("a")
+	b.Use(fromUse)
+	graph, err := b.Compile(WithMiddleware[string](fromOpt))
+	require.NoError(t, err)
+	ctx := context.Background()
+	_, _, err = graph.Invoke(ctx, "")
+	require.NoError(t, err)
+	// First added (Use) is outermost: use then opt then node.
+	assert.Contains(t, order, "use-a")
+	assert.Contains(t, order, "opt-a")
+	assert.GreaterOrEqual(t, len(order), 2)
+	useIdx, optIdx := -1, -1
+	for i, s := range order {
+		if s == "use-a" && useIdx < 0 {
+			useIdx = i
+		}
+		if s == "opt-a" && optIdx < 0 {
+			optIdx = i
+		}
+	}
+	assert.True(t, useIdx >= 0 && optIdx >= 0 && useIdx < optIdx, "use middleware should run before opt (outermost first)")
+}
+
+// TestMiddleware_ErrorInterception verifies that middleware can wrap and return node errors; caller receives the wrapped error.
+func TestMiddleware_ErrorInterception(t *testing.T) {
+	origErr := errors.New("original error")
+	wrapMw := func(ctx context.Context, state string, _ string, next NodeHandler[string]) (string, error) {
+		out, err := next(ctx, state)
+		if err != nil {
+			return out, fmt.Errorf("middleware wrapped: %w", err)
+		}
+		return out, nil
+	}
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("fail", func(_ context.Context, s string) (string, error) {
+		return s, origErr
+	})
+	b.SetEntryPoint("fail")
+	b.SetFinishPoint("fail")
+	b.Use(wrapMw)
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	_, _, err = graph.Invoke(context.Background(), "")
+	require.Error(t, err)
+	require.ErrorContains(t, err, "middleware wrapped")
+	assert.ErrorIs(t, err, origErr)
 }
 
 func TestBuilder_Compile_DynamicFanOut_JoinNodeNotRegistered(t *testing.T) {

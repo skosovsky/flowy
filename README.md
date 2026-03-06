@@ -143,11 +143,11 @@ if errors.Is(err, flowy.ErrSuspend) {
 
 Options are set at `Compile(opts...)` and apply to all runs of that graph:
 
-| Option | Description |
-|--------|-------------|
-| `WithMaxSteps(n)` | Max steps per run (prevents infinite loops; default 1000 if &lt;= 0). Returns `ErrMaxStepsExceeded` when exceeded. |
-| `WithNodeTimeout(d)` | Timeout for each node execution; context is cancelled after `d`. |
-| `WithMaxConcurrency(n)` | Max concurrent goroutines in fan-out; `n <= 0` means no limit. |
+| Option                  | Description                                                                                                        |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `WithMaxSteps(n)`       | Max steps per run (prevents infinite loops; default 1000 if &lt;= 0). Returns `ErrMaxStepsExceeded` when exceeded. |
+| `WithNodeTimeout(d)`    | Timeout for each node execution; context is cancelled after `d`.                                                   |
+| `WithMaxConcurrency(n)` | Max concurrent goroutines in fan-out; `n <= 0` means no limit.                                                     |
 
 ## Visualization (Mermaid)
 
@@ -183,19 +183,21 @@ for step, err := range graph.Stream(ctx, state) {
 
 ## Middlewares
 
-Use `Use(mw...)` to wrap every node (including fan-out targets) with cross-cutting logic. The first middleware added runs first (outermost in the chain).
+Use `Use(mw...)` to wrap every node (including fan-out targets) with cross-cutting logic. You can also add middlewares at compile time with `Compile(flowy.WithMiddleware(mw))`. The first middleware added runs first (outermost in the chain).
+
+Middleware has the interceptor signature: it receives `ctx`, `state`, `nodeName`, and `next` (the next handler), and returns `(state, error)`.
 
 ```go
 b := flowy.NewGraph[string](reducer)
 b.AddNode("a", nodeA)
-b.Use(func(name string, next flowy.Node[string]) flowy.Node[string] {
-    return func(ctx context.Context, s string) (string, error) {
-        log.Println("before", name)
-        out, err := next(ctx, s)
-        log.Println("after", name)
-        return out, err
-    }
-})
+logMw := func(ctx context.Context, state string, nodeName string, next flowy.NodeHandler[string]) (string, error) {
+    log.Println("before", nodeName)
+    out, err := next(ctx, state)
+    log.Println("after", nodeName)
+    return out, err
+}
+b.Use(logMw)
+// or pass at compile: graph, _ := b.Compile(flowy.WithMiddleware(logMw))
 ```
 
 ## Fan-out (static and dynamic)

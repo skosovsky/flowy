@@ -1,6 +1,7 @@
 package flowy
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -126,8 +127,8 @@ func (b *GraphBuilder[T]) SetFinishPoint(name string) *GraphBuilder[T] {
 	return b
 }
 
-// Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps).
-func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
+// Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps) and optional middlewares (WithMiddleware).
+func (b *GraphBuilder[T]) Compile(opts ...BuildOption[T]) (*Graph[T], error) {
 	var errs []error
 
 	for name := range b.overwrittenNodes {
@@ -304,17 +305,25 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 		return nil, errors.Join(errs...)
 	}
 
-	// Wrap all nodes in middlewares (first added runs first: iterate in reverse).
+	o := applyBuildOptions(opts)
+	allMiddlewares := make([]Middleware[T], 0, len(b.middlewares)+len(o.middlewares))
+	allMiddlewares = append(allMiddlewares, b.middlewares...)
+	allMiddlewares = append(allMiddlewares, o.middlewares...)
+
+	// Wrap each node in middleware chain (onion: first added is outermost). New contract: mw(ctx, state, nodeName, next).
 	compiledNodes := maps.Clone(b.nodes)
 	for name, node := range compiledNodes {
-		wrapped := node
-		for i := len(b.middlewares) - 1; i >= 0; i-- {
-			wrapped = b.middlewares[i](name, wrapped)
+		chain := node
+		for i := len(allMiddlewares) - 1; i >= 0; i-- {
+			mw := allMiddlewares[i]
+			next := chain
+			chain = func(ctx context.Context, state T) (T, error) {
+				return mw(ctx, state, name, next)
+			}
 		}
-		compiledNodes[name] = wrapped
+		compiledNodes[name] = chain
 	}
 
-	cfg := applyBuildOptions(opts)
 	g := &Graph[T]{
 		nodes:            compiledNodes,
 		edges:            maps.Clone(b.edges),
@@ -324,7 +333,7 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 		entryPoint:       b.entryPoint,
 		finishPoints:     maps.Clone(b.finishPoints),
 		reducer:          b.reducer,
-		defaults:         cfg,
+		defaults:         o.run,
 	}
 	return g, nil
 }

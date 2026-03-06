@@ -10,30 +10,38 @@ import (
 )
 
 func TestApplyBuildOptions_DefaultMaxSteps(t *testing.T) {
-	cfg := applyBuildOptions(nil)
-	assert.Equal(t, defaultMaxSteps, cfg.maxSteps)
-	assert.Zero(t, cfg.nodeTimeout)
-	assert.Zero(t, cfg.maxConcurrency)
+	o := applyBuildOptions[string](nil)
+	assert.Equal(t, defaultMaxSteps, o.run.maxSteps)
+	assert.Zero(t, o.run.nodeTimeout)
+	assert.Zero(t, o.run.maxConcurrency)
 }
 
 func TestApplyBuildOptions_ZeroOrNegativeMaxSteps_UseDefault(t *testing.T) {
-	cfg0 := applyBuildOptions([]BuildOption{WithMaxSteps(0)})
-	assert.Equal(t, defaultMaxSteps, cfg0.maxSteps)
-	cfgNeg := applyBuildOptions([]BuildOption{WithMaxSteps(-1)})
-	assert.Equal(t, defaultMaxSteps, cfgNeg.maxSteps)
+	o0 := applyBuildOptions([]BuildOption[string]{WithMaxSteps[string](0)})
+	assert.Equal(t, defaultMaxSteps, o0.run.maxSteps)
+	oNeg := applyBuildOptions([]BuildOption[string]{WithMaxSteps[string](-1)})
+	assert.Equal(t, defaultMaxSteps, oNeg.run.maxSteps)
 }
 
 func TestApplyBuildOptions_WithNodeTimeout(t *testing.T) {
-	cfg := applyBuildOptions([]BuildOption{WithNodeTimeout(5 * time.Second)})
-	assert.Equal(t, 5*time.Second, cfg.nodeTimeout)
-	assert.Equal(t, defaultMaxSteps, cfg.maxSteps)
+	o := applyBuildOptions([]BuildOption[string]{WithNodeTimeout[string](5 * time.Second)})
+	assert.Equal(t, 5*time.Second, o.run.nodeTimeout)
+	assert.Equal(t, defaultMaxSteps, o.run.maxSteps)
 }
 
 func TestApplyBuildOptions_WithMaxConcurrency(t *testing.T) {
-	cfg := applyBuildOptions([]BuildOption{WithMaxConcurrency(5)})
-	assert.Equal(t, 5, cfg.maxConcurrency)
-	cfgZero := applyBuildOptions([]BuildOption{WithMaxConcurrency(0)})
-	assert.Zero(t, cfgZero.maxConcurrency)
+	o := applyBuildOptions([]BuildOption[string]{WithMaxConcurrency[string](5)})
+	assert.Equal(t, 5, o.run.maxConcurrency)
+	oZero := applyBuildOptions([]BuildOption[string]{WithMaxConcurrency[string](0)})
+	assert.Zero(t, oZero.run.maxConcurrency)
+}
+
+func TestApplyBuildOptions_WithMiddleware(t *testing.T) {
+	mw := func(ctx context.Context, state string, _ string, next NodeHandler[string]) (string, error) {
+		return next(ctx, state)
+	}
+	o := applyBuildOptions([]BuildOption[string]{WithMiddleware[string](mw)})
+	require.Len(t, o.middlewares, 1)
 }
 
 func TestOptions_CompileMaxSteps_Respected(t *testing.T) {
@@ -46,7 +54,7 @@ func TestOptions_CompileMaxSteps_Respected(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c")
-	graph, err := b.Compile(WithMaxSteps(2))
+	graph, err := b.Compile(WithMaxSteps[string](2))
 	require.NoError(t, err)
 	ctx := context.Background()
 	_, _, err = graph.Invoke(ctx, "")

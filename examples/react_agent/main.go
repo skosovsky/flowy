@@ -49,7 +49,7 @@ func main() {
 	b.SetEntryPoint("reason")
 	b.SetFinishPoint("finish")
 
-	graph, err := b.Compile(flowy.WithMaxSteps(25))
+	graph, err := b.Compile(flowy.WithMaxSteps[state](25))
 	if err != nil {
 		log.Fatal(err)
 	}
