@@ -141,8 +141,8 @@ func TestExportMermaid_CollidingNames(t *testing.T) {
 	assert.Equal(t, 2, strings.Count(out, "-->"))
 }
 
-// TestExportMermaid_WithInterruptPoints verifies Mermaid export for a graph with InterruptBefore/InterruptAfter (smoke).
-func TestExportMermaid_WithInterruptPoints(t *testing.T) {
+// TestExportMermaid_SimpleLinear verifies Mermaid export for a linear graph (smoke).
+func TestExportMermaid_SimpleLinear(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", noopNode)
 	b.AddNode("b", noopNode)
@@ -151,8 +151,6 @@ func TestExportMermaid_WithInterruptPoints(t *testing.T) {
 	b.AddEdge("b", "c")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c")
-	b.InterruptBefore("b")
-	b.InterruptAfter("a")
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	out := graph.ExportMermaid()

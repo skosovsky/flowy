@@ -5,83 +5,42 @@ import (
 	"time"
 )
 
-const defaultMaxSteps = 25
+const defaultMaxSteps = 1000
 
-// runConfig holds options for a single run (Invoke, Stream, or Resume).
-// Options can be set at Compile time (defaults) and overridden per call.
-type runConfig[T any] struct {
-	threadID       string
+// runConfig holds options for a run (set at Compile from BuildOption).
+type runConfig struct {
 	maxSteps       int
 	nodeTimeout    time.Duration
-	checkpointer   Checkpointer[T]
-	maxConcurrency int // max concurrent goroutines in fan-out; <= 0 means no limit
-	// Internal: set by runner for invocation middleware and Stream.
-	startNode   string          // entry point or resume node
-	resumeFirst bool            // skip interruptBefore on first step (Resume)
-	eventCh     chan<- Event[T] // stream channel; nil for Invoke/Resume
+	maxConcurrency int
 }
 
-// Option configures a run (Invoke, Stream, Resume) or compile defaults.
-type Option[T any] func(*runConfig[T])
+// BuildOption configures the graph at compile time.
+type BuildOption func(*runConfig)
 
-// WithThreadID sets the thread/session ID for checkpointing.
-func WithThreadID[T any](id string) Option[T] {
-	return func(c *runConfig[T]) {
-		c.threadID = id
-	}
-}
-
-// WithMaxSteps sets the maximum number of steps (prevents infinite loops).
-func WithMaxSteps[T any](n int) Option[T] {
-	return func(c *runConfig[T]) {
-		c.maxSteps = n
+// WithMaxSteps sets the maximum number of steps (prevents infinite loops). Default is 1000 if <= 0.
+func WithMaxSteps(limit int) BuildOption {
+	return func(c *runConfig) {
+		c.maxSteps = limit
 	}
 }
 
 // WithNodeTimeout sets a timeout for each node execution.
-func WithNodeTimeout[T any](d time.Duration) Option[T] {
-	return func(c *runConfig[T]) {
+func WithNodeTimeout(d time.Duration) BuildOption {
+	return func(c *runConfig) {
 		c.nodeTimeout = d
 	}
 }
 
-// WithCheckpointer sets the checkpointer for persistence (required for HITL).
-func WithCheckpointer[T any](cp Checkpointer[T]) Option[T] {
-	return func(c *runConfig[T]) {
-		c.checkpointer = cp
-	}
-}
-
-// WithMaxConcurrency sets the maximum number of goroutines that can run concurrently
-// during a fan-out (both static and dynamic). If n <= 0, there is no limit (default behavior).
-func WithMaxConcurrency[T any](n int) Option[T] {
-	return func(c *runConfig[T]) {
+// WithMaxConcurrency sets the maximum number of goroutines during a fan-out. If <= 0, no limit.
+func WithMaxConcurrency(n int) BuildOption {
+	return func(c *runConfig) {
 		c.maxConcurrency = n
 	}
 }
 
-// withStartNode sets the starting node (internal use by runner for Resume).
-func withStartNode[T any](name string) Option[T] {
-	return func(c *runConfig[T]) { c.startNode = name }
-}
-
-// withResumeFirst skips interruptBefore on the first step (internal use by runner for Resume).
-func withResumeFirst[T any](b bool) Option[T] {
-	return func(c *runConfig[T]) { c.resumeFirst = b }
-}
-
-// withEventCh sets the event channel for Stream (internal use by runner).
-func withEventCh[T any](ch chan<- Event[T]) Option[T] {
-	return func(c *runConfig[T]) { c.eventCh = ch }
-}
-
-// applyOptions merges default config with per-call options.
-// defaultCfg can be nil (zero runConfig used as base).
-func applyOptions[T any](defaultCfg *runConfig[T], opts []Option[T]) runConfig[T] {
-	var c runConfig[T]
-	if defaultCfg != nil {
-		c = *defaultCfg
-	}
+// applyBuildOptions returns runConfig from options; used in Compile.
+func applyBuildOptions(opts []BuildOption) runConfig {
+	c := runConfig{maxSteps: defaultMaxSteps}
 	for _, opt := range opts {
 		opt(&c)
 	}
@@ -91,9 +50,8 @@ func applyOptions[T any](defaultCfg *runConfig[T], opts []Option[T]) runConfig[T
 	return c
 }
 
-// nodeContextWithTimeout returns ctx unchanged, or a context with nodeTimeout if set.
-// When no timeout is set, the second return is a no-op cancel func.
-func nodeContextWithTimeout[T any](ctx context.Context, cfg *runConfig[T]) (context.Context, func()) {
+// nodeContextWithTimeout returns ctx with nodeTimeout if set.
+func nodeContextWithTimeout(ctx context.Context, cfg *runConfig) (context.Context, func()) {
 	if cfg.nodeTimeout > 0 {
 		return context.WithTimeout(ctx, cfg.nodeTimeout)
 	}

@@ -135,7 +135,7 @@ func TestBuilder_Compile_EdgeToFanOutSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, graph)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "start")
+	out, _, err := graph.Invoke(ctx, "start")
 	require.NoError(t, err)
 	assert.Contains(t, out, "start")
 }
@@ -211,30 +211,6 @@ func TestBuilder_Compile_FanOut_JoinNodeIsDynamicFanOutSource(t *testing.T) {
 	assert.Contains(t, err.Error(), "route")
 }
 
-func TestBuilder_Compile_InterruptBeforeUnknownNode(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	b.InterruptBefore("missing")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "interruptBefore")
-	assert.Contains(t, err.Error(), "not registered")
-}
-
-func TestBuilder_Compile_InterruptAfterUnknownNode(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	b.InterruptAfter("missing")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "interruptAfter")
-	assert.Contains(t, err.Error(), "not registered")
-}
-
 func TestBuilder_Compile_FinishPointNotRegistered(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", noopNode)
@@ -275,38 +251,6 @@ func TestBuilder_Compile_NilReducer(t *testing.T) {
 	_, err := b.Compile()
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "reducer must not be nil")
-}
-
-func TestBuilder_Compile_InterruptBefore_FanOutTarget(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
-	b.AddFanOut("start", []string{"db", "web"}, "merge")
-	b.SetEntryPoint("start")
-	b.SetFinishPoint("merge")
-	b.InterruptBefore("db")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "interruptBefore")
-	assert.Contains(t, err.Error(), "fan-out target")
-	assert.Contains(t, err.Error(), "db")
-}
-
-func TestBuilder_Compile_InterruptAfter_FanOutTarget(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
-	b.AddFanOut("start", []string{"db", "web"}, "merge")
-	b.SetEntryPoint("start")
-	b.SetFinishPoint("merge")
-	b.InterruptAfter("web")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "interruptAfter")
-	assert.Contains(t, err.Error(), "fan-out target")
-	assert.Contains(t, err.Error(), "web")
 }
 
 func TestBuilder_Compile_DuplicateNode(t *testing.T) {
@@ -383,7 +327,7 @@ func TestMiddleware_ExecutionOrder(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// First added middleware runs first: m1 then m2 then node.
 	assert.Equal(t, []string{"m1-in-a", "m2-in-a", "node-a", "m2-out-a", "m1-out-a", "m1-in-b", "m2-in-b", "node-b", "m2-out-b", "m1-out-b"}, order)

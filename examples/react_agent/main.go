@@ -49,13 +49,13 @@ func main() {
 	b.SetEntryPoint("reason")
 	b.SetFinishPoint("finish")
 
-	graph, err := b.Compile(flowy.WithMaxSteps[state](25))
+	graph, err := b.Compile(flowy.WithMaxSteps(25))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	initial := state{messages: []string{}, steps: 0}
-	final, err := graph.Invoke(ctx, initial)
+	final, _, err := graph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)
 	}

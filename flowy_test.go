@@ -22,11 +22,10 @@ func TestSentinelErrors_Is(t *testing.T) {
 		target error
 		want   bool
 	}{
-		{"ErrInterrupt", ErrInterrupt, ErrInterrupt, true},
+		{"ErrSuspend", ErrSuspend, ErrSuspend, true},
 		{"ErrMaxStepsExceeded", ErrMaxStepsExceeded, ErrMaxStepsExceeded, true},
-		{"ErrThreadNotFound", ErrThreadNotFound, ErrThreadNotFound, true},
-		{"wrapped ErrInterrupt", errWrap{err: ErrInterrupt}, ErrInterrupt, true},
-		{"different sentinels", ErrInterrupt, ErrMaxStepsExceeded, false},
+		{"wrapped ErrSuspend", errWrap{err: ErrSuspend}, ErrSuspend, true},
+		{"different sentinels", ErrSuspend, ErrMaxStepsExceeded, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -41,12 +40,10 @@ type errWrap struct{ err error }
 func (e errWrap) Error() string { return e.err.Error() }
 func (e errWrap) Unwrap() error { return e.err }
 
-func TestEvent_ZeroValue(t *testing.T) {
-	var e Event[int]
-	require.Empty(t, e.Type)
-	require.Empty(t, e.NodeName)
-	require.Zero(t, e.State)
-	require.NoError(t, e.Err)
+func TestStep_ZeroValue(t *testing.T) {
+	var s Step[int]
+	require.Zero(t, s.State)
+	require.Empty(t, s.NodeName)
 }
 
 func TestNode_Call(t *testing.T) {
@@ -82,7 +79,7 @@ func ExampleNewGraph() {
 	if err != nil {
 		return
 	}
-	out, _ := graph.Invoke(ctx, "world")
+	out, _, _ := graph.Invoke(ctx, "world")
 	fmt.Println(out)
 	// Output: hello world bye
 }
@@ -100,11 +97,11 @@ func ExampleGraph_Stream() {
 	if err != nil {
 		return
 	}
-	ch := graph.Stream(ctx, ".")
-	for e := range ch {
-		if e.Type == EventNodeEnd {
-			fmt.Println(e.NodeName, e.State)
+	for step, err := range graph.Stream(ctx, ".") {
+		if err != nil {
+			return
 		}
+		fmt.Println(step.NodeName, step.State)
 	}
 	// Output:
 	// a .a

@@ -3,11 +3,8 @@ package flowy_test
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"sync/atomic"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -18,232 +15,98 @@ import (
 
 func idReducer[T any](_, update T) T { return update }
 
-func TestInvoke_HITL_InterruptBefore_Resume(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
+// TestInvoke_HITL_ErrSuspend_Resume verifies v2 HITL: node returns ErrSuspend, caller persists state+checkpoint, Resume continues.
+func TestInvoke_HITL_ErrSuspend_Resume(t *testing.T) {
+	store := testutil.NewStore[string]()
 	b := flowy.NewGraph[string](idReducer[string])
 	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
-	b.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
-	b.AddEdge("process", "approve")
-	b.SetEntryPoint("process")
-	b.SetFinishPoint("approve")
-	b.InterruptBefore("approve")
-
-	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	state, err := graph.Invoke(ctx, "init")
-	require.Error(t, err)
-	require.ErrorIs(t, err, flowy.ErrInterrupt)
-	assert.Equal(t, "init_process", state)
-
-	final, err := graph.Resume(ctx, "tid1", "_delta")
-	require.NoError(t, err)
-	assert.Equal(t, "_delta_approve", final)
-}
-
-func TestInvoke_HITL_InterruptAfter_Resume(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
-	b.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
+	b.AddNode("approve", func(_ context.Context, _ string) (string, error) {
+		return "", flowy.ErrSuspend
+	})
 	b.AddNode("finish", func(_ context.Context, s string) (string, error) { return s + "_finish", nil })
 	b.AddEdge("process", "approve")
 	b.AddEdge("approve", "finish")
 	b.SetEntryPoint("process")
 	b.SetFinishPoint("finish")
-	b.InterruptAfter("process")
 
-	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
+	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	// First Invoke: process runs, then interrupt after it (checkpoint has state after process, next = approve)
-	state, err := graph.Invoke(ctx, "init")
+	state, cp, err := graph.Invoke(ctx, "init")
 	require.Error(t, err)
-	require.ErrorIs(t, err, flowy.ErrInterrupt)
+	require.ErrorIs(t, err, flowy.ErrSuspend)
 	assert.Equal(t, "init_process", state)
+	require.NotNil(t, cp)
+	assert.Equal(t, "approve", cp.NextNode)
 
-	// Resume: delta is merged with saved state via reducer; pass "init_process" so state stays and we continue to approve -> finish
-	final, err := graph.Resume(ctx, "tid1", "init_process")
+	require.NoError(t, store.Save(ctx, "tid1", state, cp))
+
+	// Resume: build same graph but approve now succeeds
+	b2 := flowy.NewGraph[string](idReducer[string])
+	b2.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
+	b2.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
+	b2.AddNode("finish", func(_ context.Context, s string) (string, error) { return s + "_finish", nil })
+	b2.AddEdge("process", "approve")
+	b2.AddEdge("approve", "finish")
+	b2.SetEntryPoint("process")
+	b2.SetFinishPoint("finish")
+	graph2, err := b2.Compile()
+	require.NoError(t, err)
+
+	loaded, cpLoaded, ok := store.Load(ctx, "tid1")
+	require.True(t, ok)
+	final, _, err := graph2.Resume(ctx, loaded, cpLoaded)
 	require.NoError(t, err)
 	assert.Equal(t, "init_process_approve_finish", final)
 }
 
-func TestResume_ThreadNotFound(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp))
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Resume(ctx, "nonexistent", "")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, flowy.ErrThreadNotFound)
-}
-
-func TestResume_EmptyThreadID(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp))
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Resume(ctx, "", "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "threadID")
-	assert.Contains(t, err.Error(), "empty")
-}
-
+// TestResume_StaleCheckpointNode ensures Resume returns an error when checkpoint references a missing node.
 func TestResume_StaleCheckpointNode(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	ctx := context.Background()
-	// Save a checkpoint pointing to a node that does not exist in the graph we will compile.
-	err := cp.Save(ctx, "tid1", flowy.Checkpoint[string]{State: "old", NodeName: "deleted_node"})
-	require.NoError(t, err)
-
 	b := flowy.NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp))
+	graph, err := b.Compile()
 	require.NoError(t, err)
-	_, err = graph.Resume(ctx, "tid1", "")
+	ctx := context.Background()
+
+	_, _, err = graph.Resume(ctx, "state", &flowy.Checkpoint{NextNode: "deleted_node"})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "checkpoint node")
+	assert.Contains(t, err.Error(), "checkpoint")
 	assert.Contains(t, err.Error(), "not found")
 	assert.Contains(t, err.Error(), "deleted_node")
 }
 
-// TestResume_EmptyCheckpointNodeName ensures Resume returns a clear error when the checkpoint has empty NodeName.
+// TestResume_EmptyCheckpointNodeName ensures Resume returns a clear error when checkpoint has empty NextNode.
 func TestResume_EmptyCheckpointNodeName(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	ctx := context.Background()
-	err := cp.Save(ctx, "tid1", flowy.Checkpoint[string]{State: "x", NodeName: ""})
-	require.NoError(t, err)
-
 	b := flowy.NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp))
+	graph, err := b.Compile()
 	require.NoError(t, err)
-	_, err = graph.Resume(ctx, "tid1", "")
+	ctx := context.Background()
+
+	_, _, err = graph.Resume(ctx, "x", &flowy.Checkpoint{NextNode: ""})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "empty")
-	assert.Contains(t, err.Error(), "NodeName")
+	assert.Contains(t, err.Error(), "NextNode")
 }
 
-// failingCheckpointer fails Save with a sentinel error; used to test EventError on checkpoint save failure.
-type failingCheckpointer[T any] struct{}
-
-func (failingCheckpointer[T]) Save(context.Context, string, flowy.Checkpoint[T]) error {
-	return errors.New("save failed")
-}
-func (failingCheckpointer[T]) Load(context.Context, string) (flowy.Checkpoint[T], error) {
-	var zero flowy.Checkpoint[T]
-	return zero, flowy.ErrThreadNotFound
-}
-
-// TestStream_SaveCheckpointError_EmitsEventError ensures that when checkpointer.Save fails at an interrupt point,
-// Stream emits EventError before returning (observability).
-func TestStream_SaveCheckpointError_EmitsEventError(t *testing.T) {
-	var cp failingCheckpointer[string]
+// TestResume_NilCheckpoint ensures Resume with nil checkpoint returns an error.
+func TestResume_NilCheckpoint(t *testing.T) {
 	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
-	b.AddEdge("a", "b")
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
 	b.SetEntryPoint("a")
-	b.SetFinishPoint("b")
-	b.InterruptBefore("b")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
-	require.NoError(t, err)
-	ctx := context.Background()
-	ch := graph.Stream(ctx, ".")
-	var gotErr *flowy.Event[string]
-	for e := range ch {
-		if e.Type == flowy.EventError {
-			gotErr = &e
-			break
-		}
-	}
-	require.NotNil(t, gotErr, "Stream must emit EventError when Save fails")
-	assert.Contains(t, gotErr.Err.Error(), "save checkpoint")
-	assert.Contains(t, gotErr.Err.Error(), "save failed")
-}
-
-// TestResume_MaxConcurrency verifies that WithMaxConcurrency is applied when execution continues via Resume into a fan-out.
-// We interrupt before the fan-out node so the first Invoke never runs the fan-out; Resume then runs from that node and runFanOut respects the limit.
-func TestResume_MaxConcurrency(t *testing.T) {
-	const limit = 2
-	var active, maxObserved atomic.Int32
-	concat := func(current, update string) string { return current + update }
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	b := flowy.NewGraph[string](concat)
-	for i := range 5 {
-		name := string(rune('a' + i))
-		b.AddNode(name, func(_ context.Context, s string) (string, error) {
-			active.Add(1)
-			defer active.Add(-1)
-			for {
-				c := active.Load()
-				m := maxObserved.Load()
-				if c <= m {
-					break
-				}
-				if maxObserved.CompareAndSwap(m, c) {
-					break
-				}
-			}
-			time.Sleep(20 * time.Millisecond)
-			return s + "[" + name + "]", nil
-		})
-	}
-	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
-	b.AddNode("pre", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.AddEdge("pre", "start")
-	b.AddFanOut("start", []string{"a", "b", "c", "d", "e"}, "merge")
-	b.SetEntryPoint("pre")
-	b.SetFinishPoint("merge")
-	b.InterruptBefore("pre")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
+	b.SetFinishPoint("a")
+	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Resume(ctx, "x", nil)
 	require.Error(t, err)
-	require.ErrorIs(t, err, flowy.ErrInterrupt)
-
-	final, err := graph.Resume(ctx, "tid1", "", flowy.WithMaxConcurrency[string](limit))
-	require.NoError(t, err)
-	assert.Contains(t, final, "[merge]")
-	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "Resume fan-out must respect WithMaxConcurrency")
-}
-
-// TestResume_WithNodeTimeout_Completes verifies Resume respects WithNodeTimeout (positive: node completes within timeout).
-func TestResume_WithNodeTimeout_Completes(t *testing.T) {
-	cp := testutil.NewInMemoryCheckpointer[string]()
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
-	b.AddEdge("a", "b")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("b")
-	b.InterruptBefore("b")
-	graph, err := b.Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID[string]("tid1"))
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "x")
-	require.Error(t, err)
-	require.ErrorIs(t, err, flowy.ErrInterrupt)
-	// Resume with node timeout; node b should complete within timeout.
-	final, err := graph.Resume(ctx, "tid1", "xa", flowy.WithNodeTimeout[string](5*time.Second))
-	require.NoError(t, err)
-	assert.Equal(t, "xab", final)
+	assert.Contains(t, err.Error(), "checkpoint")
 }
 
 // TestInvoke_Concurrent verifies that a compiled graph is safe for concurrent Invoke calls (run with -race).
@@ -263,7 +126,7 @@ func TestInvoke_Concurrent(t *testing.T) {
 	for i := range concurrency {
 		go func(seed string) {
 			defer func() { done <- struct{}{} }()
-			out, err := graph.Invoke(ctx, seed)
+			out, _, err := graph.Invoke(ctx, seed)
 			assert.NoError(t, err)
 			assert.Equal(t, seed+"ab", out)
 		}(fmt.Sprintf("x%d", i))

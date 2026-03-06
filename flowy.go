@@ -19,44 +19,21 @@ type Reducer[T any] func(current T, update T) T
 // It receives the node name and the next handler in the chain.
 type Middleware[T any] func(nodeName string, next Node[T]) Node[T]
 
-// InvocationHandler runs the graph (used internally; wrapped by InvocationMiddleware).
-type InvocationHandler[T any] func(ctx context.Context, state T, opts ...Option[T]) (T, error)
-
-// InvocationMiddleware wraps the entire graph execution (tracing, recovery, metrics).
-type InvocationMiddleware[T any] func(next InvocationHandler[T]) InvocationHandler[T]
-
 // DynamicRouter decides at runtime which nodes should be executed in parallel (dynamic fan-out).
-// Returned node names must be registered nodes; nodes run as dynamic targets do not support InterruptBefore/InterruptAfter.
+// Returned node names must be registered nodes.
 type DynamicRouter[T any] func(ctx context.Context, state T) ([]string, error)
 
-// EventType identifies the kind of stream event.
-type EventType string
-
-const (
-	// EventNodeStart is emitted before a node runs.
-	EventNodeStart EventType = "node_start"
-	// EventNodeEnd is emitted after a node completes successfully.
-	EventNodeEnd EventType = "node_end"
-	// EventInterrupt is emitted when execution is suspended (HITL).
-	EventInterrupt EventType = "interrupt"
-	// EventError is emitted when a node returns an error.
-	EventError EventType = "error"
-)
-
-// Event is a single item streamed during graph execution.
-type Event[T any] struct {
-	Type     EventType
-	NodeName string
-	State    T
-	Err      error
+// Step describes the graph state after one node execution, yielded by Stream and ResumeStream.
+// Each successful node run produces one Step; the iterator stops after an error or ErrSuspend.
+type Step[T any] struct {
+	State    T      // State after the node run
+	NodeName string // Name of the node that just completed
 }
 
 // Sentinel errors for flow control and validation.
 var (
-	// ErrInterrupt is returned when execution is suspended at an interrupt point (HITL).
-	ErrInterrupt = errors.New("flowy: interrupt")
+	// ErrSuspend is returned when a node suspends execution (e.g. human-in-the-loop). Invoke returns (state, checkpoint, ErrSuspend).
+	ErrSuspend = errors.New("flowy: suspend execution")
 	// ErrMaxStepsExceeded is returned when the step limit is reached (e.g. infinite loop).
 	ErrMaxStepsExceeded = errors.New("flowy: max steps exceeded")
-	// ErrThreadNotFound is returned by Resume when the threadID is not in the checkpointer.
-	ErrThreadNotFound = errors.New("flowy: thread not found")
 )

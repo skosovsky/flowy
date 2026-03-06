@@ -55,7 +55,7 @@ func main() {
 		fmt.Println()
 	})
 
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	wg.Wait()
 	if err != nil {
 		log.Fatal(err)

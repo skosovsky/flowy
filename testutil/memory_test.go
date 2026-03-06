@@ -16,41 +16,53 @@ func TestMain(m *testing.M) {
 	goleak.VerifyTestMain(m)
 }
 
-func TestInMemoryCheckpointer_SaveLoad(t *testing.T) {
-	cp := NewInMemoryCheckpointer[string]()
+func TestStore_SaveLoad(t *testing.T) {
+	s := NewStore[string]()
 	ctx := context.Background()
-	require.NoError(t, cp.Save(ctx, "tid1", flowy.Checkpoint[string]{State: "s1", NodeName: "n1"}))
-	require.NoError(t, cp.Save(ctx, "tid2", flowy.Checkpoint[string]{State: "s2", NodeName: "n2"}))
+	require.NoError(t, s.Save(ctx, "k1", "s1", &flowy.Checkpoint{NextNode: "n1"}))
+	require.NoError(t, s.Save(ctx, "k2", "s2", &flowy.Checkpoint{NextNode: "n2"}))
 
-	c1, err := cp.Load(ctx, "tid1")
-	require.NoError(t, err)
-	assert.Equal(t, "s1", c1.State)
-	assert.Equal(t, "n1", c1.NodeName)
+	state, cp, ok := s.Load(ctx, "k1")
+	require.True(t, ok)
+	assert.Equal(t, "s1", state)
+	require.NotNil(t, cp)
+	assert.Equal(t, "n1", cp.NextNode)
 
-	c2, err := cp.Load(ctx, "tid2")
-	require.NoError(t, err)
-	assert.Equal(t, "s2", c2.State)
+	state, cp, ok = s.Load(ctx, "k2")
+	require.True(t, ok)
+	assert.Equal(t, "s2", state)
+	require.NotNil(t, cp)
+	assert.Equal(t, "n2", cp.NextNode)
 }
 
-func TestInMemoryCheckpointer_LoadNotFound(t *testing.T) {
-	cp := NewInMemoryCheckpointer[string]()
+func TestStore_LoadNotFound(t *testing.T) {
+	s := NewStore[string]()
 	ctx := context.Background()
-	_, err := cp.Load(ctx, "missing")
-	require.Error(t, err)
-	assert.ErrorIs(t, err, flowy.ErrThreadNotFound)
+	_, _, ok := s.Load(ctx, "missing")
+	assert.False(t, ok)
 }
 
-func TestInMemoryCheckpointer_Concurrent(t *testing.T) {
+func TestStore_SaveNilCheckpoint(t *testing.T) {
+	s := NewStore[string]()
+	ctx := context.Background()
+	require.NoError(t, s.Save(ctx, "k", "state", nil))
+	state, cp, ok := s.Load(ctx, "k")
+	require.True(t, ok)
+	assert.Equal(t, "state", state)
+	assert.Nil(t, cp)
+}
+
+func TestStore_Concurrent(t *testing.T) {
 	t.Parallel()
-	cp := NewInMemoryCheckpointer[int]()
+	s := NewStore[int]()
 	ctx := context.Background()
 	var wg sync.WaitGroup
 	for i := range 10 {
 		wg.Add(1)
 		go func(j int) {
 			defer wg.Done()
-			_ = cp.Save(ctx, "key", flowy.Checkpoint[int]{State: j, NodeName: "n"})
-			_, _ = cp.Load(ctx, "key")
+			_ = s.Save(ctx, "key", j, &flowy.Checkpoint{NextNode: "n"})
+			_, _, _ = s.Load(ctx, "key")
 		}(i)
 	}
 	wg.Wait()

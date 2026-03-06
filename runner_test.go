@@ -25,7 +25,7 @@ func TestInvoke_Linear(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, ".")
+	out, _, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	assert.Equal(t, ".abc", out)
 }
@@ -44,7 +44,7 @@ func TestInvoke_MultipleFinishPoints(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, ".")
+	out, _, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	// Stops at first finish point reached (b).
 	assert.Equal(t, ".ab", out)
@@ -70,7 +70,7 @@ func TestInvoke_Conditional(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Router returns "b" when s == "_a", so path is a -> b -> end
 	assert.Equal(t, "_a_b", out)
@@ -86,10 +86,10 @@ func TestInvoke_MaxStepsExceeded(t *testing.T) {
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // never reached
 
-	graph, err := b.Compile(WithMaxSteps[string](3))
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMaxStepsExceeded)
 }
@@ -108,7 +108,7 @@ func TestInvoke_ConditionalEdgeError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "router failed")
@@ -128,7 +128,7 @@ func TestInvoke_ConditionalEdge_ReturnsEmpty(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "empty node name")
@@ -148,7 +148,7 @@ func TestInvoke_ConditionalEdge_ReturnsUnknown(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "unknown node")
@@ -167,7 +167,7 @@ func TestInvoke_NoOutgoingEdge(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no outgoing edge")
 	assert.Contains(t, err.Error(), "b")
@@ -186,7 +186,7 @@ func TestInvoke_NodeError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "node \"b\"")
 	assert.Contains(t, err.Error(), "b failed")
@@ -206,7 +206,7 @@ func TestInvoke_FanOut(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Fan-out applies reducer in targets order (db then web); merge returns delta only
 	assert.Equal(t, "[db][web][merge]", out)
@@ -243,9 +243,9 @@ func TestInvoke_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", targets, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
-	_, err = graph.Invoke(context.Background(), "", WithMaxConcurrency[string](limit))
+	_, _, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
 	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "observed concurrent goroutines must not exceed limit")
 }
@@ -282,14 +282,14 @@ func TestInvoke_DynamicFanOut_MaxConcurrency(t *testing.T) {
 	}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
-	_, err = graph.Invoke(context.Background(), "", WithMaxConcurrency[string](limit))
+	_, _, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
 	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "dynamic fan-out must respect max concurrency")
 }
 
-// TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset preserves default behavior (no limit).
+// TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset preserves default behavior (no limit when not set).
 func TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset(t *testing.T) {
 	concat := func(current, update string) string { return current + update }
 	b := NewGraph[string](concat)
@@ -302,17 +302,12 @@ func TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	// Without option: same result as before.
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
-	// With explicit zero: same.
-	out2, err2 := graph.Invoke(ctx, "", WithMaxConcurrency[string](0))
-	require.NoError(t, err2)
-	assert.Equal(t, "[db][web][merge]", out2)
 }
 
-func TestStream_Events(t *testing.T) {
+func TestStream_Steps(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
 	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
@@ -323,16 +318,15 @@ func TestStream_Events(t *testing.T) {
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	ch := graph.Stream(ctx, ".")
-	var events []EventType
-	for e := range ch {
-		events = append(events, e.Type)
+	var steps []string
+	for step, err := range graph.Stream(ctx, ".") {
+		require.NoError(t, err)
+		steps = append(steps, step.NodeName)
 	}
-	assert.Contains(t, events, EventNodeStart)
-	assert.Contains(t, events, EventNodeEnd)
+	assert.Equal(t, []string{"a", "b"}, steps)
 }
 
-// TestStream_FanOut_MaxConcurrency verifies Stream with WithMaxConcurrency limits concurrent fan-out and the event channel closes.
+// TestStream_FanOut_MaxConcurrency verifies Stream with WithMaxConcurrency (BuildOption) limits concurrent fan-out.
 func TestStream_FanOut_MaxConcurrency(t *testing.T) {
 	const limit = 2
 	var active, maxObserved atomic.Int32
@@ -361,20 +355,23 @@ func TestStream_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", []string{"a", "b", "c", "d", "e", "f"}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
 	ctx := context.Background()
-	ch := graph.Stream(ctx, "", WithMaxConcurrency[string](limit))
-	eventCount := 0
-	for range ch {
-		eventCount++
+	stepCount := 0
+	for step, err := range graph.Stream(ctx, "") {
+		if err != nil {
+			break
+		}
+		_ = step
+		stepCount++
 	}
-	assert.Positive(t, eventCount, "Stream must emit events")
+	assert.Positive(t, stepCount, "Stream must yield steps")
 	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "Stream fan-out must respect WithMaxConcurrency")
 }
 
-// TestStream_WithMaxSteps_EmitsEventError verifies Stream with WithMaxSteps emits EventError when limit is hit.
-func TestStream_WithMaxSteps_EmitsEventError(t *testing.T) {
+// TestStream_WithMaxSteps_YieldsError verifies Stream with WithMaxSteps yields error when limit is hit.
+func TestStream_WithMaxSteps_YieldsError(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
 	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
@@ -383,19 +380,18 @@ func TestStream_WithMaxSteps_EmitsEventError(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; graph loops a->b->a so we hit max steps
-	graph, err := b.Compile()
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
-	ch := graph.Stream(ctx, ".", WithMaxSteps[string](3))
-	var gotErr *Event[string]
-	for e := range ch {
-		if e.Type == EventError {
-			gotErr = &e
+	var streamErr error
+	for _, err := range graph.Stream(ctx, ".") {
+		if err != nil {
+			streamErr = err
 			break
 		}
 	}
-	require.NotNil(t, gotErr, "Stream must emit EventError when max steps exceeded")
-	assert.ErrorIs(t, gotErr.Err, ErrMaxStepsExceeded)
+	require.Error(t, streamErr, "Stream must yield error when max steps exceeded")
+	assert.ErrorIs(t, streamErr, ErrMaxStepsExceeded)
 }
 
 func TestInvoke_ContextCancelled(t *testing.T) {
@@ -415,7 +411,7 @@ func TestInvoke_ContextCancelled(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		cancel()
 	}()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled)
 }
@@ -431,14 +427,16 @@ func TestStream_ContextCancelled(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	ch := graph.Stream(ctx, ".")
-	for range ch {
-		_ = 0 // drain channel so it closes and test completes
+	for _, err := range graph.Stream(ctx, ".") {
+		if err != nil {
+			require.ErrorIs(t, err, context.Canceled)
+			return
+		}
 	}
 }
 
-// TestStream_ContextCancelled_EmitsErrorEvent ensures context cancellation is detected and EventError is attempted (same runFrom path as Invoke; Stream delivery is best-effort when ctx is already done).
-func TestStream_ContextCancelled_EmitsErrorEvent(t *testing.T) {
+// TestStream_ContextCancelled_YieldsError ensures context cancellation yields error from Stream.
+func TestStream_ContextCancelled_YieldsError(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
 	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
@@ -447,22 +445,22 @@ func TestStream_ContextCancelled_EmitsErrorEvent(t *testing.T) {
 	b.SetFinishPoint("b")
 	graph, err := b.Compile()
 	require.NoError(t, err)
-	// Invoke with already-cancelled context: runFrom hits ctx.Err() at loop start and returns wrapped context.Canceled (and attempts sendEvent for Stream)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = graph.Invoke(ctx, ".")
+	_, _, err = graph.Invoke(ctx, ".")
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled)
-	// Stream with cancelled context: channel must close (no hang); EventError may or may not be received (best-effort)
 	ctx2, cancel2 := context.WithCancel(context.Background())
 	cancel2()
-	ch := graph.Stream(ctx2, ".")
-	for range ch {
-		_ = 0 // drain channel so it closes and test completes
+	var streamErr error
+	for _, err := range graph.Stream(ctx2, ".") {
+		streamErr = err
+		break
 	}
+	require.ErrorIs(t, streamErr, context.Canceled)
 }
 
-func TestStream_MaxStepsExceeded_Event(t *testing.T) {
+func TestStream_MaxStepsExceeded_YieldsError(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
 	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
@@ -471,19 +469,18 @@ func TestStream_MaxStepsExceeded_Event(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; loop a->b->a until max steps
-	graph, err := b.Compile(WithMaxSteps[string](3))
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
-	ch := graph.Stream(ctx, ".")
-	var gotErr *Event[string]
-	for e := range ch {
-		if e.Type == EventError {
-			gotErr = &e
+	var streamErr error
+	for _, err := range graph.Stream(ctx, ".") {
+		if err != nil {
+			streamErr = err
 			break
 		}
 	}
-	require.NotNil(t, gotErr)
-	assert.ErrorIs(t, gotErr.Err, ErrMaxStepsExceeded)
+	require.Error(t, streamErr)
+	assert.ErrorIs(t, streamErr, ErrMaxStepsExceeded)
 }
 
 func TestInvoke_NodeTimeout(t *testing.T) {
@@ -498,17 +495,17 @@ func TestInvoke_NodeTimeout(t *testing.T) {
 	})
 	b.SetEntryPoint("slow")
 	b.SetFinishPoint("slow")
-	graph, err := b.Compile(WithNodeTimeout[string](10 * time.Millisecond))
+	graph, err := b.Compile(WithNodeTimeout(10 * time.Millisecond))
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
 
-// TestStream_ContextCancelled_NoGoroutineLeak ensures cancelling context without draining the channel
-// does not leave a goroutine leak (sendEvent respects ctx.Done()).
-func TestStream_ContextCancelled_NoGoroutineLeak(t *testing.T) {
+// TestStream_ContextCancelled_YieldsImmediately ensures that with already-cancelled context
+// the iterator yields ctx.Err() immediately (v2: no background channel goroutine; execution is synchronous in caller).
+func TestStream_ContextCancelled_YieldsImmediately(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
 	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
@@ -518,10 +515,14 @@ func TestStream_ContextCancelled_NoGoroutineLeak(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
-	cancel() // cancel immediately so Stream goroutine exits on first sendEvent
-	ch := graph.Stream(ctx, ".")
-	// Do not drain ch; goroutine should still exit due to ctx.Done() in sendEvent
-	_ = ch
+	cancel()
+	var gotErr error
+	for _, err := range graph.Stream(ctx, ".") {
+		gotErr = err
+		break
+	}
+	require.Error(t, gotErr)
+	assert.ErrorIs(t, gotErr, context.Canceled)
 }
 
 // TestInvoke_FanOut_Error_NoGoroutineLeak ensures fan-out with one failing target does not leak goroutines.
@@ -536,7 +537,7 @@ func TestInvoke_FanOut_Error_NoGoroutineLeak(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 }
 
@@ -551,24 +552,22 @@ func TestInvoke_FanOut_ErrorIncludesTargetName(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fail", "error should include failing target name")
 	assert.Contains(t, err.Error(), "my error")
 }
 
-// TestInvoke_InterruptAfter_FinishPoint ensures a node that is both finish point and interruptAfter
-// completes successfully (finish takes precedence; no resolveNext on terminal node).
-func TestInvoke_InterruptAfter_FinishPoint(t *testing.T) {
+// TestInvoke_FinishPoint_SingleNode ensures a single-node graph completes successfully.
+func TestInvoke_FinishPoint_SingleNode(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("end", func(_ context.Context, s string) (string, error) { return s + "_done", nil })
 	b.SetEntryPoint("end")
 	b.SetFinishPoint("end")
-	b.InterruptAfter("end")
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "x")
+	out, _, err := graph.Invoke(ctx, "x")
 	require.NoError(t, err)
 	assert.Equal(t, "x_done", out)
 }
@@ -587,9 +586,47 @@ func TestAsNode_Composition(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, ".")
+	out, _, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	assert.Equal(t, ".x", out)
+}
+
+func TestSubgraphNode_ParentStateUpdated(t *testing.T) {
+	type SubState struct{ Value string }
+	type ParentState struct {
+		Prefix string
+		Sub    SubState
+	}
+	subReducer := func(_, update SubState) SubState { return update }
+	sub, err := NewGraph[SubState](subReducer).
+		AddNode("n", func(_ context.Context, s SubState) (SubState, error) {
+			return SubState{Value: s.Value + "_sub"}, nil
+		}).
+		SetEntryPoint("n").
+		SetFinishPoint("n").
+		Compile()
+	require.NoError(t, err)
+
+	mapIn := func(p ParentState) SubState { return p.Sub }
+	mapOut := func(p ParentState, s SubState) ParentState {
+		p.Sub = s
+		return p
+	}
+
+	parentReducer := func(_, update ParentState) ParentState { return update }
+	b := NewGraph[ParentState](parentReducer)
+	b.AddNode("sub", SubgraphNode(sub, mapIn, mapOut))
+	b.SetEntryPoint("sub")
+	b.SetFinishPoint("sub")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	initial := ParentState{Prefix: "p", Sub: SubState{Value: "v"}}
+	final, _, err := graph.Invoke(ctx, initial)
+	require.NoError(t, err)
+	assert.Equal(t, "p", final.Prefix)
+	assert.Equal(t, "v_sub", final.Sub.Value)
 }
 
 func TestInvoke_DynamicFanOut_Success(t *testing.T) {
@@ -606,7 +643,7 @@ func TestInvoke_DynamicFanOut_Success(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
 }
@@ -622,7 +659,7 @@ func TestInvoke_DynamicFanOut_EmptyTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "x")
+	out, _, err := graph.Invoke(ctx, "x")
 	require.NoError(t, err)
 	assert.Equal(t, "x_merge", out)
 }
@@ -638,7 +675,7 @@ func TestInvoke_DynamicFanOut_RouterError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dynamic fan-out router")
 	assert.Contains(t, err.Error(), "router failed")
@@ -655,7 +692,7 @@ func TestInvoke_DynamicFanOut_UnknownTarget(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fan-out target node")
 	assert.Contains(t, err.Error(), "nonexistent")
@@ -678,7 +715,7 @@ func TestInvoke_DynamicFanOut_MixedValidInvalid(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
+	_, _, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fan-out target node")
 	assert.Contains(t, err.Error(), "nonexistent")
@@ -701,32 +738,10 @@ func TestInvoke_DynamicFanOut_DuplicateTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Each target runs once per occurrence: db twice, web once, then merge.
 	assert.Equal(t, "[db][db][web][merge]", out)
-}
-
-// TestInvoke_DynamicFanOut_InterruptOnTarget ensures runtime error when router returns
-// a node that has InterruptBefore or InterruptAfter (not supported on fan-out targets).
-func TestInvoke_DynamicFanOut_InterruptOnTarget(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("merge", noopNode)
-	b.InterruptBefore("db")
-	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) {
-		return []string{"db"}, nil
-	}, "merge")
-	b.SetEntryPoint("route")
-	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "interruptBefore")
-	assert.Contains(t, err.Error(), "fan-out target")
-	assert.Contains(t, err.Error(), "db")
 }
 
 // TestMiddleware_DynamicFanOutTargets verifies middlewares wrap nodes executed as dynamic fan-out targets.
@@ -768,7 +783,7 @@ func TestMiddleware_DynamicFanOutTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
+	out, _, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
 	assert.Contains(t, order, "mw-in-db")
@@ -790,17 +805,11 @@ func TestStream_DynamicFanOut_Events(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	ch := graph.Stream(ctx, "")
-	var types []EventType
 	var nodeNames []string
-	for e := range ch {
-		types = append(types, e.Type)
-		if e.NodeName != "" {
-			nodeNames = append(nodeNames, e.NodeName)
-		}
+	for step, err := range graph.Stream(ctx, "") {
+		require.NoError(t, err)
+		nodeNames = append(nodeNames, step.NodeName)
 	}
-	assert.Contains(t, types, EventNodeStart)
-	assert.Contains(t, types, EventNodeEnd)
 	assert.Contains(t, nodeNames, "route")
 	assert.Contains(t, nodeNames, "merge")
 }
@@ -814,203 +823,56 @@ func TestStream_DynamicFanOut_EmptyTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	ch := graph.Stream(ctx, "x")
-	var types []EventType
-	for e := range ch {
-		types = append(types, e.Type)
-	}
-	assert.Contains(t, types, EventNodeStart)
-	assert.Contains(t, types, EventNodeEnd)
-}
-
-// TestInvocationMiddleware_ChainOrder verifies invocation middlewares are called in FIFO order (first added = outermost).
-func TestInvocationMiddleware_ChainOrder(t *testing.T) {
-	var order []string
-	var mu sync.Mutex
-	m1 := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			mu.Lock()
-			order = append(order, "m1-before")
-			mu.Unlock()
-			out, err := next(ctx, state, opts...)
-			mu.Lock()
-			order = append(order, "m1-after")
-			mu.Unlock()
-			return out, err
-		}
-	}
-	m2 := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			mu.Lock()
-			order = append(order, "m2-before")
-			mu.Unlock()
-			out, err := next(ctx, state, opts...)
-			mu.Lock()
-			order = append(order, "m2-after")
-			mu.Unlock()
-			return out, err
-		}
-	}
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
-	b.AddEdge("a", "b")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("b")
-	b.UseInvocation(m1, m2)
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "")
-	require.NoError(t, err)
-	assert.Equal(t, "ab", out)
-	mu.Lock()
-	ord := append([]string(nil), order...)
-	mu.Unlock()
-	assert.Equal(t, []string{"m1-before", "m2-before", "m2-after", "m1-after"}, ord)
-}
-
-// TestInvocationMiddleware_NodeErrorPassThrough verifies node errors pass through the middleware chain.
-func TestInvocationMiddleware_NodeErrorPassThrough(t *testing.T) {
-	nodeErr := errors.New("node failed")
-	var seenErr error
-	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			out, err := next(ctx, state, opts...)
-			seenErr = err
-			return out, err
-		}
-	}
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddNode("fail", func(_ context.Context, _ string) (string, error) { return "", nodeErr })
-	b.AddEdge("a", "fail")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("fail")
-	b.UseInvocation(mw)
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "")
-	require.Error(t, err)
-	require.ErrorIs(t, err, nodeErr)
-	assert.ErrorIs(t, seenErr, nodeErr)
-}
-
-// TestInvocationMiddleware_SystemErrorPassThrough verifies flowy system errors (e.g. ErrMaxStepsExceeded) are visible to middleware.
-func TestInvocationMiddleware_SystemErrorPassThrough(t *testing.T) {
-	var seenErr error
-	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			out, err := next(ctx, state, opts...)
-			seenErr = err
-			return out, err
-		}
-	}
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
-	b.AddNode("c", func(_ context.Context, s string) (string, error) { return s + "c", nil })
-	b.AddEdge("a", "b")
-	b.AddEdge("b", "c")
-	b.AddEdge("c", "a")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("c")
-	b.UseInvocation(mw)
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, err = graph.Invoke(ctx, "", WithMaxSteps[string](2))
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrMaxStepsExceeded)
-	assert.ErrorIs(t, seenErr, ErrMaxStepsExceeded)
-}
-
-// TestInvocationMiddleware_Stream verifies Stream runs through invocation middleware and events are still emitted.
-func TestInvocationMiddleware_Stream(t *testing.T) {
-	var invoked int32
-	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			atomic.StoreInt32(&invoked, 1)
-			return next(ctx, state, opts...)
-		}
-	}
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddEdge("a", "a")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	b.UseInvocation(mw)
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-	ch := graph.Stream(ctx, "", WithMaxSteps[string](3))
 	var count int
-	for range ch {
+	for _, err := range graph.Stream(ctx, "x") {
+		require.NoError(t, err)
 		count++
 	}
 	assert.Positive(t, count)
-	assert.Equal(t, int32(1), atomic.LoadInt32(&invoked))
 }
 
-// memCheckpointer is an in-memory Checkpointer for tests that need Resume (avoids importing testutil from package flowy).
-type memCheckpointer[T any] struct {
-	mu   sync.Mutex
-	data map[string]Checkpoint[T]
+// TestInvoke_ErrSuspend verifies a node returning ErrSuspend causes Invoke to return (state, checkpoint, ErrSuspend).
+func TestInvoke_ErrSuspend(t *testing.T) {
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
+	b.AddNode("approve", func(_ context.Context, _ string) (string, error) { return "", ErrSuspend })
+	b.AddEdge("process", "approve")
+	b.SetEntryPoint("process")
+	b.SetFinishPoint("approve")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx := context.Background()
+	state, cp, err := graph.Invoke(ctx, "init")
+	require.Error(t, err)
+	require.ErrorIs(t, err, ErrSuspend)
+	assert.Equal(t, "init_process", state)
+	require.NotNil(t, cp)
+	assert.Equal(t, "approve", cp.NextNode)
 }
 
-func newMemCheckpointer[T any]() *memCheckpointer[T] {
-	return &memCheckpointer[T]{data: make(map[string]Checkpoint[T])}
-}
-
-func (c *memCheckpointer[T]) Save(_ context.Context, threadID string, cp Checkpoint[T]) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.data[threadID] = cp
-	return nil
-}
-
-func (c *memCheckpointer[T]) Load(_ context.Context, threadID string) (Checkpoint[T], error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	cp, ok := c.data[threadID]
-	if !ok {
-		var zero Checkpoint[T]
-		return zero, ErrThreadNotFound
-	}
-	return cp, nil
-}
-
-// TestInvocationMiddleware_Resume verifies Resume runs through invocation middleware (Invoke and Resume both hit the chain).
-func TestInvocationMiddleware_Resume(t *testing.T) {
-	cp := newMemCheckpointer[string]()
-	var invokeCount int32
-	mw := func(next InvocationHandler[string]) InvocationHandler[string] {
-		return func(ctx context.Context, state string, opts ...Option[string]) (string, error) {
-			atomic.AddInt32(&invokeCount, 1)
-			return next(ctx, state, opts...)
-		}
-	}
+// TestResume_AfterErrSuspend verifies Resume(ctx, state, cp) continues from cp.NextNode.
+func TestResume_AfterErrSuspend(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
 	b.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
 	b.AddEdge("process", "approve")
 	b.SetEntryPoint("process")
 	b.SetFinishPoint("approve")
-	b.InterruptBefore("approve")
-	b.UseInvocation(mw)
-	graph, err := b.Compile(WithCheckpointer(cp), WithThreadID[string]("tid1"))
+	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-
-	state, err := graph.Invoke(ctx, "init")
-	require.Error(t, err)
-	require.ErrorIs(t, err, ErrInterrupt)
+	bSuspend := NewGraph[string](idReducer[string])
+	bSuspend.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
+	bSuspend.AddNode("approve", func(_ context.Context, _ string) (string, error) { return "", ErrSuspend })
+	bSuspend.AddEdge("process", "approve")
+	bSuspend.SetEntryPoint("process")
+	bSuspend.SetFinishPoint("approve")
+	graphSuspend, _ := bSuspend.Compile()
+	state, cp, err := graphSuspend.Invoke(ctx, "init")
+	require.ErrorIs(t, err, ErrSuspend)
 	assert.Equal(t, "init_process", state)
-	assert.Equal(t, int32(1), atomic.LoadInt32(&invokeCount), "middleware should run once for Invoke")
-
-	final, err := graph.Resume(ctx, "tid1", "_delta")
+	require.NotNil(t, cp)
+	final, _, err := graph.Resume(ctx, state, cp)
 	require.NoError(t, err)
-	assert.Equal(t, "_delta_approve", final)
-	assert.Equal(t, int32(2), atomic.LoadInt32(&invokeCount), "middleware should run again for Resume")
+	assert.Equal(t, "init_process_approve", final)
 }

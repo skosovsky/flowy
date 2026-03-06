@@ -1,7 +1,6 @@
 package flowy
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -21,18 +20,15 @@ type dynamicFanOutDef[T any] struct {
 
 // GraphBuilder builds a graph before compilation. Fluent API.
 type GraphBuilder[T any] struct {
-	reducer               Reducer[T]
-	nodes                 map[string]Node[T]
-	edges                 map[string]string
-	conditionalEdges      map[string]ConditionalEdge[T]
-	fanOuts               map[string]*fanOutDef
-	dynamicFanOuts        map[string]*dynamicFanOutDef[T]
-	middlewares           []Middleware[T]
-	invocationMiddlewares []InvocationMiddleware[T]
-	entryPoint            string
-	finishPoints          map[string]bool
-	interruptBefore       map[string]bool
-	interruptAfter        map[string]bool
+	reducer          Reducer[T]
+	nodes            map[string]Node[T]
+	edges            map[string]string
+	conditionalEdges map[string]ConditionalEdge[T]
+	fanOuts          map[string]*fanOutDef
+	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
+	middlewares      []Middleware[T]
+	entryPoint       string
+	finishPoints     map[string]bool
 	// overwritten* track keys that were re-registered (overwrite); Compile reports them as errors.
 	overwrittenNodes             map[string]bool
 	overwrittenEdgeFrom          map[string]bool
@@ -51,8 +47,6 @@ func NewGraph[T any](reducer Reducer[T]) *GraphBuilder[T] {
 		fanOuts:                      make(map[string]*fanOutDef),
 		dynamicFanOuts:               make(map[string]*dynamicFanOutDef[T]),
 		finishPoints:                 make(map[string]bool),
-		interruptBefore:              make(map[string]bool),
-		interruptAfter:               make(map[string]bool),
 		overwrittenNodes:             make(map[string]bool),
 		overwrittenEdgeFrom:          make(map[string]bool),
 		overwrittenConditionalFrom:   make(map[string]bool),
@@ -108,17 +102,9 @@ func (b *GraphBuilder[T]) Use(mw ...Middleware[T]) *GraphBuilder[T] {
 	return b
 }
 
-// UseInvocation adds middlewares that wrap the entire graph execution (Invoke, Resume, Stream).
-// First registered runs first (outermost in the chain). Optional; zero cost if never called.
-func (b *GraphBuilder[T]) UseInvocation(mw ...InvocationMiddleware[T]) *GraphBuilder[T] {
-	b.invocationMiddlewares = append(b.invocationMiddlewares, mw...)
-	return b
-}
-
 // AddDynamicFanOut sets up dynamic parallel execution: when routing reaches 'from',
 // the router is called to get target node names at runtime; those nodes run in parallel,
 // then results are reduced and joinNode runs. joinNode must be a registered node (AddNode).
-// Nodes executed as dynamic targets do not support InterruptBefore/InterruptAfter.
 // 'from' is a routing label, not an executable node.
 func (b *GraphBuilder[T]) AddDynamicFanOut(from string, router DynamicRouter[T], joinNode string) *GraphBuilder[T] {
 	if _, exists := b.dynamicFanOuts[from]; exists {
@@ -140,24 +126,8 @@ func (b *GraphBuilder[T]) SetFinishPoint(name string) *GraphBuilder[T] {
 	return b
 }
 
-// InterruptBefore marks a node to suspend execution before running it (HITL).
-// Interrupt is only triggered when both Checkpointer and ThreadID are configured at run time.
-// Without them, the interrupt point is silently skipped.
-func (b *GraphBuilder[T]) InterruptBefore(name string) *GraphBuilder[T] {
-	b.interruptBefore[name] = true
-	return b
-}
-
-// InterruptAfter marks a node to suspend execution after running it (HITL).
-// Interrupt is only triggered when both Checkpointer and ThreadID are configured at run time.
-// Without them, the interrupt point is silently skipped.
-func (b *GraphBuilder[T]) InterruptAfter(name string) *GraphBuilder[T] {
-	b.interruptAfter[name] = true
-	return b
-}
-
-// Compile validates the graph and returns an immutable Graph. Options set default run config.
-func (b *GraphBuilder[T]) Compile(opts ...Option[T]) (*Graph[T], error) {
+// Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps).
+func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 	var errs []error
 
 	for name := range b.overwrittenNodes {
@@ -306,28 +276,6 @@ func (b *GraphBuilder[T]) Compile(opts ...Option[T]) (*Graph[T], error) {
 		}
 	}
 
-	// InterruptBefore/After must reference registered nodes and cannot be fan-out targets (runFanOut does not check interrupts).
-	fanOutTargets := make(map[string]string) // target name -> fan-out source name
-	for foName, fo := range b.fanOuts {
-		for _, t := range fo.targets {
-			fanOutTargets[t] = foName
-		}
-	}
-	for name := range b.interruptBefore {
-		if _, ok := b.nodes[name]; !ok {
-			errs = append(errs, fmt.Errorf("flowy: interruptBefore node %q not registered", name))
-		} else if foSource, isTarget := fanOutTargets[name]; isTarget {
-			errs = append(errs, fmt.Errorf("flowy: interruptBefore on fan-out target %q (fan-out %q) is not supported", name, foSource))
-		}
-	}
-	for name := range b.interruptAfter {
-		if _, ok := b.nodes[name]; !ok {
-			errs = append(errs, fmt.Errorf("flowy: interruptAfter node %q not registered", name))
-		} else if foSource, isTarget := fanOutTargets[name]; isTarget {
-			errs = append(errs, fmt.Errorf("flowy: interruptAfter on fan-out target %q (fan-out %q) is not supported", name, foSource))
-		}
-	}
-
 	// Finish points must reference registered nodes
 	for name := range b.finishPoints {
 		if _, ok := b.nodes[name]; !ok {
@@ -366,7 +314,7 @@ func (b *GraphBuilder[T]) Compile(opts ...Option[T]) (*Graph[T], error) {
 		compiledNodes[name] = wrapped
 	}
 
-	cfg := applyOptions[T](nil, opts)
+	cfg := applyBuildOptions(opts)
 	g := &Graph[T]{
 		nodes:            compiledNodes,
 		edges:            maps.Clone(b.edges),
@@ -375,26 +323,9 @@ func (b *GraphBuilder[T]) Compile(opts ...Option[T]) (*Graph[T], error) {
 		dynamicFanOuts:   copyDynamicFanOuts(b.dynamicFanOuts),
 		entryPoint:       b.entryPoint,
 		finishPoints:     maps.Clone(b.finishPoints),
-		interruptBefore:  maps.Clone(b.interruptBefore),
-		interruptAfter:   maps.Clone(b.interruptAfter),
 		reducer:          b.reducer,
 		defaults:         cfg,
 	}
-	g.defaults.startNode = b.entryPoint
-	g.defaults.resumeFirst = false
-
-	if len(b.invocationMiddlewares) > 0 {
-		core := func(ctx context.Context, state T, opts ...Option[T]) (T, error) {
-			c := applyOptions(&g.defaults, opts)
-			return g.runFrom(ctx, state, c.startNode, c, c.resumeFirst)
-		}
-		handler := InvocationHandler[T](core)
-		for i := len(b.invocationMiddlewares) - 1; i >= 0; i-- {
-			handler = b.invocationMiddlewares[i](handler)
-		}
-		g.invocationHandler = handler
-	}
-
 	return g, nil
 }
 
