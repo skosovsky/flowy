@@ -230,6 +230,24 @@ b.AddNode("append", func(ctx context.Context, s State) (StateUpdate, error) {
 })
 ```
 
+## Cost Optimization with Semantic Caching
+
+Using a semantic cache (e.g. ragy/cache with pgvector + embedder) at the **start** of the graph lets you skip expensive LLM and tool calls when a similar query was already answered. You can cut token cost by up to ~90% on frequent questions (FAQ) without changing the agent logic.
+
+Pattern: add a **cache node** as the entry point, then a **conditional edge** that routes to a format/finish node on cache hit, or to the LLM path on miss. After the LLM path, a **save_cache** node writes the new response for future hits.
+
+Below is the actual output of `graph.ExportMermaid()` for the semantic cache example (conditional edges appear as `__cond_*` placeholders):
+
+```mermaid
+flowchart TD
+  save_cache_node --> format_response_node
+  tools_node --> llm_node
+  cache_node -->|conditional| __cond_cache_node
+  llm_node -->|conditional| __cond_llm_node
+```
+
+See the [semantic_cache_agent](examples/semantic_cache_agent/) example for a full typed implementation with a stub cache and state contract.
+
 ## Development
 
 ```bash
