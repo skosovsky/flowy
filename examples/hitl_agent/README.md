@@ -1,14 +1,17 @@
 # Human-in-the-Loop (HITL)
 
-This example demonstrates **interrupt → checkpoint → resume**: the graph runs until it hits an interrupt point, then stops and waits for external input before continuing.
+This example shows middleware-based pause/resume.
 
 ## Flow
 
-1. **process** — runs and updates state.
-2. **approve** — should run only after a human approves. We call `InterruptBefore("approve")` so execution stops *before* running `approve`.
-3. On the first `Invoke`, the runner saves a checkpoint (state + next node name), then returns `ErrInterrupt`. The app can show a UI or wait for an API call.
-4. When the human responds, the app calls `Resume(ctx, threadID, delta)`. The `delta` is merged with the saved state via the reducer; execution continues from the saved node (here, `approve`).
+1. `process` runs normally and updates state.
+2. A middleware intercepts the `approve` node before it executes.
+3. The middleware saves `(state, meta.SuspendTarget)` into external storage and returns `ErrSuspend`.
+4. Later, the application loads the saved state and resume node, then calls `Resume(ctx, state, "approve")`.
+5. The graph continues from `approve` and finishes normally.
 
-## Checkpointer and thread ID
+## Important point
 
-HITL requires a **checkpointer** (Save/Load by threadID) and a **thread ID** so multiple sessions can have separate checkpoints. This example uses `testutil.NewInMemoryCheckpointer[string]()` for simplicity; in production you would use a database or other persistent store implementing `flowy.Checkpointer[T]`. Pass them at compile time: `Compile(flowy.WithCheckpointer(cp), flowy.WithThreadID("session_1"))`.
+`flowy` does not have a built-in checkpointer. The persistence layer is owned by the application. In this example the application uses `testutil.Store`, but in production this would usually be a database or another durable store.
+
+This is the safe suspend pattern: pause on a sequential executable node. `ErrSuspend` is not supported inside fan-out branch execution.

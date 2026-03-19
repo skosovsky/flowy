@@ -2,17 +2,18 @@
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/skosovsky/flowy.svg)](https://pkg.go.dev/github.com/skosovsky/flowy)
 
-**TL;DR** — flowy is a library for building reliable, stateful AI agents and workflows in Go as directed graphs. It supports multi-agent flows, Suspend/Resume (HITL), state streaming via iterators, and Mermaid diagram export.
+`flowy` is a Go library for building reliable, stateful AI agents and workflows as directed graphs. It gives you typed state, conditional routing, fan-out/fan-in, middleware-based cross-cutting concerns, iterator streaming, and graph composition.
 
 ## Features
 
-- **Generics** — strictly typed state `T`, no `interface{}` or `map[string]any`
-- **Conditional edges** — routing based on state (e.g. LLM decides next step)
-- **Fan-out / fan-in** — parallel execution with reducer-based merge (static `AddFanOut` or dynamic `AddDynamicFanOut` at runtime)
-- **Middlewares** — wrap nodes for logging, tracing, metrics without touching business logic
-- **Suspend / Resume** — a node returns `ErrSuspend`; caller persists state and `Checkpoint`; `Resume(ctx, state, cp)` continues
-- **State streaming** — `Stream(ctx, state)` returns `iter.Seq2[Step[T], error]` (Go 1.23+); consume with `for step, err := range graph.Stream(...)`
-- **Composition** — use a graph as a node (`AsNode()` for same state type, or `SubgraphNode` with `mapIn`/`mapOut` for nested state)
+- Strictly typed state with generics
+- Conditional edges for state-driven routing
+- Static and dynamic fan-out with reducer-based merge
+- Global and per-node middlewares
+- Suspend/resume with `ErrSuspend` and `Resume(ctx, state, startNode)`
+- Step streaming via `iter.Seq2`
+- Mermaid export for graph visualization
+- Graph composition with `AsNode()` and `SubgraphNode(...)`
 
 ## Requirements
 
@@ -24,238 +25,316 @@
 go get github.com/skosovsky/flowy
 ```
 
-## Quick start
-
-Minimal linear graph: state is a string, two nodes append to it, then run.
+## Quick Start
 
 ```go
 package main
 
 import (
-    "context"
-    "github.com/skosovsky/flowy"
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/skosovsky/flowy"
 )
 
 func main() {
-    reducer := func(_, update string) string { return update }
-    b := flowy.NewGraph[string](reducer)
-    b.AddNode("a", func(ctx context.Context, s string) (string, error) { return s + "a", nil })
-    b.AddNode("b", func(ctx context.Context, s string) (string, error) { return s + "b", nil })
-    b.AddEdge("a", "b")
-    b.SetEntryPoint("a")
-    b.SetFinishPoint("b")
+	reducer := func(_, update string) string { return update }
 
-    graph, err := b.Compile()
-    if err != nil {
-        panic(err)
-    }
-    ctx := context.Background()
-    out, _, err := graph.Invoke(ctx, "")
-    if err != nil {
-        panic(err)
-    }
-    // out == "ab"
+	b := flowy.NewGraph[string](reducer)
+	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
+	b.AddNode("b", func(_ context.Context, s string) (string, error) { return s + "b", nil })
+	b.AddEdge("a", "b")
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("b")
+
+	graph, err := b.Compile()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	out, err := graph.Invoke(context.Background(), "")
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fmt.Println(out)
 }
 ```
 
-## State Management Patterns
+## Key Concepts
 
-The `Reducer` in flowy has a simple signature: `func(current, update T) T`. How you implement it depends on the complexity of your state.
+### State and Reducer
 
-### 1. Simple State (Full Replace)
-
-If your state is a simple primitive (like a `string` or `int`), your nodes can just return the new absolute value, and your reducer simply returns the update:
+Each node returns an update of type `T`, and the reducer merges that update into the current state:
 
 ```go
-func reducer(current, update string) string { return update }
+type Reducer[T any] func(current T, update T) T
 ```
 
-### 2. Complex State (Delta Updates / Merge) — Recommended
-
-For real-world agents, your state will likely be a complex struct containing chat history, token counters, and pending tool calls. **Do not return a full copy of the state from your nodes.** This often leads to bugs where one node accidentally overwrites another's data.
-
-Instead, nodes should return **only the fields that changed (a delta)**. The reducer is then responsible for safely merging these changes into the current state.
-
-**Example of a Merge Reducer:**
-
-```go
-type Message struct{ Text string }
-type ToolCall struct{ Name string }
-
-type AgentState struct {
-    Messages    []Message
-    ToolCalls   []ToolCall
-    TotalTokens int
-}
-
-func mergeReducer(current, update AgentState) AgentState {
-    // 1. Append slices instead of replacing
-    if len(update.Messages) > 0 {
-        current.Messages = append(current.Messages, update.Messages...)
-    }
-
-    // 2. Replace slices only if explicitly needed (e.g., clearing queue)
-    if update.ToolCalls != nil {
-        current.ToolCalls = update.ToolCalls
-    }
-
-    // 3. Sum counters
-    if update.TotalTokens > 0 {
-        current.TotalTokens += update.TotalTokens
-    }
-
-    return current
-}
-```
-
-In this pattern, an LLM node that only generates a new message just returns `AgentState{Messages: []Message{newMsg}}`, and the reducer safely appends it without clearing the `TotalTokens` counter.
-
-## Key concepts
-
-### State
-
-State has type `T` and is passed between nodes. Each node returns a **delta** (update); the **reducer** merges current state with that delta to produce the next state. Choose full replace for simple types or merge/delta for complex state (see [State Management Patterns](#state-management-patterns)); see also [Advanced State Management](#advanced-state-management-mutation-slice-pattern) for a mutator pattern.
+For simple state like `string`, the reducer often just returns `update`. For complex state, prefer delta-style updates where nodes return only changed fields and the reducer merges them.
 
 ### Nodes
 
-A node is a function `func(ctx context.Context, state T) (T, error)`: it receives context and current state, and returns the **delta** and an error. The runner applies the reducer to merge the delta into state and passes the result along the graph. On error, execution stops and the error is returned (or yielded as the second value when using `Stream`).
-
-### Edges and conditional edges
-
-- **Edges** (`AddEdge(from, to)`) define a fixed next node.
-- **Conditional edges** (`AddConditionalEdge(from, router)`) let a router function decide the next node from `(ctx, state)`; the router returns the next node name.
-
-### Suspend / Resume (v2)
-
-Execution is **suspended** when a node returns `ErrSuspend` (e.g. human-in-the-loop). `Invoke` returns `(state, checkpoint, ErrSuspend)`; the **caller** persists the state and the `Checkpoint` (e.g. in a DB). To continue, call `Resume(ctx, state, cp)` with the saved state and checkpoint. The `Checkpoint` holds only `NextNode` (the node to run next); state is kept by the caller.
+A node is the basic executable unit:
 
 ```go
-state, cp, err := graph.Invoke(ctx, initial)
-if errors.Is(err, flowy.ErrSuspend) {
-    // Persist state and cp (e.g. store.Save(ctx, "session_1", state, cp))
-    // Later:
-    loaded, cpLoaded, _ := store.Load(ctx, "session_1")
-    final, _, err := graph.Resume(ctx, loaded, cpLoaded)
+type Node[T any] func(ctx context.Context, state T) (T, error)
+```
+
+The runner calls the node, merges the returned update with the reducer, then routes to the next step.
+
+### Edges and Routing
+
+- `AddEdge(from, to)` defines a fixed next step
+- `AddConditionalEdge(from, router)` chooses the next step from `(ctx, state)`
+- `AddFanOut(from, targets, joinNode)` runs multiple targets in parallel, merges the results, then continues at `joinNode`
+- `AddDynamicFanOut(from, router, joinNode)` chooses parallel targets at runtime
+
+## Middlewares & Cross-cutting Concerns
+
+Middleware is the official extension point for logging, tracing, metrics, RBAC, retries, fallbacks, memory, and persistence:
+
+```go
+type NodeHandler[T any] = Node[T]
+
+type MiddlewareContext[T any] struct {
+	NodeName      string
+	SuspendTarget string
+	ExecutionKind flowy.MiddlewareExecutionKind
+	CanResolveNext bool
+	IsFinish      bool
+	ApplyUpdate   func(current T, update T) T
+	ResolveNext   func(ctx context.Context, postState T) (string, error)
+}
+
+type Middleware[T any] func(ctx context.Context, state T, meta MiddlewareContext[T], next NodeHandler[T]) (T, error)
+```
+
+There are two levels:
+
+- Global middleware via `Use(mws...)`
+- Local middleware per node via `AddNode(name, node, mws...)`
+- Middleware wraps executable nodes only. Routing labels used as fan-out or dynamic fan-out sources do not trigger middleware themselves, but their target nodes do.
+
+Order is onion-style:
+
+- global middleware wraps local middleware
+- local middleware wraps the node
+- the first middleware added runs first on the way in and last on the way out
+
+Example:
+
+```go
+logMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
+	log.Println("before", meta.NodeName)
+	out, err := next(ctx, state)
+	log.Println("after", meta.NodeName)
+	return out, err
+}
+
+fallbackNode := func(_ context.Context, _ string) (string, error) {
+	return "[fallback]", nil
+}
+
+fallbackMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
+	out, err := next(ctx, state)
+	if err == nil {
+		return out, nil
+	}
+
+	// Important: use the original state, not the failed node output.
+	return fallbackNode(ctx, state)
+}
+
+b.Use(logMw)
+b.AddNode("unstable", unstableNode, fallbackMw)
+```
+
+## State Persistence & Checkpoints
+
+`flowy` does not include a built-in database, checkpoint store, thread registry, or checkpointer abstraction. If you need persistence between steps, implement it in middleware.
+
+`MiddlewareContext` exists so middleware can work at the graph-step level instead of only looking at raw node output:
+
+- `ApplyUpdate(current, update)` computes the merged post-step state
+- `ResolveNext(ctx, postState)` resolves the next node for sequential executable steps
+- `SuspendTarget` tells pause/resume middleware which resumable node or routing label to persist
+- `ExecutionKind` and `CanResolveNext` tell you whether the current invocation is a normal node step or a fan-out branch
+
+For fan-out branches:
+
+- `ExecutionKind == flowy.MiddlewareExecutionFanOutBranch`
+- `CanResolveNext == false`
+- `ResolveNext(...)` is unsupported by contract
+- `ErrSuspend` is not supported; pause before the fan-out source or after the join node
+
+Typical HITL/persistence flow:
+
+1. Middleware sees a node that should pause, for example `approve`
+2. Middleware stores `(state, meta.SuspendTarget)` in your own storage
+3. Middleware returns `ErrSuspend`
+4. External code later loads `(state, startNode)` and calls `Resume(ctx, state, startNode)`
+
+For post-step memory or checkpoints under merge reducers, persist the merged state rather than the raw node output. This recipe is for sequential executable nodes only:
+
+```go
+memoryMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
+	out, err := next(ctx, state)
+	if err != nil {
+		return out, err
+	}
+
+	if !meta.CanResolveNext {
+		// Fan-out branch: no generic checkpoint target is available here.
+		return out, nil
+	}
+
+	postState := meta.ApplyUpdate(state, out)
+	nextNode, err := meta.ResolveNext(ctx, postState)
+	if err != nil {
+		return out, err
+	}
+
+	_ = saveCheckpoint(postState, nextNode)
+	return out, nil
 }
 ```
 
-## Build options
-
-Options are set at `Compile(opts...)` and apply to all runs of that graph:
-
-| Option                  | Description                                                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `WithMaxSteps(n)`       | Max steps per run (prevents infinite loops; default 1000 if &lt;= 0). Returns `ErrMaxStepsExceeded` when exceeded. |
-| `WithNodeTimeout(d)`    | Timeout for each node execution; context is cancelled after `d`.                                                   |
-| `WithMaxConcurrency(n)` | Max concurrent goroutines in fan-out; `n <= 0` means no limit.                                                     |
-
-## Visualization (Mermaid)
-
-You can export the compiled graph to Mermaid flowchart syntax for diagrams and debugging:
+Example:
 
 ```go
-graph, _ := b.Compile()
-mermaid := graph.ExportMermaid()
-fmt.Println(mermaid) // flowchart TD\n  a --> b ...
+type Store[T any] interface {
+	Save(ctx context.Context, key string, state T, startNode string) error
+	Load(ctx context.Context, key string) (state T, startNode string, ok bool)
+}
+
+persistMw := func(store Store[string]) flowy.Middleware[string] {
+	return func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
+		if meta.NodeName == "approve" {
+			if err := store.Save(ctx, "session-1", state, meta.SuspendTarget); err != nil {
+				return state, err
+			}
+			return state, flowy.ErrSuspend
+		}
+		return next(ctx, state)
+	}
+}
+
+state, err := graph.Invoke(ctx, initial)
+if errors.Is(err, flowy.ErrSuspend) {
+	loaded, startNode, ok := store.Load(ctx, "session-1")
+	if ok {
+		state, err = graph.Resume(ctx, loaded, startNode)
+	}
+}
 ```
 
-Use this to log or inspect the graph structure before running it.
+This same pattern is how you implement memory/checkpointing, human approval pauses, and other pause/resume workflows.
 
-## Errors
+For production persistence, key saved state by thread/session identity plus the resume target. Using only `nodeName` is fine for a toy example, but not for a real multi-run store.
 
-- **Panics** — not recovered by the runner; a panic in a node will terminate execution.
-- **ErrSuspend** — returned when a node suspends execution (HITL). `Invoke` returns `(state, checkpoint, ErrSuspend)`; continue with `Resume(ctx, state, cp)`.
-- **ErrMaxStepsExceeded** — returned when the step limit (`WithMaxSteps`) is reached (e.g. infinite loop in the graph).
+## Invoke, Resume, and Streaming
 
-## State streaming (Go 1.26+)
+Use `Invoke` to run from the graph entry point:
 
-`Stream(ctx, state)` returns `iter.Seq2[Step[T], error]`. Each successful node yields a `Step{State: state, NodeName: name}`; on error or `ErrSuspend` the iterator yields one final `(Step{}, err)` and stops.
+```go
+finalState, err := graph.Invoke(ctx, initialState)
+```
+
+Use `Resume` to continue from a specific node or routing label:
+
+```go
+finalState, err := graph.Resume(ctx, savedState, "approve")
+```
+
+`Resume` accepts:
+
+- a registered executable node
+- a fan-out source label
+- a dynamic fan-out source label
+
+Streaming is available through iterators:
 
 ```go
 for step, err := range graph.Stream(ctx, state) {
-    if err != nil {
-        if errors.Is(err, flowy.ErrSuspend) { /* save state and step.NodeName for Resume */ }
-        return err
-    }
-    fmt.Println(step.NodeName, step.State)
+	if err != nil {
+		if errors.Is(err, flowy.ErrSuspend) {
+			fmt.Println("resume target:", step.NodeName)
+		}
+		return
+	}
+	fmt.Println(step.NodeName, step.State)
 }
 ```
 
-## Middlewares
+`ResumeStream(ctx, state, startNode)` provides the same iterator contract starting from an arbitrary node.
 
-Use `Use(mw...)` to wrap every node (including fan-out targets) with cross-cutting logic. You can also add middlewares at compile time with `Compile(flowy.WithMiddleware(mw))`. The first middleware added runs first (outermost in the chain).
+## Build Options
 
-Middleware has the interceptor signature: it receives `ctx`, `state`, `nodeName`, and `next` (the next handler), and returns `(state, error)`.
+Compile-time run defaults:
+
+| Option | Description |
+| --- | --- |
+| `WithMaxSteps(n)` | Maximum number of steps before returning `ErrMaxStepsExceeded` |
+| `WithNodeTimeout(d)` | Per-node timeout via derived context |
+| `WithMaxConcurrency(n)` | Maximum goroutines used during fan-out; `n <= 0` means unlimited |
+
+Example:
 
 ```go
-b := flowy.NewGraph[string](reducer)
-b.AddNode("a", nodeA)
-logMw := func(ctx context.Context, state string, nodeName string, next flowy.NodeHandler[string]) (string, error) {
-    log.Println("before", nodeName)
-    out, err := next(ctx, state)
-    log.Println("after", nodeName)
-    return out, err
-}
-b.Use(logMw)
-// or pass at compile: graph, _ := b.Compile(flowy.WithMiddleware(logMw))
+graph, err := b.Compile(
+	flowy.WithMaxSteps(50),
+	flowy.WithMaxConcurrency(4),
+)
 ```
 
-## Fan-out (static and dynamic)
+## Fan-out Notes
 
-**Static fan-out:** `AddFanOut(from, targets, joinNode)` runs all nodes in `targets` in parallel, merges their results with the reducer in order, then continues at `joinNode`. `joinNode` must be a registered node (not a fan-out source).
+- Fan-out target updates are merged in target order
+- `joinNode` must be a registered executable node
+- global middlewares also wrap fan-out targets
+- `Resume` can start from a fan-out or dynamic fan-out routing label
 
-**Dynamic fan-out:** when the set of branches is known only at runtime (e.g. from an LLM), use `AddDynamicFanOut(from, router, joinNode)`. The router receives `(ctx, state)` and returns target node names. If it returns an empty list, execution goes straight to `joinNode`.
+## State Management Patterns
 
-**Limit concurrency:** to avoid rate limits (e.g. HTTP 429) or resource exhaustion when running many branches, use `WithMaxConcurrency(n)` at compile time: `Compile(flowy.WithMaxConcurrency(5))`. It applies to `Invoke`, `Stream`, and `Resume` whenever a fan-out runs.
-
-## Advanced State Management (Mutation Slice Pattern)
-
-To avoid a single giant reducer, you can keep state and apply small mutators returned by nodes:
+For non-trivial state, prefer delta updates over full replacement:
 
 ```go
-type State struct {
-    Messages []string
-    Query    string
+type AgentState struct {
+	Messages []string
+	Query    string
+	Tokens   int
 }
-type StateUpdate func(*State)
 
-reducer := func(c State, update StateUpdate) State {
-    if update != nil {
-        update(&c)
-    }
-    return c
+func mergeReducer(current, update AgentState) AgentState {
+	if len(update.Messages) > 0 {
+		current.Messages = append(current.Messages, update.Messages...)
+	}
+	if update.Query != "" {
+		current.Query = update.Query
+	}
+	if update.Tokens > 0 {
+		current.Tokens += update.Tokens
+	}
+	return current
 }
-b.AddNode("append", func(ctx context.Context, s State) (StateUpdate, error) {
-    return func(st *State) { st.Messages = append(st.Messages, s.Query) }, nil
-})
 ```
 
-## Cost Optimization with Semantic Caching
+This keeps state immutable at the engine boundary while still giving you efficient updates.
 
-Using a semantic cache (e.g. ragy/cache with pgvector + embedder) at the **start** of the graph lets you skip expensive LLM and tool calls when a similar query was already answered. You can cut token cost by up to ~90% on frequent questions (FAQ) without changing the agent logic.
+## Mermaid Export
 
-Pattern: add a **cache node** as the entry point, then a **conditional edge** that routes to a format/finish node on cache hit, or to the LLM path on miss. After the LLM path, a **save_cache** node writes the new response for future hits.
-
-Below is the actual output of `graph.ExportMermaid()` for the semantic cache example (conditional edges appear as `__cond_*` placeholders):
-
-```mermaid
-flowchart TD
-  save_cache_node --> format_response_node
-  tools_node --> llm_node
-  cache_node -->|conditional| __cond_cache_node
-  llm_node -->|conditional| __cond_llm_node
+```go
+graph, _ := b.Compile()
+fmt.Println(graph.ExportMermaid())
 ```
 
-See the [semantic_cache_agent](examples/semantic_cache_agent/) example for a full typed implementation with a stub cache and state contract.
+Use Mermaid export for debugging and documentation.
 
-## Development
+## Examples
 
-```bash
-make test    # run tests with race detector
-make lint    # golangci-lint
-make cover   # coverage report
-```
-
-## License
-
-See [LICENSE](LICENSE).
+- [examples/hitl_agent/main.go](./examples/hitl_agent/main.go) shows middleware-based pause/resume
+- [examples/middleware_agent/main.go](./examples/middleware_agent/main.go) shows logging, memory, and fallback middleware
+- [examples/react_agent/main.go](./examples/react_agent/main.go) shows a small ReAct loop
+- [examples/semantic_cache_agent/main.go](./examples/semantic_cache_agent/main.go) shows semantic-cache short-circuiting

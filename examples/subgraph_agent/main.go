@@ -65,7 +65,7 @@ func main() {
 	}
 
 	initial := ParentState{Title: "", Sub: SubState{Count: 0, Label: "a"}}
-	final, _, err := graph.Invoke(ctx, initial)
+	final, err := graph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)
 	}

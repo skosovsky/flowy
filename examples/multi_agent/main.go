@@ -51,7 +51,7 @@ func main() {
 	}
 
 	initial := state{Query: "drug X"}
-	final, _, err := sellerGraph.Invoke(ctx, initial)
+	final, err := sellerGraph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)
 	}

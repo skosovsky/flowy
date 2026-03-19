@@ -14,46 +14,38 @@ type runConfig struct {
 	maxConcurrency int
 }
 
-// buildOpts holds compile-time options: run config and optional middlewares.
-type buildOpts[T any] struct {
-	run         runConfig
-	middlewares []Middleware[T]
+// buildOpts holds compile-time options.
+type buildOpts struct {
+	run runConfig
 }
 
-// BuildOption configures the graph at compile time. Generic over state type T so WithMiddleware can be typed.
-type BuildOption[T any] func(*buildOpts[T])
+// BuildOption configures the graph at compile time.
+type BuildOption func(*buildOpts)
 
 // WithMaxSteps sets the maximum number of steps (prevents infinite loops). Default is 1000 if <= 0.
-func WithMaxSteps[T any](limit int) BuildOption[T] {
-	return func(o *buildOpts[T]) {
+func WithMaxSteps(limit int) BuildOption {
+	return func(o *buildOpts) {
 		o.run.maxSteps = limit
 	}
 }
 
 // WithNodeTimeout sets a timeout for each node execution.
-func WithNodeTimeout[T any](d time.Duration) BuildOption[T] {
-	return func(o *buildOpts[T]) {
+func WithNodeTimeout(d time.Duration) BuildOption {
+	return func(o *buildOpts) {
 		o.run.nodeTimeout = d
 	}
 }
 
 // WithMaxConcurrency sets the maximum number of goroutines during a fan-out. If <= 0, no limit.
-func WithMaxConcurrency[T any](n int) BuildOption[T] {
-	return func(o *buildOpts[T]) {
+func WithMaxConcurrency(n int) BuildOption {
+	return func(o *buildOpts) {
 		o.run.maxConcurrency = n
 	}
 }
 
-// WithMiddleware adds a node-level interceptor at compile time. Can be combined with Use() middlewares.
-func WithMiddleware[T any](mw Middleware[T]) BuildOption[T] {
-	return func(o *buildOpts[T]) {
-		o.middlewares = append(o.middlewares, mw)
-	}
-}
-
 // applyBuildOptions applies opts and returns buildOpts; used in Compile.
-func applyBuildOptions[T any](opts []BuildOption[T]) buildOpts[T] {
-	o := buildOpts[T]{run: runConfig{maxSteps: defaultMaxSteps}}
+func applyBuildOptions(opts []BuildOption) buildOpts {
+	o := buildOpts{run: runConfig{maxSteps: defaultMaxSteps}}
 	for _, opt := range opts {
 		opt(&o)
 	}

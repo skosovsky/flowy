@@ -25,7 +25,7 @@ func TestInvoke_Linear(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, ".")
+	out, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	assert.Equal(t, ".abc", out)
 }
@@ -44,7 +44,7 @@ func TestInvoke_MultipleFinishPoints(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, ".")
+	out, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	// Stops at first finish point reached (b).
 	assert.Equal(t, ".ab", out)
@@ -70,7 +70,7 @@ func TestInvoke_Conditional(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Router returns "b" when s == "_a", so path is a -> b -> end
 	assert.Equal(t, "_a_b", out)
@@ -86,10 +86,10 @@ func TestInvoke_MaxStepsExceeded(t *testing.T) {
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // never reached
 
-	graph, err := b.Compile(WithMaxSteps[string](3))
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, ErrMaxStepsExceeded)
 }
@@ -108,7 +108,7 @@ func TestInvoke_ConditionalEdgeError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "router failed")
@@ -128,7 +128,7 @@ func TestInvoke_ConditionalEdge_ReturnsEmpty(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "empty node name")
@@ -148,7 +148,7 @@ func TestInvoke_ConditionalEdge_ReturnsUnknown(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "conditional edge")
 	assert.Contains(t, err.Error(), "unknown node")
@@ -167,7 +167,7 @@ func TestInvoke_NoOutgoingEdge(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "no outgoing edge")
 	assert.Contains(t, err.Error(), "b")
@@ -186,7 +186,7 @@ func TestInvoke_NodeError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "node \"b\"")
 	assert.Contains(t, err.Error(), "b failed")
@@ -206,7 +206,7 @@ func TestInvoke_FanOut(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Fan-out applies reducer in targets order (db then web); merge returns delta only
 	assert.Equal(t, "[db][web][merge]", out)
@@ -243,9 +243,9 @@ func TestInvoke_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", targets, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency[string](limit))
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
-	_, _, err = graph.Invoke(context.Background(), "")
+	_, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
 	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "observed concurrent goroutines must not exceed limit")
 }
@@ -282,9 +282,9 @@ func TestInvoke_DynamicFanOut_MaxConcurrency(t *testing.T) {
 	}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency[string](limit))
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
-	_, _, err = graph.Invoke(context.Background(), "")
+	_, err = graph.Invoke(context.Background(), "")
 	require.NoError(t, err)
 	assert.LessOrEqual(t, maxObserved.Load(), int32(limit), "dynamic fan-out must respect max concurrency")
 }
@@ -302,7 +302,7 @@ func TestInvoke_FanOut_MaxConcurrency_ZeroOrUnset(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
 }
@@ -355,7 +355,7 @@ func TestStream_FanOut_MaxConcurrency(t *testing.T) {
 	b.AddFanOut("start", []string{"a", "b", "c", "d", "e", "f"}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile(WithMaxConcurrency[string](limit))
+	graph, err := b.Compile(WithMaxConcurrency(limit))
 	require.NoError(t, err)
 	ctx := context.Background()
 	stepCount := 0
@@ -380,7 +380,7 @@ func TestStream_WithMaxSteps_YieldsError(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; graph loops a->b->a so we hit max steps
-	graph, err := b.Compile(WithMaxSteps[string](3))
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
 	var streamErr error
@@ -411,7 +411,7 @@ func TestInvoke_ContextCancelled(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 		cancel()
 	}()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled)
 }
@@ -447,7 +447,7 @@ func TestStream_ContextCancelled_YieldsError(t *testing.T) {
 	require.NoError(t, err)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err = graph.Invoke(ctx, ".")
+	_, err = graph.Invoke(ctx, ".")
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.Canceled)
 	ctx2, cancel2 := context.WithCancel(context.Background())
@@ -469,7 +469,7 @@ func TestStream_MaxStepsExceeded_YieldsError(t *testing.T) {
 	b.AddEdge("b", "a")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c") // unreachable; loop a->b->a until max steps
-	graph, err := b.Compile(WithMaxSteps[string](3))
+	graph, err := b.Compile(WithMaxSteps(3))
 	require.NoError(t, err)
 	ctx := context.Background()
 	var streamErr error
@@ -495,10 +495,10 @@ func TestInvoke_NodeTimeout(t *testing.T) {
 	})
 	b.SetEntryPoint("slow")
 	b.SetFinishPoint("slow")
-	graph, err := b.Compile(WithNodeTimeout[string](10 * time.Millisecond))
+	graph, err := b.Compile(WithNodeTimeout(10 * time.Millisecond))
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.ErrorIs(t, err, context.DeadlineExceeded)
 }
@@ -537,7 +537,7 @@ func TestInvoke_FanOut_Error_NoGoroutineLeak(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 }
 
@@ -552,7 +552,7 @@ func TestInvoke_FanOut_ErrorIncludesTargetName(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fail", "error should include failing target name")
 	assert.Contains(t, err.Error(), "my error")
@@ -567,7 +567,7 @@ func TestInvoke_FinishPoint_SingleNode(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "x")
+	out, err := graph.Invoke(ctx, "x")
 	require.NoError(t, err)
 	assert.Equal(t, "x_done", out)
 }
@@ -586,7 +586,7 @@ func TestAsNode_Composition(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, ".")
+	out, err := graph.Invoke(ctx, ".")
 	require.NoError(t, err)
 	assert.Equal(t, ".x", out)
 }
@@ -623,7 +623,7 @@ func TestSubgraphNode_ParentStateUpdated(t *testing.T) {
 	ctx := context.Background()
 
 	initial := ParentState{Prefix: "p", Sub: SubState{Value: "v"}}
-	final, _, err := graph.Invoke(ctx, initial)
+	final, err := graph.Invoke(ctx, initial)
 	require.NoError(t, err)
 	assert.Equal(t, "p", final.Prefix)
 	assert.Equal(t, "v_sub", final.Sub.Value)
@@ -643,7 +643,7 @@ func TestInvoke_DynamicFanOut_Success(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
 }
@@ -659,7 +659,7 @@ func TestInvoke_DynamicFanOut_EmptyTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "x")
+	out, err := graph.Invoke(ctx, "x")
 	require.NoError(t, err)
 	assert.Equal(t, "x_merge", out)
 }
@@ -675,7 +675,7 @@ func TestInvoke_DynamicFanOut_RouterError(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "dynamic fan-out router")
 	assert.Contains(t, err.Error(), "router failed")
@@ -692,7 +692,7 @@ func TestInvoke_DynamicFanOut_UnknownTarget(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fan-out target node")
 	assert.Contains(t, err.Error(), "nonexistent")
@@ -715,7 +715,7 @@ func TestInvoke_DynamicFanOut_MixedValidInvalid(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "fan-out target node")
 	assert.Contains(t, err.Error(), "nonexistent")
@@ -738,7 +738,7 @@ func TestInvoke_DynamicFanOut_DuplicateTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	// Each target runs once per occurrence: db twice, web once, then merge.
 	assert.Equal(t, "[db][db][web][merge]", out)
@@ -755,10 +755,10 @@ func TestMiddleware_DynamicFanOutTargets(t *testing.T) {
 		defer mu.Unlock()
 		order = append(order, s)
 	}
-	mw := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		appendOrder("mw-in-" + nodeName)
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		appendOrder("mw-in-" + meta.NodeName)
 		out, err := next(ctx, state)
-		appendOrder("mw-out-" + nodeName)
+		appendOrder("mw-out-" + meta.NodeName)
 		return out, err
 	}
 	concat := func(current, update string) string { return current + update }
@@ -781,7 +781,7 @@ func TestMiddleware_DynamicFanOutTargets(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "")
+	out, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, "[db][web][merge]", out)
 	assert.Contains(t, order, "mw-in-db")
@@ -790,6 +790,108 @@ func TestMiddleware_DynamicFanOutTargets(t *testing.T) {
 	assert.Contains(t, order, "mw-out-web")
 	assert.Contains(t, order, "node-db")
 	assert.Contains(t, order, "node-web")
+}
+
+func TestMiddlewareContext_ApplyUpdateAndResolveNext(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	savedStates := make(map[string]string)
+	nextTargets := make(map[string]string)
+	kinds := make(map[string]MiddlewareExecutionKind)
+	canResolve := make(map[string]bool)
+
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		out, err := next(ctx, state)
+		if err != nil {
+			return out, err
+		}
+
+		postState := meta.ApplyUpdate(state, out)
+		savedStates[meta.NodeName] = postState
+		kinds[meta.NodeName] = meta.ExecutionKind
+		canResolve[meta.NodeName] = meta.CanResolveNext
+
+		nextNode, resolveErr := meta.ResolveNext(ctx, postState)
+		require.NoError(t, resolveErr)
+		nextTargets[meta.NodeName] = nextNode
+		return out, nil
+	}
+
+	b := NewGraph[string](concat)
+	b.Use(mw)
+	b.AddNode("start", func(_ context.Context, _ string) (string, error) { return "[start]", nil })
+	b.AddNode("branch-a", func(_ context.Context, _ string) (string, error) { return "[a]", nil })
+	b.AddNode("branch-b", func(_ context.Context, _ string) (string, error) { return "[b]", nil })
+	b.AddConditionalEdge("start", func(_ context.Context, s string) (string, error) {
+		if s == "init[start]" {
+			return "branch-a", nil
+		}
+		return "branch-b", nil
+	})
+	b.SetEntryPoint("start")
+	b.SetFinishPoint("branch-a")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	final, err := graph.Invoke(context.Background(), "init")
+	require.NoError(t, err)
+	assert.Equal(t, "init[start][a]", final)
+	assert.Equal(t, "init[start]", savedStates["start"])
+	assert.Equal(t, "branch-a", nextTargets["start"])
+	assert.Equal(t, "init[start][a]", savedStates["branch-a"])
+	assert.Empty(t, nextTargets["branch-a"])
+	assert.Equal(t, MiddlewareExecutionNode, kinds["start"])
+	assert.Equal(t, MiddlewareExecutionNode, kinds["branch-a"])
+	assert.True(t, canResolve["start"])
+	assert.True(t, canResolve["branch-a"])
+}
+
+func TestMiddlewareContext_FanOutBranchCapabilities(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	var (
+		mu          sync.Mutex
+		kinds       = make(map[string]MiddlewareExecutionKind)
+		canResolve  = make(map[string]bool)
+		resolveErrs = make(map[string]error)
+	)
+
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		mu.Lock()
+		kinds[meta.NodeName] = meta.ExecutionKind
+		canResolve[meta.NodeName] = meta.CanResolveNext
+		mu.Unlock()
+		_, resolveErr := meta.ResolveNext(ctx, state)
+		mu.Lock()
+		resolveErrs[meta.NodeName] = resolveErr
+		mu.Unlock()
+		return next(ctx, state)
+	}
+
+	b := NewGraph[string](concat)
+	b.Use(mw)
+	b.AddNode("db", func(_ context.Context, _ string) (string, error) { return "[db]", nil })
+	b.AddNode("web", func(_ context.Context, _ string) (string, error) { return "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddFanOut("route", []string{"db", "web"}, "merge")
+	b.SetEntryPoint("route")
+	b.SetFinishPoint("merge")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	out, err := graph.Invoke(context.Background(), "init")
+	require.NoError(t, err)
+	assert.Equal(t, "init[db][web][merge]", out)
+	require.Len(t, kinds, 3)
+	assert.Equal(t, MiddlewareExecutionFanOutBranch, kinds["db"])
+	assert.Equal(t, MiddlewareExecutionFanOutBranch, kinds["web"])
+	assert.Equal(t, MiddlewareExecutionNode, kinds["merge"])
+	assert.False(t, canResolve["db"])
+	assert.False(t, canResolve["web"])
+	assert.True(t, canResolve["merge"])
+	require.Error(t, resolveErrs["db"])
+	require.Error(t, resolveErrs["web"])
+	require.NoError(t, resolveErrs["merge"])
 }
 
 func TestStream_DynamicFanOut_Events(t *testing.T) {
@@ -829,7 +931,7 @@ func TestStream_DynamicFanOut_EmptyTargets(t *testing.T) {
 	assert.Positive(t, count)
 }
 
-// TestInvoke_ErrSuspend verifies a node returning ErrSuspend causes Invoke to return (state, checkpoint, ErrSuspend).
+// TestInvoke_ErrSuspend verifies a node returning ErrSuspend causes Invoke to return (state, ErrSuspend).
 func TestInvoke_ErrSuspend(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
@@ -840,15 +942,36 @@ func TestInvoke_ErrSuspend(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	state, cp, err := graph.Invoke(ctx, "init")
+	state, err := graph.Invoke(ctx, "init")
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrSuspend)
 	assert.Equal(t, "init_process", state)
-	require.NotNil(t, cp)
-	assert.Equal(t, "approve", cp.NextNode)
 }
 
-// TestResume_AfterErrSuspend verifies Resume(ctx, state, cp) continues from cp.NextNode.
+func TestMiddleware_ErrSuspendReturnsSavedState(t *testing.T) {
+	b := NewGraph[string](func(current, update string) string { return current + update })
+	b.AddNode("approve", func(_ context.Context, _ string) (string, error) {
+		return "", ErrSuspend
+	})
+	b.SetEntryPoint("approve")
+	b.SetFinishPoint("approve")
+	b.Use(func(ctx context.Context, state string, _ MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		_, err := next(ctx, state)
+		if errors.Is(err, ErrSuspend) {
+			return state + "[saved]", ErrSuspend
+		}
+		return state, err
+	})
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	out, err := graph.Invoke(context.Background(), "init")
+	require.ErrorIs(t, err, ErrSuspend)
+	assert.Equal(t, "init[saved]", out)
+}
+
+// TestResume_AfterErrSuspend verifies Resume(ctx, state, startNode) continues from startNode.
 func TestResume_AfterErrSuspend(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
@@ -866,11 +989,118 @@ func TestResume_AfterErrSuspend(t *testing.T) {
 	bSuspend.SetEntryPoint("process")
 	bSuspend.SetFinishPoint("approve")
 	graphSuspend, _ := bSuspend.Compile()
-	state, cp, err := graphSuspend.Invoke(ctx, "init")
+	state, err := graphSuspend.Invoke(ctx, "init")
 	require.ErrorIs(t, err, ErrSuspend)
 	assert.Equal(t, "init_process", state)
-	require.NotNil(t, cp)
-	final, _, err := graph.Resume(ctx, state, cp)
+	final, err := graph.Resume(ctx, state, "approve")
 	require.NoError(t, err)
 	assert.Equal(t, "init_process_approve", final)
+}
+
+func TestResume_FanOutRoutingLabel(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	b.AddNode("db", func(_ context.Context, s string) (string, error) { return s + "[db]", nil })
+	b.AddNode("web", func(_ context.Context, s string) (string, error) { return s + "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddFanOut("route", []string{"db", "web"}, "merge")
+	b.SetEntryPoint("merge")
+	b.SetFinishPoint("merge")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	out, err := graph.Resume(context.Background(), "", "route")
+	require.NoError(t, err)
+	assert.Equal(t, "[db][web][merge]", out)
+}
+
+func TestStream_FanOutTargetErrSuspendFailsFast(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		if meta.NodeName == "db" {
+			return state + "[paused]", ErrSuspend
+		}
+		return next(ctx, state)
+	}
+
+	b := NewGraph[string](concat)
+	b.Use(mw)
+	b.AddNode("db", func(_ context.Context, _ string) (string, error) { return "[db]", nil })
+	b.AddNode("web", func(_ context.Context, _ string) (string, error) { return "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddFanOut("route", []string{"db", "web"}, "merge")
+	b.SetEntryPoint("route")
+	b.SetFinishPoint("merge")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	var finalStep Step[string]
+	var finalErr error
+	for step, err := range graph.Stream(context.Background(), "init") {
+		if err != nil {
+			finalStep = step
+			finalErr = err
+		}
+	}
+
+	require.Error(t, finalErr)
+	require.NotErrorIs(t, finalErr, ErrSuspend)
+	assert.Empty(t, finalStep.NodeName)
+	assert.Contains(t, finalErr.Error(), `ErrSuspend is not supported inside fan-out target "db"`)
+	assert.Contains(t, finalErr.Error(), "suspend before the fan-out source or after the join node")
+}
+
+func TestResume_DynamicFanOutRoutingLabel(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
+	b.AddNode("db", func(_ context.Context, s string) (string, error) { return s + "[db]", nil })
+	b.AddNode("web", func(_ context.Context, s string) (string, error) { return s + "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) {
+		return []string{"db", "web"}, nil
+	}, "merge")
+	b.SetEntryPoint("merge")
+	b.SetFinishPoint("merge")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	out, err := graph.Resume(context.Background(), "", "route")
+	require.NoError(t, err)
+	assert.Equal(t, "[db][web][merge]", out)
+}
+
+func TestInvoke_DynamicFanOutTargetErrSuspendFailsFast(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		if meta.NodeName == "db" {
+			return state + "[paused]", ErrSuspend
+		}
+		return next(ctx, state)
+	}
+
+	b := NewGraph[string](concat)
+	b.Use(mw)
+	b.AddNode("db", func(_ context.Context, _ string) (string, error) { return "[db]", nil })
+	b.AddNode("web", func(_ context.Context, _ string) (string, error) { return "[web]", nil })
+	b.AddNode("merge", func(_ context.Context, _ string) (string, error) { return "[merge]", nil })
+	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) {
+		return []string{"db", "web"}, nil
+	}, "merge")
+	b.SetEntryPoint("route")
+	b.SetFinishPoint("merge")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	state, err := graph.Invoke(context.Background(), "init")
+	require.Error(t, err)
+	require.NotErrorIs(t, err, ErrSuspend)
+	assert.Equal(t, "init", state)
+	assert.Contains(t, err.Error(), `ErrSuspend is not supported inside fan-out target "db"`)
+	assert.Contains(t, err.Error(), "suspend before the fan-out source or after the join node")
 }

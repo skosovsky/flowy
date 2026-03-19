@@ -79,7 +79,7 @@ func ExampleNewGraph() {
 	if err != nil {
 		return
 	}
-	out, _, _ := graph.Invoke(ctx, "world")
+	out, _ := graph.Invoke(ctx, "world")
 	fmt.Println(out)
 	// Output: hello world bye
 }

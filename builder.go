@@ -1,7 +1,6 @@
 package flowy
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -19,17 +18,22 @@ type dynamicFanOutDef[T any] struct {
 	joinNode string
 }
 
+type nodeDef[T any] struct {
+	handler     Node[T]
+	middlewares []Middleware[T]
+}
+
 // GraphBuilder builds a graph before compilation. Fluent API.
 type GraphBuilder[T any] struct {
-	reducer          Reducer[T]
-	nodes            map[string]Node[T]
-	edges            map[string]string
-	conditionalEdges map[string]ConditionalEdge[T]
-	fanOuts          map[string]*fanOutDef
-	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
-	middlewares      []Middleware[T]
-	entryPoint       string
-	finishPoints     map[string]bool
+	reducer           Reducer[T]
+	nodes             map[string]nodeDef[T]
+	edges             map[string]string
+	conditionalEdges  map[string]ConditionalEdge[T]
+	fanOuts           map[string]*fanOutDef
+	dynamicFanOuts    map[string]*dynamicFanOutDef[T]
+	globalMiddlewares []Middleware[T]
+	entryPoint        string
+	finishPoints      map[string]bool
 	// overwritten* track keys that were re-registered (overwrite); Compile reports them as errors.
 	overwrittenNodes             map[string]bool
 	overwrittenEdgeFrom          map[string]bool
@@ -42,7 +46,7 @@ type GraphBuilder[T any] struct {
 func NewGraph[T any](reducer Reducer[T]) *GraphBuilder[T] {
 	return &GraphBuilder[T]{
 		reducer:                      reducer,
-		nodes:                        make(map[string]Node[T]),
+		nodes:                        make(map[string]nodeDef[T]),
 		edges:                        make(map[string]string),
 		conditionalEdges:             make(map[string]ConditionalEdge[T]),
 		fanOuts:                      make(map[string]*fanOutDef),
@@ -57,11 +61,12 @@ func NewGraph[T any](reducer Reducer[T]) *GraphBuilder[T] {
 }
 
 // AddNode registers a node by name. Returns the builder for chaining.
-func (b *GraphBuilder[T]) AddNode(name string, fn Node[T]) *GraphBuilder[T] {
+func (b *GraphBuilder[T]) AddNode(name string, fn Node[T], mws ...Middleware[T]) *GraphBuilder[T] {
 	if _, exists := b.nodes[name]; exists {
 		b.overwrittenNodes[name] = true
 	}
-	b.nodes[name] = fn
+	nodeMws := append([]Middleware[T](nil), mws...)
+	b.nodes[name] = nodeDef[T]{handler: fn, middlewares: nodeMws}
 	return b
 }
 
@@ -99,7 +104,7 @@ func (b *GraphBuilder[T]) AddFanOut(from string, targets []string, joinNode stri
 
 // Use adds middlewares that wrap every node at compile time (first added runs first).
 func (b *GraphBuilder[T]) Use(mw ...Middleware[T]) *GraphBuilder[T] {
-	b.middlewares = append(b.middlewares, mw...)
+	b.globalMiddlewares = append(b.globalMiddlewares, mw...)
 	return b
 }
 
@@ -127,8 +132,8 @@ func (b *GraphBuilder[T]) SetFinishPoint(name string) *GraphBuilder[T] {
 	return b
 }
 
-// Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps) and optional middlewares (WithMiddleware).
-func (b *GraphBuilder[T]) Compile(opts ...BuildOption[T]) (*Graph[T], error) {
+// Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps).
+func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 	var errs []error
 
 	for name := range b.overwrittenNodes {
@@ -202,7 +207,7 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption[T]) (*Graph[T], error) {
 
 	// All nodes must have a non-nil handler to avoid panic at runtime.
 	for name, node := range b.nodes {
-		if node == nil {
+		if node.handler == nil {
 			errs = append(errs, fmt.Errorf("flowy: node %q has nil handler", name))
 		}
 	}
@@ -306,36 +311,29 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption[T]) (*Graph[T], error) {
 	}
 
 	o := applyBuildOptions(opts)
-	allMiddlewares := make([]Middleware[T], 0, len(b.middlewares)+len(o.middlewares))
-	allMiddlewares = append(allMiddlewares, b.middlewares...)
-	allMiddlewares = append(allMiddlewares, o.middlewares...)
-
-	// Wrap each node in middleware chain (onion: first added is outermost). New contract: mw(ctx, state, nodeName, next).
-	compiledNodes := maps.Clone(b.nodes)
-	for name, node := range compiledNodes {
-		chain := node
-		for i := len(allMiddlewares) - 1; i >= 0; i-- {
-			mw := allMiddlewares[i]
-			next := chain
-			chain = func(ctx context.Context, state T) (T, error) {
-				return mw(ctx, state, name, next)
-			}
-		}
-		compiledNodes[name] = chain
-	}
 
 	g := &Graph[T]{
-		nodes:            compiledNodes,
-		edges:            maps.Clone(b.edges),
-		conditionalEdges: maps.Clone(b.conditionalEdges),
-		fanOuts:          copyFanOuts(b.fanOuts),
-		dynamicFanOuts:   copyDynamicFanOuts(b.dynamicFanOuts),
-		entryPoint:       b.entryPoint,
-		finishPoints:     maps.Clone(b.finishPoints),
-		reducer:          b.reducer,
-		defaults:         o.run,
+		nodes:             copyNodeDefs(b.nodes),
+		edges:             maps.Clone(b.edges),
+		conditionalEdges:  maps.Clone(b.conditionalEdges),
+		fanOuts:           copyFanOuts(b.fanOuts),
+		dynamicFanOuts:    copyDynamicFanOuts(b.dynamicFanOuts),
+		globalMiddlewares: append([]Middleware[T](nil), b.globalMiddlewares...),
+		entryPoint:        b.entryPoint,
+		finishPoints:      maps.Clone(b.finishPoints),
+		reducer:           b.reducer,
+		defaults:          o.run,
 	}
 	return g, nil
+}
+
+func copyNodeDefs[T any](m map[string]nodeDef[T]) map[string]nodeDef[T] {
+	out := make(map[string]nodeDef[T], len(m))
+	for k, v := range m {
+		mws := append([]Middleware[T](nil), v.middlewares...)
+		out[k] = nodeDef[T]{handler: v.handler, middlewares: mws}
+	}
+	return out
 }
 
 func copyFanOuts(m map[string]*fanOutDef) map[string]*fanOutDef {

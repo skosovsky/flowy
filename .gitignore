@@ -4,6 +4,7 @@ coverage.out
 .idea/
 .vscode/
 .DS_Store
+.serena/
 tmp/
 *.prof
 *.cpu

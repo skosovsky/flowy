@@ -21,7 +21,7 @@ func Example_linearGraph() {
 		fmt.Println("compile error:", err)
 		return
 	}
-	out, _, err := graph.Invoke(context.Background(), "")
+	out, err := graph.Invoke(context.Background(), "")
 	if err != nil {
 		fmt.Println("invoke error:", err)
 		return
@@ -54,8 +54,8 @@ func Example_conditionalEdges() {
 		return
 	}
 	ctx := context.Background()
-	out1, _, _ := graph.Invoke(ctx, "")
-	out2, _, _ := graph.Invoke(ctx, "R")
+	out1, _ := graph.Invoke(ctx, "")
+	out2, _ := graph.Invoke(ctx, "R")
 	fmt.Println(out1)
 	fmt.Println(out2)
 	// Output:

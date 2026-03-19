@@ -137,7 +137,7 @@ func TestBuilder_Compile_EdgeToFanOutSource(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, graph)
 	ctx := context.Background()
-	out, _, err := graph.Invoke(ctx, "start")
+	out, err := graph.Invoke(ctx, "start")
 	require.NoError(t, err)
 	assert.Contains(t, out, "start")
 }
@@ -295,52 +295,58 @@ func TestBuilder_FluentAPI(t *testing.T) {
 	require.NotNil(t, graph)
 }
 
-func TestMiddleware_ExecutionOrder(t *testing.T) {
+func TestMiddlewareChain(t *testing.T) {
 	var order []string
-	m1 := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		order = append(order, "m1-in-"+nodeName)
+	g1 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		order = append(order, "g1-in-"+meta.NodeName)
 		out, err := next(ctx, state)
-		order = append(order, "m1-out-"+nodeName)
+		order = append(order, "g1-out-"+meta.NodeName)
 		return out, err
 	}
-	m2 := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		order = append(order, "m2-in-"+nodeName)
+	g2 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		order = append(order, "g2-in-"+meta.NodeName)
 		out, err := next(ctx, state)
-		order = append(order, "m2-out-"+nodeName)
+		order = append(order, "g2-out-"+meta.NodeName)
+		return out, err
+	}
+	l1 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		order = append(order, "l1-in-"+meta.NodeName)
+		out, err := next(ctx, state)
+		order = append(order, "l1-out-"+meta.NodeName)
+		return out, err
+	}
+	l2 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		order = append(order, "l2-in-"+meta.NodeName)
+		out, err := next(ctx, state)
+		order = append(order, "l2-out-"+meta.NodeName)
 		return out, err
 	}
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", func(_ context.Context, s string) (string, error) {
 		order = append(order, "node-a")
 		return s + "a", nil
-	})
-	b.AddNode("b", func(_ context.Context, s string) (string, error) {
-		order = append(order, "node-b")
-		return s + "b", nil
-	})
-	b.AddEdge("a", "b")
+	}, l1, l2)
 	b.SetEntryPoint("a")
-	b.SetFinishPoint("b")
-	b.Use(m1, m2)
+	b.SetFinishPoint("a")
+	b.Use(g1, g2)
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
+	_, err = graph.Invoke(ctx, "")
 	require.NoError(t, err)
-	// First added middleware runs first: m1 then m2 then node.
-	assert.Equal(t, []string{"m1-in-a", "m2-in-a", "node-a", "m2-out-a", "m1-out-a", "m1-in-b", "m2-in-b", "node-b", "m2-out-b", "m1-out-b"}, order)
+	assert.Equal(t, []string{"g1-in-a", "g2-in-a", "l1-in-a", "l2-in-a", "node-a", "l2-out-a", "l1-out-a", "g2-out-a", "g1-out-a"}, order)
 }
 
 // TestMiddleware_Chain verifies nodeName is passed correctly and middlewares can mutate state/error.
 func TestMiddleware_Chain(t *testing.T) {
 	var namesSeen []string
-	mw := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		namesSeen = append(namesSeen, nodeName)
+	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		namesSeen = append(namesSeen, meta.NodeName)
 		out, err := next(ctx, state)
 		if err != nil {
 			return out, err
 		}
-		return out + "[" + nodeName + "]", nil
+		return out + "[" + meta.NodeName + "]", nil
 	}
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("x", func(_ context.Context, s string) (string, error) { return s + "x", nil })
@@ -352,55 +358,17 @@ func TestMiddleware_Chain(t *testing.T) {
 	graph, err := b.Compile()
 	require.NoError(t, err)
 	ctx := context.Background()
-	final, _, err := graph.Invoke(ctx, "")
+	final, err := graph.Invoke(ctx, "")
 	require.NoError(t, err)
 	assert.Equal(t, []string{"x", "y"}, namesSeen)
 	// idReducer keeps only last update; mw appends [nodeName] to each update, so final is "x[x]y[y]"
 	assert.Equal(t, "x[x]y[y]", final)
 }
 
-// TestMiddleware_UseAndWithMiddleware verifies middlewares from Use() and from Compile(WithMiddleware) are combined (Use first, then WithMiddleware).
-func TestMiddleware_UseAndWithMiddleware(t *testing.T) {
-	var order []string
-	fromUse := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		order = append(order, "use-"+nodeName)
-		return next(ctx, state)
-	}
-	fromOpt := func(ctx context.Context, state string, nodeName string, next NodeHandler[string]) (string, error) {
-		order = append(order, "opt-"+nodeName)
-		return next(ctx, state)
-	}
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "a", nil })
-	b.AddEdge("a", "a")
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	b.Use(fromUse)
-	graph, err := b.Compile(WithMiddleware[string](fromOpt))
-	require.NoError(t, err)
-	ctx := context.Background()
-	_, _, err = graph.Invoke(ctx, "")
-	require.NoError(t, err)
-	// First added (Use) is outermost: use then opt then node.
-	assert.Contains(t, order, "use-a")
-	assert.Contains(t, order, "opt-a")
-	assert.GreaterOrEqual(t, len(order), 2)
-	useIdx, optIdx := -1, -1
-	for i, s := range order {
-		if s == "use-a" && useIdx < 0 {
-			useIdx = i
-		}
-		if s == "opt-a" && optIdx < 0 {
-			optIdx = i
-		}
-	}
-	assert.True(t, useIdx >= 0 && optIdx >= 0 && useIdx < optIdx, "use middleware should run before opt (outermost first)")
-}
-
 // TestMiddleware_ErrorInterception verifies that middleware can wrap and return node errors; caller receives the wrapped error.
 func TestMiddleware_ErrorInterception(t *testing.T) {
 	origErr := errors.New("original error")
-	wrapMw := func(ctx context.Context, state string, _ string, next NodeHandler[string]) (string, error) {
+	wrapMw := func(ctx context.Context, state string, _ MiddlewareContext[string], next NodeHandler[string]) (string, error) {
 		out, err := next(ctx, state)
 		if err != nil {
 			return out, fmt.Errorf("middleware wrapped: %w", err)
@@ -416,10 +384,45 @@ func TestMiddleware_ErrorInterception(t *testing.T) {
 	b.Use(wrapMw)
 	graph, err := b.Compile()
 	require.NoError(t, err)
-	_, _, err = graph.Invoke(context.Background(), "")
+	_, err = graph.Invoke(context.Background(), "")
 	require.Error(t, err)
 	require.ErrorContains(t, err, "middleware wrapped")
 	assert.ErrorIs(t, err, origErr)
+}
+
+func TestFallbackMiddleware(t *testing.T) {
+	var fallbackInput string
+	fallbackNode := func(_ context.Context, s string) (string, error) {
+		fallbackInput = s
+		return s + "[fallback]", nil
+	}
+	fallbackMw := func(ctx context.Context, state string, _ MiddlewareContext[string], next NodeHandler[string]) (string, error) {
+		out, err := next(ctx, state)
+		if err == nil {
+			return out, nil
+		}
+		return fallbackNode(ctx, state)
+	}
+
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("fail", func(_ context.Context, _ string) (string, error) {
+		return "DIRTY", errors.New("boom")
+	}, fallbackMw)
+	b.AddNode("finish", func(_ context.Context, s string) (string, error) {
+		return s + "[finish]", nil
+	})
+	b.AddEdge("fail", "finish")
+	b.SetEntryPoint("fail")
+	b.SetFinishPoint("finish")
+
+	graph, err := b.Compile()
+	require.NoError(t, err)
+
+	final, err := graph.Invoke(context.Background(), "")
+	require.NoError(t, err)
+	assert.Empty(t, fallbackInput)
+	assert.Equal(t, "[fallback][finish]", final)
+	assert.NotContains(t, final, "DIRTY")
 }
 
 func TestBuilder_Compile_DynamicFanOut_JoinNodeNotRegistered(t *testing.T) {

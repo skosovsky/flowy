@@ -159,21 +159,21 @@ func main() {
 	b.AddEdge("save_cache_node", "format_response_node")
 	b.SetFinishPoint("format_response_node")
 
-	graph, err := b.Compile(flowy.WithMaxSteps[AgentState](20))
+	graph, err := b.Compile(flowy.WithMaxSteps(20))
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	// Run 1: cache miss -> full path LLM -> tools -> LLM -> save_cache -> format
 	initial := AgentState{Query: "What is flowy?"}
-	final1, _, err := graph.Invoke(ctx, initial)
+	final1, err := graph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)
 	}
 	fmt.Println("Run 1 (cache miss):", final1.FinalResponse)
 
 	// Run 2: same query -> cache hit -> short-circuit to format_response
-	final2, _, err := graph.Invoke(ctx, initial)
+	final2, err := graph.Invoke(ctx, initial)
 	if err != nil {
 		log.Fatal(err)
 	}
