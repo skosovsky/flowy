@@ -41,7 +41,7 @@ func main() {
 		return state{messages: []string{"finish"}}, nil
 	})
 
-	b.AddConditionalEdge("reason", func(_ context.Context, s state) (string, error) {
+	b.AddChoice("reason", func(_ context.Context, s state) (string, error) {
 		if s.steps >= 2 {
 			return "finish", nil
 		}

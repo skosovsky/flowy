@@ -143,7 +143,7 @@ func TestCheckpointHistory_PublicSteps(t *testing.T) {
 			build: func(b *flowy.GraphBuilder[string]) {
 				b.AddNode("start", func(_ context.Context, s string) (string, error) { return s + "[start]", nil })
 				b.AddNode("left", func(_ context.Context, s string) (string, error) { return s + "[left]", nil })
-				b.AddConditionalEdge("start", func(_ context.Context, _ string) (string, error) { return "left", nil })
+				b.AddChoice("start", func(_ context.Context, _ string) (string, error) { return "left", nil })
 				b.SetEntryPoint("start")
 				b.SetFinishPoint("left")
 			},
@@ -151,27 +151,12 @@ func TestCheckpointHistory_PublicSteps(t *testing.T) {
 			wantNexts: []string{"", "left"},
 		},
 		{
-			name: "fanout",
+			name: "linear_route_merge",
 			build: func(b *flowy.GraphBuilder[string]) {
-				b.AddNode("db", func(_ context.Context, s string) (string, error) { return s + "[db]", nil })
-				b.AddNode("web", func(_ context.Context, s string) (string, error) { return s + "[web]", nil })
+				// Same Stream step shape as route + join (two top-level nodes); checkpoint tests persistence, not concurrency.
+				b.AddNode("route", func(_ context.Context, s string) (string, error) { return s + "[route]", nil })
 				b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
-				b.AddFanOut("route", []string{"db", "web"}, "merge")
-				b.SetEntryPoint("route")
-				b.SetFinishPoint("merge")
-			},
-			wantNodes: []string{"merge", "route"},
-			wantNexts: []string{"", "merge"},
-		},
-		{
-			name: "dynamic_fanout",
-			build: func(b *flowy.GraphBuilder[string]) {
-				b.AddNode("db", func(_ context.Context, s string) (string, error) { return s + "[db]", nil })
-				b.AddNode("web", func(_ context.Context, s string) (string, error) { return s + "[web]", nil })
-				b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s + "[merge]", nil })
-				b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) {
-					return []string{"db", "web"}, nil
-				}, "merge")
+				b.AddEdge("route", "merge")
 				b.SetEntryPoint("route")
 				b.SetFinishPoint("merge")
 			},

@@ -161,8 +161,8 @@ func main() {
 	b.AddNode("format_response_node", agent.formatResponseNode)
 
 	b.SetEntryPoint("cache_node")
-	b.AddConditionalEdge("cache_node", agent.cacheRouter)
-	b.AddConditionalEdge("llm_node", agent.llmToToolsRouter)
+	b.AddChoice("cache_node", agent.cacheRouter)
+	b.AddChoice("llm_node", agent.llmToToolsRouter)
 	b.AddEdge("tools_node", "llm_node")
 	b.AddEdge("save_cache_node", "format_response_node")
 	b.SetFinishPoint("format_response_node")

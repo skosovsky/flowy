@@ -27,44 +27,14 @@ func (g *Graph[T]) ExportMermaid() string {
 		fmt.Fprintf(&b, "  %s --> %s\n", idMap[from], idMap[g.edges[from]])
 	}
 
-	condKeys := make([]string, 0, len(g.conditionalEdges))
-	for from := range g.conditionalEdges {
-		condKeys = append(condKeys, from)
+	choiceKeys := make([]string, 0, len(g.choices))
+	for from := range g.choices {
+		choiceKeys = append(choiceKeys, from)
 	}
-	slices.Sort(condKeys)
-	for _, from := range condKeys {
-		placeholder := "__cond_" + idMap[from]
-		fmt.Fprintf(&b, "  %s -->|conditional| %s\n", idMap[from], placeholder)
-	}
-
-	fanKeys := make([]string, 0, len(g.fanOuts))
-	for from := range g.fanOuts {
-		fanKeys = append(fanKeys, from)
-	}
-	slices.Sort(fanKeys)
-	for _, from := range fanKeys {
-		fo := g.fanOuts[from]
-		targets := make([]string, len(fo.targets))
-		copy(targets, fo.targets)
-		slices.Sort(targets)
-		for _, t := range targets {
-			fmt.Fprintf(&b, "  %s --> %s\n", idMap[from], idMap[t])
-		}
-		for _, t := range targets {
-			fmt.Fprintf(&b, "  %s --> %s\n", idMap[t], idMap[fo.joinNode])
-		}
-	}
-
-	dynFanKeys := make([]string, 0, len(g.dynamicFanOuts))
-	for from := range g.dynamicFanOuts {
-		dynFanKeys = append(dynFanKeys, from)
-	}
-	slices.Sort(dynFanKeys)
-	for _, from := range dynFanKeys {
-		dfo := g.dynamicFanOuts[from]
-		placeholder := "__dyn_" + idMap[from]
-		fmt.Fprintf(&b, "  %s -->|dynamic fan-out| %s\n", idMap[from], placeholder)
-		fmt.Fprintf(&b, "  %s --> %s\n", placeholder, idMap[dfo.joinNode])
+	slices.Sort(choiceKeys)
+	for _, from := range choiceKeys {
+		placeholder := "__choice_" + idMap[from]
+		fmt.Fprintf(&b, "  %s -->|choice| %s\n", idMap[from], placeholder)
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
@@ -80,19 +50,8 @@ func (g *Graph[T]) buildMermaidIDMap() map[string]string {
 		names[from] = struct{}{}
 		names[to] = struct{}{}
 	}
-	for from := range g.conditionalEdges {
+	for from := range g.choices {
 		names[from] = struct{}{}
-	}
-	for from, fo := range g.fanOuts {
-		names[from] = struct{}{}
-		names[fo.joinNode] = struct{}{}
-		for _, t := range fo.targets {
-			names[t] = struct{}{}
-		}
-	}
-	for from, dfo := range g.dynamicFanOuts {
-		names[from] = struct{}{}
-		names[dfo.joinNode] = struct{}{}
 	}
 
 	ordered := make([]string, 0, len(names))

@@ -1,8 +1,8 @@
 // Package flowy provides a type-safe directed graph engine for orchestrating
-// AI agents with support for conditional routing, parallel execution (fan-out/fan-in),
-// and middleware-based cross-cutting concerns. Execution is stateless: persistence and
-// human-in-the-loop resume are implemented by the caller using [Graph.Stream] steps and
-// types from the sibling persistence module (see repository README).
+// AI agents with linear topology (edges and choices), optional concurrency inside
+// a step via [Parallel], and middleware-based cross-cutting concerns. Execution is
+// stateless: persistence and human-in-the-loop resume are implemented by the caller
+// using [Graph.Stream] steps and types from the checkpoint subpackage (see README).
 //
 // State updates can be full replace (simple types) or merge/delta (complex state);
 // see the README section "State Management Patterns" for the recommended approach.

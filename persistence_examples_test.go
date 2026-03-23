@@ -135,10 +135,6 @@ func ExampleExecutionChain_persistenceRecipe() {
 			return out, err
 		}
 
-		if !chain.CanResolveNext {
-			return out, nil
-		}
-
 		postState := chain.ApplyUpdate(state, out)
 		nextNode, err := chain.ResolveNext(ctx, postState)
 		if err != nil {

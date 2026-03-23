@@ -24,30 +24,31 @@ func TestExportMermaid_Simple(t *testing.T) {
 	assert.Contains(t, out, "a --> b")
 }
 
-func TestExportMermaid_FanOut(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
+func TestExportMermaid_ParallelStepLinearEdges(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
 	b.AddNode("db", noopStringNode)
 	b.AddNode("web", noopStringNode)
 	b.AddNode("merge", noopStringNode)
-	b.AddFanOut("start", []string{"db", "web"}, "merge")
+	var g *Graph[string]
+	b.AddNode("start", Parallel(&g, "start", concat, "db", "web"))
+	b.AddEdge("start", "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	g, err := b.Compile()
 	require.NoError(t, err)
 
-	out := graph.ExportMermaid()
-	assert.Contains(t, out, "start --> db")
-	assert.Contains(t, out, "start --> web")
-	assert.Contains(t, out, "db --> merge")
-	assert.Contains(t, out, "web --> merge")
+	out := g.ExportMermaid()
+	// Topology is linear: parallel work is inside the "start" node; diagram shows the edge to merge.
+	assert.Contains(t, out, "start --> merge")
 }
 
-func TestExportMermaid_Conditional(t *testing.T) {
+func TestExportMermaid_Choice(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", noopStringNode)
 	b.AddNode("b", noopStringNode)
 	b.AddNode("c", noopStringNode)
-	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
+	b.AddChoice("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
 	b.AddEdge("b", "c")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("c")
@@ -55,18 +56,18 @@ func TestExportMermaid_Conditional(t *testing.T) {
 	require.NoError(t, err)
 
 	out := graph.ExportMermaid()
-	assert.Contains(t, out, "a -->|conditional| __cond_a")
+	assert.Contains(t, out, "a -->|choice| __choice_a")
 }
 
-func TestExportMermaid_MultipleConditionalEdges(t *testing.T) {
-	// Each conditional edge gets a unique placeholder so the diagram does not collapse branches.
+func TestExportMermaid_MultipleChoices(t *testing.T) {
+	// Each choice gets a unique placeholder so the diagram does not collapse branches.
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", noopStringNode)
 	b.AddNode("b", noopStringNode)
 	b.AddNode("c", noopStringNode)
 	b.AddNode("d", noopStringNode)
-	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
-	b.AddConditionalEdge("b", func(_ context.Context, _ string) (string, error) { return "c", nil })
+	b.AddChoice("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
+	b.AddChoice("b", func(_ context.Context, _ string) (string, error) { return "c", nil })
 	b.AddEdge("c", "d")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("d")
@@ -74,34 +75,34 @@ func TestExportMermaid_MultipleConditionalEdges(t *testing.T) {
 	require.NoError(t, err)
 
 	out := graph.ExportMermaid()
-	assert.Contains(t, out, "a -->|conditional| __cond_a")
-	assert.Contains(t, out, "b -->|conditional| __cond_b")
-	// Placeholders must be distinct (no single __dynamic__ for all).
-	assert.NotContains(t, out, "__dynamic__")
+	assert.Contains(t, out, "a -->|choice| __choice_a")
+	assert.Contains(t, out, "b -->|choice| __choice_b")
 }
 
-func TestExportMermaid_DynamicFanOut(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
+func TestExportMermaid_EntryToRouteToMerge(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
 	b.AddNode("db", noopStringNode)
 	b.AddNode("web", noopStringNode)
 	b.AddNode("merge", noopStringNode)
-	b.AddDynamicFanOut(
+	b.AddNode("entry", noopStringNode)
+	var g *Graph[string]
+	b.AddNode(
 		"route",
-		func(_ context.Context, _ string) ([]string, error) { return []string{"db", "web"}, nil },
-		"merge",
+		ParallelDynamic(&g, "route", concat, func(_ context.Context, _ string) ([]string, error) {
+			return []string{"db", "web"}, nil
+		}),
 	)
 	b.AddEdge("entry", "route")
-	b.AddNode("entry", noopStringNode)
+	b.AddEdge("route", "merge")
 	b.SetEntryPoint("entry")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	g, err := b.Compile()
 	require.NoError(t, err)
 
-	out := graph.ExportMermaid()
-	assert.Contains(t, out, "route -->|dynamic fan-out| __dyn_route")
-	assert.Contains(t, out, "__dyn_route --> merge")
-	// No dangling edges: entry -> route and dynamic block -> merge are present
+	out := g.ExportMermaid()
 	assert.Contains(t, out, "entry --> route")
+	assert.Contains(t, out, "route --> merge")
 }
 
 func TestExportMermaid_SpecialCharNames(t *testing.T) {

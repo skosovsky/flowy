@@ -30,7 +30,7 @@ func Example_linearGraph() {
 	// Output: ab
 }
 
-// Example_conditionalEdges shows a graph with a conditional edge: the router
+// Example_conditionalEdges shows a graph with a choice: the router
 // chooses the next node from state. Two Invoke calls with different state demonstrate different paths.
 func Example_conditionalEdges() {
 	reducer := func(_, update string) string { return update }
@@ -38,7 +38,7 @@ func Example_conditionalEdges() {
 	b.AddNode("start", func(_ context.Context, s string) (string, error) { return s + "[start]", nil })
 	b.AddNode("left", func(_ context.Context, s string) (string, error) { return s + "[left]", nil })
 	b.AddNode("right", func(_ context.Context, s string) (string, error) { return s + "[right]", nil })
-	b.AddConditionalEdge("start", func(_ context.Context, s string) (string, error) {
+	b.AddChoice("start", func(_ context.Context, s string) (string, error) {
 		if len(s) > 0 && s[0] == 'R' {
 			return "right", nil
 		}

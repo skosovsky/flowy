@@ -29,7 +29,7 @@ bench:
 		(cd "$$dir" && $(GO) test -bench=. -run=^$$ ./...) || exit 1; \
 	done
 
-# Hot-path executeNode benchmarks with memory stats; expect 0 allocs/op for both (see README).
+# Hot-path executeNode benchmarks with memory stats (see README).
 bench-hotpath:
 	@$(GO) test -bench='BenchmarkExecuteNode_(NoMiddleware|With5Middlewares)' -benchmem -count=1 -run=^$$ .
 

@@ -32,7 +32,7 @@ func TestBuilder_Compile_ReActCycle(t *testing.T) {
 	b.AddNode("reason", func(_ context.Context, s string) (string, error) { return s + "_r", nil })
 	b.AddNode("tools", func(_ context.Context, s string) (string, error) { return s + "_t", nil })
 	b.AddNode("finish", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.AddConditionalEdge("reason", func(_ context.Context, s string) (string, error) {
+	b.AddChoice("reason", func(_ context.Context, s string) (string, error) {
 		if len(s) > 10 {
 			return "finish", nil
 		}
@@ -83,20 +83,20 @@ func TestBuilder_Compile_EdgeAndConditionalConflict(t *testing.T) {
 	b.AddNode("a", noopStringNode)
 	b.AddNode("b", noopStringNode)
 	b.AddEdge("a", "b")
-	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
+	b.AddChoice("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("b")
 
 	_, err := b.Compile()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "both edge and conditional")
+	assert.Contains(t, err.Error(), "both edge and choice")
 }
 
-func TestBuilder_Compile_ConditionalEdge_NilRouter(t *testing.T) {
+func TestBuilder_Compile_Choice_NilRouter(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("a", noopStringNode)
 	b.AddNode("b", noopStringNode)
-	b.AddConditionalEdge("a", nil)
+	b.AddChoice("a", nil)
 	b.AddEdge("b", "end")
 	b.AddNode("end", noopStringNode)
 	b.SetEntryPoint("a")
@@ -104,17 +104,20 @@ func TestBuilder_Compile_ConditionalEdge_NilRouter(t *testing.T) {
 
 	_, err := b.Compile()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "conditional edge")
+	assert.Contains(t, err.Error(), "choice from")
 	assert.Contains(t, err.Error(), "nil router")
 	assert.Contains(t, err.Error(), "a")
 }
 
-func TestBuilder_AddFanOut_Compile(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
+func TestBuilder_Compile_ParallelNode(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
 	b.AddNode("search_db", func(_ context.Context, s string) (string, error) { return s + "_db", nil })
 	b.AddNode("search_web", func(_ context.Context, s string) (string, error) { return s + "_web", nil })
 	b.AddNode("merge", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.AddFanOut("classify", []string{"search_db", "search_web"}, "merge")
+	var g *Graph[string]
+	b.AddNode("classify", Parallel(&g, "classify", concat, "search_db", "search_web"))
+	b.AddEdge("classify", "merge")
 	b.SetEntryPoint("classify")
 	b.SetFinishPoint("merge")
 
@@ -123,98 +126,26 @@ func TestBuilder_AddFanOut_Compile(t *testing.T) {
 	require.NotNil(t, graph)
 }
 
-func TestBuilder_Compile_EdgeToFanOutSource(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
+func TestBuilder_Compile_EdgeToParallelStep(t *testing.T) {
+	concat := func(current, update string) string { return current + update }
+	b := NewGraph[string](concat)
 	b.AddNode("a", noopStringNode)
 	b.AddNode("db", noopStringNode)
 	b.AddNode("web", noopStringNode)
 	b.AddNode("merge", noopStringNode)
 	b.AddEdge("a", "classify")
-	b.AddFanOut("classify", []string{"db", "web"}, "merge")
+	var g *Graph[string]
+	b.AddNode("classify", Parallel(&g, "classify", concat, "db", "web"))
+	b.AddEdge("classify", "merge")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("merge")
-	graph, err := b.Compile()
+	g, err := b.Compile()
 	require.NoError(t, err)
-	require.NotNil(t, graph)
+	require.NotNil(t, g)
 	ctx := context.Background()
-	out, err := graph.Invoke(ctx, "start")
+	out, err := g.Invoke(ctx, "start")
 	require.NoError(t, err)
 	assert.Contains(t, out, "start")
-}
-
-func TestBuilder_Compile_FanOutEmptyTargets(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopStringNode)
-	b.AddFanOut("x", []string{}, "merge")
-	b.SetEntryPoint("x")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fan-out")
-	assert.Contains(t, err.Error(), "no targets")
-}
-
-func TestBuilder_Compile_FanOutAndNodeSameName(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("x", noopStringNode)
-	b.AddNode("merge", noopStringNode)
-	b.AddFanOut("x", []string{"merge"}, "merge")
-	b.SetEntryPoint("x")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "both node and fan-out")
-}
-
-func TestBuilder_Compile_FanOutTargetIsFanOutSource(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopStringNode)
-	b.AddNode("web", noopStringNode)
-	b.AddNode("merge", noopStringNode)
-	b.AddFanOut("inner", []string{"db", "web"}, "merge")
-	b.AddFanOut("outer", []string{"inner"}, "merge") // "inner" is fan-out source, not a node
-	b.SetEntryPoint("outer")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "fan-out")
-	assert.Contains(t, err.Error(), "target")
-	assert.Contains(t, err.Error(), "inner")
-}
-
-func TestBuilder_Compile_FanOut_JoinNodeIsFanOutSource(t *testing.T) {
-	// joinNode must be an executable node; using a fan-out source as joinNode is invalid.
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopStringNode)
-	b.AddNode("web", noopStringNode)
-	b.AddNode("merge", noopStringNode)
-	b.AddFanOut("inner", []string{"db", "web"}, "merge")
-	b.AddFanOut("outer", []string{"merge"}, "inner") // joinNode "inner" is a fan-out source, not a node
-	b.SetEntryPoint("outer")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "joinNode")
-	assert.Contains(t, err.Error(), "inner")
-}
-
-func TestBuilder_Compile_FanOut_JoinNodeIsDynamicFanOutSource(t *testing.T) {
-	// joinNode must be an executable node; using a dynamic fan-out source as joinNode is invalid.
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopStringNode)
-	b.AddNode("merge", noopStringNode)
-	b.AddDynamicFanOut(
-		"route",
-		func(_ context.Context, _ string) ([]string, error) { return []string{"a"}, nil },
-		"merge",
-	)
-	b.AddFanOut("start", []string{"a"}, "route") // joinNode "route" is dynamic fan-out source, not a node
-	b.SetEntryPoint("start")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "joinNode")
-	assert.Contains(t, err.Error(), "route")
 }
 
 func TestBuilder_Compile_FinishPointNotRegistered(t *testing.T) {
@@ -433,61 +364,17 @@ func TestFallbackMiddleware(t *testing.T) {
 	assert.NotContains(t, final, "DIRTY")
 }
 
-func TestBuilder_Compile_DynamicFanOut_JoinNodeNotRegistered(t *testing.T) {
+func TestBuilder_Compile_DuplicateChoice(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopStringNode)
-	b.AddDynamicFanOut(
-		"route",
-		func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil },
-		"missing",
-	)
-	b.SetEntryPoint("route")
-	b.SetFinishPoint("merge")
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
+	r := func(_ context.Context, _ string) (string, error) { return "b", nil }
+	b.AddChoice("a", r)
+	b.AddChoice("a", r)
+	b.SetEntryPoint("a")
+	b.SetFinishPoint("b")
 	_, err := b.Compile()
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dynamic fan-out")
-	assert.Contains(t, err.Error(), "joinNode")
-	assert.Contains(t, err.Error(), "not a registered node")
-}
-
-func TestBuilder_Compile_DynamicFanOut_NilRouter(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopStringNode)
-	b.AddDynamicFanOut("route", nil, "merge")
-	b.SetEntryPoint("route")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dynamic fan-out")
-	assert.Contains(t, err.Error(), "nil router")
-}
-
-func TestBuilder_Compile_DynamicFanOut_AndNodeSameName(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("x", noopStringNode)
-	b.AddNode("merge", noopStringNode)
-	b.AddDynamicFanOut(
-		"x",
-		func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil },
-		"merge",
-	)
-	b.SetEntryPoint("x")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "both node and dynamic fan-out source")
-}
-
-func TestBuilder_Compile_DynamicFanOut_Duplicate(t *testing.T) {
-	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopStringNode)
-	router := func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil }
-	b.AddDynamicFanOut("route", router, "merge")
-	b.AddDynamicFanOut("route", router, "merge")
-	b.SetEntryPoint("route")
-	b.SetFinishPoint("merge")
-	_, err := b.Compile()
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "dynamic fan-out")
+	assert.Contains(t, err.Error(), "choice from")
 	assert.Contains(t, err.Error(), "registered more than once")
 }
