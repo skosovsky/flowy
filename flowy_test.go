@@ -24,7 +24,7 @@ func TestSentinelErrors_Is(t *testing.T) {
 	}{
 		{"ErrSuspend", ErrSuspend, ErrSuspend, true},
 		{"ErrMaxStepsExceeded", ErrMaxStepsExceeded, ErrMaxStepsExceeded, true},
-		{"wrapped ErrSuspend", errWrap{err: ErrSuspend}, ErrSuspend, true},
+		{"wrapped ErrSuspend", wrapError{err: ErrSuspend}, ErrSuspend, true},
 		{"different sentinels", ErrSuspend, ErrMaxStepsExceeded, false},
 	}
 	for _, tt := range tests {
@@ -35,10 +35,10 @@ func TestSentinelErrors_Is(t *testing.T) {
 	}
 }
 
-type errWrap struct{ err error }
+type wrapError struct{ err error }
 
-func (e errWrap) Error() string { return e.err.Error() }
-func (e errWrap) Unwrap() error { return e.err }
+func (e wrapError) Error() string { return e.err.Error() }
+func (e wrapError) Unwrap() error { return e.err }
 
 func TestStep_ZeroValue(t *testing.T) {
 	var s Step[int]
@@ -97,13 +97,13 @@ func ExampleGraph_Stream() {
 	if err != nil {
 		return
 	}
-	for step, err := range graph.Stream(ctx, ".") {
+	for step, err := range graph.Stream(ctx, "", ".") {
 		if err != nil {
 			return
 		}
-		fmt.Println(step.NodeName, step.State)
+		fmt.Println(step.NodeName, step.NextNode, step.State)
 	}
 	// Output:
-	// a .a
-	// b .ab
+	// a b .a
+	// b  .ab
 }

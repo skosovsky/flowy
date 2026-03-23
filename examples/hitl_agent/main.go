@@ -1,4 +1,5 @@
-// Package main demonstrates Human-in-the-Loop using middleware-based pause/resume.
+// Package main demonstrates Human-in-the-Loop: the graph suspends; the client loads state,
+// applies approval, and resumes via Graph.Stream with the checkpointed next node.
 package main
 
 import (
@@ -6,39 +7,100 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/checkpoint"
 	"github.com/skosovsky/flowy/testutil"
 )
 
-func main() {
-	ctx := context.Background()
-	store := testutil.NewStore[string]()
+type state struct {
+	Text     string
+	Approved bool
+}
 
-	concat := func(c, u string) string { return c + u }
-	b := flowy.NewGraph[string](concat)
-
-	approved := false
-	// Safe pattern: suspend on a normal sequential node, not inside a fan-out branch.
-	hitlMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-		if meta.NodeName == "approve" && !approved {
-			if err := store.Save(ctx, "session_1", state, meta.SuspendTarget); err != nil {
-				return state, err
-			}
-			return state, flowy.ErrSuspend
-		}
-		return next(ctx, state)
+func persistStep(
+	ctx context.Context,
+	cp *testutil.MemoryCheckpointer,
+	ser checkpoint.JSONSerializer[state],
+	threadID, runID string,
+	step flowy.Step[state],
+) error {
+	raw, err := ser.Marshal(step.State)
+	if err != nil {
+		return err
 	}
+	env, err := checkpoint.EncodeStateData(raw)
+	if err != nil {
+		return err
+	}
+	id, err := checkpoint.NewSortableID()
+	if err != nil {
+		return err
+	}
+	return cp.Save(ctx, checkpoint.Checkpoint{
+		ID:        id,
+		ThreadID:  threadID,
+		RunID:     runID,
+		Node:      step.NodeName,
+		Next:      step.NextNode,
+		StateData: env,
+		CreatedAt: time.Now().UTC(),
+	})
+}
 
-	b.Use(hitlMw)
-	b.AddNode("process", func(_ context.Context, s string) (string, error) {
-		return s + "[process]", nil
+func resumeAfterSuspend(
+	ctx context.Context,
+	graph *flowy.Graph[state],
+	cp *testutil.MemoryCheckpointer,
+	ser checkpoint.JSONSerializer[state],
+	threadID, runID string,
+	loaded checkpoint.Checkpoint,
+) (state, error) {
+	raw, err := checkpoint.DecodeStateData(loaded.StateData)
+	if err != nil {
+		return state{}, err
+	}
+	var st state
+	if err := ser.Unmarshal(raw, &st); err != nil {
+		return state{}, err
+	}
+	st.Approved = true
+	st.Text += "[human-approved]"
+
+	var out state
+	for step, streamErr := range graph.Stream(ctx, loaded.Next, st) {
+		if streamErr != nil {
+			return state{}, streamErr
+		}
+		if err := persistStep(ctx, cp, ser, threadID, runID, step); err != nil {
+			return state{}, err
+		}
+		out = step.State
+	}
+	return out, nil
+}
+
+//nolint:gocognit // CLI example: linear suspend/resume flow
+func run(ctx context.Context) error {
+	cp := testutil.NewMemoryCheckpointer()
+	ser := checkpoint.JSONSerializer[state]{}
+
+	b := flowy.NewGraph[state](func(_, update state) state { return update })
+	b.AddNode("process", func(_ context.Context, s state) (state, error) {
+		s.Text += "[process]"
+		return s, nil
 	})
-	b.AddNode("approve", func(_ context.Context, s string) (string, error) {
-		return s + "[approve]", nil
+	b.AddNode("approve", func(_ context.Context, s state) (state, error) {
+		if !s.Approved {
+			return s, flowy.ErrSuspend
+		}
+		s.Text += "[approve]"
+		return s, nil
 	})
-	b.AddNode("finish", func(_ context.Context, s string) (string, error) {
-		return s + "[finish]", nil
+	b.AddNode("finish", func(_ context.Context, s state) (state, error) {
+		s.Text += "[finish]"
+		return s, nil
 	})
 	b.AddEdge("process", "approve")
 	b.AddEdge("approve", "finish")
@@ -47,29 +109,49 @@ func main() {
 
 	graph, err := b.Compile()
 	if err != nil {
+		return err
+	}
+
+	const threadID = "session_1"
+	runID, err := checkpoint.NewSortableID()
+	if err != nil {
+		return err
+	}
+
+	var cur state
+	for step, streamErr := range graph.Stream(ctx, "", state{Text: "init"}) {
+		if streamErr != nil {
+			if !errors.Is(streamErr, flowy.ErrSuspend) {
+				return streamErr
+			}
+			if perr := persistStep(ctx, cp, ser, threadID, runID, step); perr != nil {
+				return perr
+			}
+			fmt.Println("Suspended before approve, state:", step.State.Text)
+
+			loaded, loadErr := cp.LoadLatest(ctx, threadID)
+			if loadErr != nil {
+				return loadErr
+			}
+			final, resumeErr := resumeAfterSuspend(ctx, graph, cp, ser, threadID, runID, loaded)
+			if resumeErr != nil {
+				return resumeErr
+			}
+			fmt.Println("After resume, final:", final.Text)
+			return nil
+		}
+		if perr := persistStep(ctx, cp, ser, threadID, runID, step); perr != nil {
+			return perr
+		}
+		cur = step.State
+	}
+
+	fmt.Println("Final (no suspend):", cur.Text)
+	return nil
+}
+
+func main() {
+	if err := run(context.Background()); err != nil {
 		log.Fatal(err)
 	}
-
-	state, err := graph.Invoke(ctx, "init")
-	if err != nil && !errors.Is(err, flowy.ErrSuspend) {
-		log.Fatal(err)
-	}
-	if errors.Is(err, flowy.ErrSuspend) {
-		fmt.Println("Suspended before approve, state:", state)
-		approved = true
-
-		loaded, startNode, ok := store.Load(ctx, "session_1")
-		if !ok {
-			log.Fatal("load failed")
-		}
-
-		final, err := graph.Resume(ctx, loaded, startNode)
-		if err != nil {
-			log.Fatal(err)
-		}
-		fmt.Println("After Resume, final:", final)
-		return
-	}
-
-	fmt.Println("Final (no suspend):", state)
 }

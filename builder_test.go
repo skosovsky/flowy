@@ -12,7 +12,7 @@ import (
 
 func idReducer[T any](_, update T) T { return update }
 
-var noopNode = func(_ context.Context, s string) (string, error) { return s, nil }
+func noopStringNode(_ context.Context, s string) (string, error) { return s, nil }
 
 func TestBuilder_Compile_Simple(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
@@ -49,7 +49,7 @@ func TestBuilder_Compile_ReActCycle(t *testing.T) {
 
 func TestBuilder_Compile_NoEntryPoint(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.SetFinishPoint("a")
 
 	_, err := b.Compile()
@@ -59,7 +59,7 @@ func TestBuilder_Compile_NoEntryPoint(t *testing.T) {
 
 func TestBuilder_Compile_NoFinishPoint(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.SetEntryPoint("a")
 
 	_, err := b.Compile()
@@ -68,7 +68,7 @@ func TestBuilder_Compile_NoFinishPoint(t *testing.T) {
 
 func TestBuilder_Compile_EdgeToUnknownNode(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.AddEdge("a", "missing")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
@@ -80,8 +80,8 @@ func TestBuilder_Compile_EdgeToUnknownNode(t *testing.T) {
 
 func TestBuilder_Compile_EdgeAndConditionalConflict(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
 	b.AddEdge("a", "b")
 	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
 	b.SetEntryPoint("a")
@@ -94,11 +94,11 @@ func TestBuilder_Compile_EdgeAndConditionalConflict(t *testing.T) {
 
 func TestBuilder_Compile_ConditionalEdge_NilRouter(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
 	b.AddConditionalEdge("a", nil)
 	b.AddEdge("b", "end")
-	b.AddNode("end", noopNode)
+	b.AddNode("end", noopStringNode)
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("end")
 
@@ -125,10 +125,10 @@ func TestBuilder_AddFanOut_Compile(t *testing.T) {
 
 func TestBuilder_Compile_EdgeToFanOutSource(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("db", noopStringNode)
+	b.AddNode("web", noopStringNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddEdge("a", "classify")
 	b.AddFanOut("classify", []string{"db", "web"}, "merge")
 	b.SetEntryPoint("a")
@@ -144,7 +144,7 @@ func TestBuilder_Compile_EdgeToFanOutSource(t *testing.T) {
 
 func TestBuilder_Compile_FanOutEmptyTargets(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddFanOut("x", []string{}, "merge")
 	b.SetEntryPoint("x")
 	b.SetFinishPoint("merge")
@@ -156,8 +156,8 @@ func TestBuilder_Compile_FanOutEmptyTargets(t *testing.T) {
 
 func TestBuilder_Compile_FanOutAndNodeSameName(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("x", noopNode)
-	b.AddNode("merge", noopNode)
+	b.AddNode("x", noopStringNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddFanOut("x", []string{"merge"}, "merge")
 	b.SetEntryPoint("x")
 	b.SetFinishPoint("merge")
@@ -168,9 +168,9 @@ func TestBuilder_Compile_FanOutAndNodeSameName(t *testing.T) {
 
 func TestBuilder_Compile_FanOutTargetIsFanOutSource(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
+	b.AddNode("db", noopStringNode)
+	b.AddNode("web", noopStringNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddFanOut("inner", []string{"db", "web"}, "merge")
 	b.AddFanOut("outer", []string{"inner"}, "merge") // "inner" is fan-out source, not a node
 	b.SetEntryPoint("outer")
@@ -185,9 +185,9 @@ func TestBuilder_Compile_FanOutTargetIsFanOutSource(t *testing.T) {
 func TestBuilder_Compile_FanOut_JoinNodeIsFanOutSource(t *testing.T) {
 	// joinNode must be an executable node; using a fan-out source as joinNode is invalid.
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
+	b.AddNode("db", noopStringNode)
+	b.AddNode("web", noopStringNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddFanOut("inner", []string{"db", "web"}, "merge")
 	b.AddFanOut("outer", []string{"merge"}, "inner") // joinNode "inner" is a fan-out source, not a node
 	b.SetEntryPoint("outer")
@@ -201,9 +201,13 @@ func TestBuilder_Compile_FanOut_JoinNodeIsFanOutSource(t *testing.T) {
 func TestBuilder_Compile_FanOut_JoinNodeIsDynamicFanOutSource(t *testing.T) {
 	// joinNode must be an executable node; using a dynamic fan-out source as joinNode is invalid.
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("merge", noopNode)
-	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) { return []string{"a"}, nil }, "merge")
+	b.AddNode("a", noopStringNode)
+	b.AddNode("merge", noopStringNode)
+	b.AddDynamicFanOut(
+		"route",
+		func(_ context.Context, _ string) ([]string, error) { return []string{"a"}, nil },
+		"merge",
+	)
 	b.AddFanOut("start", []string{"a"}, "route") // joinNode "route" is dynamic fan-out source, not a node
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
@@ -215,7 +219,7 @@ func TestBuilder_Compile_FanOut_JoinNodeIsDynamicFanOutSource(t *testing.T) {
 
 func TestBuilder_Compile_FinishPointNotRegistered(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("nonexistent")
 	_, err := b.Compile()
@@ -226,8 +230,8 @@ func TestBuilder_Compile_FinishPointNotRegistered(t *testing.T) {
 
 func TestBuilder_Compile_EmptyNodeName(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("", noopNode)
-	b.AddNode("a", noopNode)
+	b.AddNode("", noopStringNode)
+	b.AddNode("a", noopStringNode)
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
 	_, err := b.Compile()
@@ -247,7 +251,7 @@ func TestBuilder_Compile_NilNodeHandler(t *testing.T) {
 
 func TestBuilder_Compile_NilReducer(t *testing.T) {
 	b := NewGraph[string](nil)
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
 	_, err := b.Compile()
@@ -257,7 +261,7 @@ func TestBuilder_Compile_NilReducer(t *testing.T) {
 
 func TestBuilder_Compile_DuplicateNode(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
+	b.AddNode("a", noopStringNode)
 	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s + "x", nil })
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("a")
@@ -270,8 +274,8 @@ func TestBuilder_Compile_DuplicateNode(t *testing.T) {
 
 func TestBuilder_Compile_DuplicateEdge(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
 	b.AddEdge("a", "b")
 	b.AddEdge("a", "b")
 	b.SetEntryPoint("a")
@@ -285,8 +289,8 @@ func TestBuilder_Compile_DuplicateEdge(t *testing.T) {
 
 func TestBuilder_FluentAPI(t *testing.T) {
 	b := NewGraph[string](idReducer[string]).
-		AddNode("a", noopNode).
-		AddNode("b", noopNode).
+		AddNode("a", noopStringNode).
+		AddNode("b", noopStringNode).
 		AddEdge("a", "b").
 		SetEntryPoint("a").
 		SetFinishPoint("b")
@@ -297,28 +301,28 @@ func TestBuilder_FluentAPI(t *testing.T) {
 
 func TestMiddlewareChain(t *testing.T) {
 	var order []string
-	g1 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		order = append(order, "g1-in-"+meta.NodeName)
-		out, err := next(ctx, state)
-		order = append(order, "g1-out-"+meta.NodeName)
+	g1 := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		order = append(order, "g1-in-"+chain.NodeName)
+		out, err := chain.Next(ctx, state)
+		order = append(order, "g1-out-"+chain.NodeName)
 		return out, err
 	}
-	g2 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		order = append(order, "g2-in-"+meta.NodeName)
-		out, err := next(ctx, state)
-		order = append(order, "g2-out-"+meta.NodeName)
+	g2 := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		order = append(order, "g2-in-"+chain.NodeName)
+		out, err := chain.Next(ctx, state)
+		order = append(order, "g2-out-"+chain.NodeName)
 		return out, err
 	}
-	l1 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		order = append(order, "l1-in-"+meta.NodeName)
-		out, err := next(ctx, state)
-		order = append(order, "l1-out-"+meta.NodeName)
+	l1 := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		order = append(order, "l1-in-"+chain.NodeName)
+		out, err := chain.Next(ctx, state)
+		order = append(order, "l1-out-"+chain.NodeName)
 		return out, err
 	}
-	l2 := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		order = append(order, "l2-in-"+meta.NodeName)
-		out, err := next(ctx, state)
-		order = append(order, "l2-out-"+meta.NodeName)
+	l2 := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		order = append(order, "l2-in-"+chain.NodeName)
+		out, err := chain.Next(ctx, state)
+		order = append(order, "l2-out-"+chain.NodeName)
 		return out, err
 	}
 	b := NewGraph[string](idReducer[string])
@@ -334,19 +338,23 @@ func TestMiddlewareChain(t *testing.T) {
 	ctx := context.Background()
 	_, err = graph.Invoke(ctx, "")
 	require.NoError(t, err)
-	assert.Equal(t, []string{"g1-in-a", "g2-in-a", "l1-in-a", "l2-in-a", "node-a", "l2-out-a", "l1-out-a", "g2-out-a", "g1-out-a"}, order)
+	assert.Equal(
+		t,
+		[]string{"g1-in-a", "g2-in-a", "l1-in-a", "l2-in-a", "node-a", "l2-out-a", "l1-out-a", "g2-out-a", "g1-out-a"},
+		order,
+	)
 }
 
 // TestMiddleware_Chain verifies nodeName is passed correctly and middlewares can mutate state/error.
 func TestMiddleware_Chain(t *testing.T) {
 	var namesSeen []string
-	mw := func(ctx context.Context, state string, meta MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		namesSeen = append(namesSeen, meta.NodeName)
-		out, err := next(ctx, state)
+	mw := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		namesSeen = append(namesSeen, chain.NodeName)
+		out, err := chain.Next(ctx, state)
 		if err != nil {
 			return out, err
 		}
-		return out + "[" + meta.NodeName + "]", nil
+		return out + "[" + chain.NodeName + "]", nil
 	}
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("x", func(_ context.Context, s string) (string, error) { return s + "x", nil })
@@ -368,8 +376,8 @@ func TestMiddleware_Chain(t *testing.T) {
 // TestMiddleware_ErrorInterception verifies that middleware can wrap and return node errors; caller receives the wrapped error.
 func TestMiddleware_ErrorInterception(t *testing.T) {
 	origErr := errors.New("original error")
-	wrapMw := func(ctx context.Context, state string, _ MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		out, err := next(ctx, state)
+	wrapMw := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		out, err := chain.Next(ctx, state)
 		if err != nil {
 			return out, fmt.Errorf("middleware wrapped: %w", err)
 		}
@@ -387,21 +395,21 @@ func TestMiddleware_ErrorInterception(t *testing.T) {
 	_, err = graph.Invoke(context.Background(), "")
 	require.Error(t, err)
 	require.ErrorContains(t, err, "middleware wrapped")
-	assert.ErrorIs(t, err, origErr)
+	require.ErrorIs(t, err, origErr)
 }
 
 func TestFallbackMiddleware(t *testing.T) {
 	var fallbackInput string
-	fallbackNode := func(_ context.Context, s string) (string, error) {
+	fallbackNode := func(_ context.Context, s string) string {
 		fallbackInput = s
-		return s + "[fallback]", nil
+		return s + "[fallback]"
 	}
-	fallbackMw := func(ctx context.Context, state string, _ MiddlewareContext[string], next NodeHandler[string]) (string, error) {
-		out, err := next(ctx, state)
+	fallbackMw := func(ctx context.Context, state string, chain *ExecutionChain[string]) (string, error) {
+		out, err := chain.Next(ctx, state)
 		if err == nil {
 			return out, nil
 		}
-		return fallbackNode(ctx, state)
+		return fallbackNode(ctx, state), nil
 	}
 
 	b := NewGraph[string](idReducer[string])
@@ -427,8 +435,12 @@ func TestFallbackMiddleware(t *testing.T) {
 
 func TestBuilder_Compile_DynamicFanOut_JoinNodeNotRegistered(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopNode)
-	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil }, "missing")
+	b.AddNode("merge", noopStringNode)
+	b.AddDynamicFanOut(
+		"route",
+		func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil },
+		"missing",
+	)
 	b.SetEntryPoint("route")
 	b.SetFinishPoint("merge")
 	_, err := b.Compile()
@@ -440,7 +452,7 @@ func TestBuilder_Compile_DynamicFanOut_JoinNodeNotRegistered(t *testing.T) {
 
 func TestBuilder_Compile_DynamicFanOut_NilRouter(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddDynamicFanOut("route", nil, "merge")
 	b.SetEntryPoint("route")
 	b.SetFinishPoint("merge")
@@ -452,9 +464,13 @@ func TestBuilder_Compile_DynamicFanOut_NilRouter(t *testing.T) {
 
 func TestBuilder_Compile_DynamicFanOut_AndNodeSameName(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("x", noopNode)
-	b.AddNode("merge", noopNode)
-	b.AddDynamicFanOut("x", func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil }, "merge")
+	b.AddNode("x", noopStringNode)
+	b.AddNode("merge", noopStringNode)
+	b.AddDynamicFanOut(
+		"x",
+		func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil },
+		"merge",
+	)
 	b.SetEntryPoint("x")
 	b.SetFinishPoint("merge")
 	_, err := b.Compile()
@@ -464,7 +480,7 @@ func TestBuilder_Compile_DynamicFanOut_AndNodeSameName(t *testing.T) {
 
 func TestBuilder_Compile_DynamicFanOut_Duplicate(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("merge", noopNode)
+	b.AddNode("merge", noopStringNode)
 	router := func(_ context.Context, _ string) ([]string, error) { return []string{"merge"}, nil }
 	b.AddDynamicFanOut("route", router, "merge")
 	b.AddDynamicFanOut("route", router, "merge")

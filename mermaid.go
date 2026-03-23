@@ -7,6 +7,9 @@ import (
 	"strings"
 )
 
+// Multiplier for hashing empty-base Mermaid node IDs (non-cryptographic, stable string hash).
+const mermaidEmptyIDHashMul = 31
+
 // ExportMermaid returns a Mermaid flowchart (TD) representation of the graph.
 // Output is deterministic (keys sorted) for stable snapshots and documentation.
 // Node names that sanitize to the same ID get unique suffixes to avoid diagram collisions.
@@ -103,11 +106,12 @@ func (g *Graph[T]) buildMermaidIDMap() map[string]string {
 	for _, name := range ordered {
 		base := mermaidSanitize(name)
 		if base == "" {
-			var h uint32
-			for _, r := range name {
-				h = h*31 + uint32(r)
+			var h uint64
+			// Hash UTF-8 bytes (not runes) for a stable non-cryptographic Mermaid node ID; avoids G115 on rune casts.
+			for i := range len(name) {
+				h = h*mermaidEmptyIDHashMul + uint64(name[i])
 			}
-			base = "_n" + strconv.FormatUint(uint64(h), 16)
+			base = "_n" + strconv.FormatUint(h, 16)
 		}
 		n := baseCount[base]
 		baseCount[base]++

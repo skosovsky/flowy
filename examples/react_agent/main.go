@@ -10,6 +10,8 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
+const reActMaxSteps = 25
+
 func main() {
 	ctx := context.Background()
 
@@ -49,7 +51,7 @@ func main() {
 	b.SetEntryPoint("reason")
 	b.SetFinishPoint("finish")
 
-	graph, err := b.Compile(flowy.WithMaxSteps(25))
+	graph, err := b.Compile(flowy.WithMaxSteps(reActMaxSteps))
 	if err != nil {
 		log.Fatal(err)
 	}

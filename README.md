@@ -10,7 +10,7 @@
 - Conditional edges for state-driven routing
 - Static and dynamic fan-out with reducer-based merge
 - Global and per-node middlewares
-- Suspend/resume with `ErrSuspend` and `Resume(ctx, state, startNode)`
+- Suspend with `ErrSuspend`; resume by the caller using `Stream` + `checkpoint` storage
 - Step streaming via `iter.Seq2`
 - Mermaid export for graph visualization
 - Graph composition with `AsNode()` and `SubgraphNode(...)`
@@ -93,22 +93,13 @@ The runner calls the node, merges the returned update with the reducer, then rou
 
 ## Middlewares & Cross-cutting Concerns
 
-Middleware is the official extension point for logging, tracing, metrics, RBAC, retries, fallbacks, memory, and persistence:
+Middleware is the official extension point for logging, tracing, metrics, RBAC, retries, fallbacks, memory, and persistence. The pipeline uses an **execution chain**: call `chain.Next(ctx, state)` to run the next layer or the node.
 
 ```go
-type NodeHandler[T any] = Node[T]
+type Middleware[T any] func(ctx context.Context, state T, chain *ExecutionChain[T]) (T, error)
 
-type MiddlewareContext[T any] struct {
-	NodeName      string
-	SuspendTarget string
-	ExecutionKind flowy.MiddlewareExecutionKind
-	CanResolveNext bool
-	IsFinish      bool
-	ApplyUpdate   func(current T, update T) T
-	ResolveNext   func(ctx context.Context, postState T) (string, error)
-}
-
-type Middleware[T any] func(ctx context.Context, state T, meta MiddlewareContext[T], next NodeHandler[T]) (T, error)
+// ExecutionChain exposes NodeName, SuspendTarget, ExecutionKind, CanResolveNext, IsFinish,
+// plus ApplyUpdate / ResolveNext methods, and Next to continue the pipeline.
 ```
 
 There are two levels:
@@ -126,10 +117,10 @@ Order is onion-style:
 Example:
 
 ```go
-logMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-	log.Println("before", meta.NodeName)
-	out, err := next(ctx, state)
-	log.Println("after", meta.NodeName)
+logMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+	log.Println("before", chain.NodeName)
+	out, err := chain.Next(ctx, state)
+	log.Println("after", chain.NodeName)
 	return out, err
 }
 
@@ -137,8 +128,8 @@ fallbackNode := func(_ context.Context, _ string) (string, error) {
 	return "[fallback]", nil
 }
 
-fallbackMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-	out, err := next(ctx, state)
+fallbackMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+	out, err := chain.Next(ctx, state)
 	if err == nil {
 		return out, nil
 	}
@@ -151,90 +142,60 @@ b.Use(logMw)
 b.AddNode("unstable", unstableNode, fallbackMw)
 ```
 
+### Migrating to ExecutionChain middleware
+
+Older sketches used a `next` callback to continue the pipeline. The compiled runner uses **`ExecutionChain`**: call **`chain.Next(ctx, state)`** and read step metadata from **`chain`** (`NodeName`, `SuspendTarget`, `ExecutionKind`, `CanResolveNext`, `IsFinish`, plus `ApplyUpdate` / `ResolveNext` when you need reducer or routing outside the default step).
+
+**Before (conceptual — callback-style “next”):**
+
+```go
+// Not the current API — illustrative only.
+type MiddlewareContext[T any] struct { /* … */ }
+
+func logMw(ctx context.Context, state string, mw *MiddlewareContext[string]) (string, error) {
+	log.Println("before", mw.NodeName)
+	out, err := mw.Next(ctx, state) // hypothetical
+	log.Println("after", mw.NodeName)
+	return out, err
+}
+```
+
+**After (current `flowy` API):**
+
+```go
+func logMw(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+	log.Println("before", chain.NodeName)
+	out, err := chain.Next(ctx, state)
+	log.Println("after", chain.NodeName)
+	return out, err
+}
+```
+
+There is no compatibility adapter in the library: migrate call sites to `*ExecutionChain` and `chain.Next` as in the examples above.
+
 ## State Persistence & Checkpoints
 
-`flowy` does not include a built-in database, checkpoint store, thread registry, or checkpointer abstraction. If you need persistence between steps, implement it in middleware.
+### Layout vs. original task spec
 
-`MiddlewareContext` exists so middleware can work at the graph-step level instead of only looking at raw node output:
+The micro-spec once referenced `adapters/checkpointer` as the home for DTOs and storage. The implementation uses a **first-class Go subpackage** `github.com/skosovsky/flowy/checkpoint` for persistence types (`Checkpoint`, serializers) and keeps optional **adapters** (e.g. filesystem or DB) beside or under `adapters/`. That keeps the **root `flowy` package** free of imports from persistence while still giving users a single `go get` and clear `import "…/checkpoint"`. Same goal as the spec: **core stays stateless**; all I/O lives outside `package flowy`. Formal decision: [ADR 0001](docs/adr/0001-persistence-package-layout.md).
 
-- `ApplyUpdate(current, update)` computes the merged post-step state
-- `ResolveNext(ctx, postState)` resolves the next node for sequential executable steps
-- `SuspendTarget` tells pause/resume middleware which resumable node or routing label to persist
-- `ExecutionKind` and `CanResolveNext` tell you whether the current invocation is a normal node step or a fan-out branch
+The execution core is **stateless**. Types and storage live in `github.com/skosovsky/flowy/checkpoint` and adapters (`adapters/checkpointer/...`):
 
-For fan-out branches:
+- `checkpoint.Checkpoint` — persisted DTO (`Node`, `Next`, `StateData`, …)
+- `checkpoint.Checkpointer` — `Save` / `LoadLatest` / `GetHistory`
+- `checkpoint.JSONSerializer[T]` and `checkpoint.EncodeStateData` / `DecodeStateData` for the JSON envelope
 
-- `ExecutionKind == flowy.MiddlewareExecutionFanOutBranch`
-- `CanResolveNext == false`
-- `ResolveNext(...)` is unsupported by contract
-- `ErrSuspend` is not supported; pause before the fan-out source or after the join node
+**Typical flow:** iterate `for step, err := range graph.Stream(ctx, startNode, state)`. Use `startNode == ""` to use the compiled entry point. After each successful step, persist `step.State`, `step.NodeName`, and `step.NextNode` (your `Checkpoint.Node` / `Next`). On `ErrSuspend`, `step` contains the snapshot and `NextNode` is the resume cursor; **you** call `Save`, then later `Stream(ctx, loaded.Next, decodedState)` to continue.
 
-Typical HITL/persistence flow:
+Runnable examples: [`ExampleGraph_statefulClientWithCheckpoint`](./persistence_examples_test.go), [`examples/hitl_agent/main.go`](./examples/hitl_agent/main.go).
 
-1. Middleware sees a node that should pause, for example `approve`
-2. Middleware stores `(state, meta.SuspendTarget)` in your own storage
-3. Middleware returns `ErrSuspend`
-4. External code later loads `(state, startNode)` and calls `Resume(ctx, state, startNode)`
+`Checkpointer.Save` must be idempotent by `Checkpoint.ID`.
 
-For post-step memory or checkpoints under merge reducers, persist the merged state rather than the raw node output. This recipe is for sequential executable nodes only:
+### Middleware Persistence
 
-```go
-memoryMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-	out, err := next(ctx, state)
-	if err != nil {
-		return out, err
-	}
+`ExecutionChain` exposes step-level metadata (`ApplyUpdate`, `ResolveNext`, `SuspendTarget`, fan-out branch rules). See [`ExampleExecutionChain_persistenceRecipe`](./persistence_examples_test.go).
 
-	if !meta.CanResolveNext {
-		// Fan-out branch: no generic checkpoint target is available here.
-		return out, nil
-	}
-
-	postState := meta.ApplyUpdate(state, out)
-	nextNode, err := meta.ResolveNext(ctx, postState)
-	if err != nil {
-		return out, err
-	}
-
-	_ = saveCheckpoint(postState, nextNode)
-	return out, nil
-}
-```
-
-Example:
-
-```go
-type Store[T any] interface {
-	Save(ctx context.Context, key string, state T, startNode string) error
-	Load(ctx context.Context, key string) (state T, startNode string, ok bool)
-}
-
-persistMw := func(store Store[string]) flowy.Middleware[string] {
-	return func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-		if meta.NodeName == "approve" {
-			if err := store.Save(ctx, "session-1", state, meta.SuspendTarget); err != nil {
-				return state, err
-			}
-			return state, flowy.ErrSuspend
-		}
-		return next(ctx, state)
-	}
-}
-
-state, err := graph.Invoke(ctx, initial)
-if errors.Is(err, flowy.ErrSuspend) {
-	loaded, startNode, ok := store.Load(ctx, "session-1")
-	if ok {
-		state, err = graph.Resume(ctx, loaded, startNode)
-	}
-}
-```
-
-This same pattern is how you implement memory/checkpointing, human approval pauses, and other pause/resume workflows.
-
-For production persistence, key saved state by thread/session identity plus the resume target. Using only `nodeName` is fine for a toy example, but not for a real multi-run store.
-
-## Invoke, Resume, and Streaming
+## Invoke and Streaming
 
 Use `Invoke` to run from the graph entry point:
 
@@ -242,33 +203,29 @@ Use `Invoke` to run from the graph entry point:
 finalState, err := graph.Invoke(ctx, initialState)
 ```
 
-Use `Resume` to continue from a specific node or routing label:
+Streaming:
 
 ```go
-finalState, err := graph.Resume(ctx, savedState, "approve")
-```
-
-`Resume` accepts:
-
-- a registered executable node
-- a fan-out source label
-- a dynamic fan-out source label
-
-Streaming is available through iterators:
-
-```go
-for step, err := range graph.Stream(ctx, state) {
+for step, err := range graph.Stream(ctx, "", initialState) {
 	if err != nil {
 		if errors.Is(err, flowy.ErrSuspend) {
-			fmt.Println("resume target:", step.NodeName)
+			fmt.Println("suspending node:", step.NodeName, "resume:", step.NextNode)
 		}
 		return
 	}
-	fmt.Println(step.NodeName, step.State)
+	fmt.Println(step.NodeName, step.NextNode, step.State)
 }
 ```
 
-`ResumeStream(ctx, state, startNode)` provides the same iterator contract starting from an arbitrary node.
+On `ErrSuspend`, the suspending node or middleware must return the full snapshot state. Treat suspend as “return snapshot and stop”, not as “return delta and let the reducer finish the step”.
+
+## Development
+
+Hot-path benchmarks (expect `0 allocs/op` for both after pool warmup; benchmarks pre-warm the `ExecutionChain` pool before measuring):
+
+```bash
+make bench-hotpath
+```
 
 ## Build Options
 
@@ -294,7 +251,7 @@ graph, err := b.Compile(
 - Fan-out target updates are merged in target order
 - `joinNode` must be a registered executable node
 - global middlewares also wrap fan-out targets
-- `Resume` can start from a fan-out or dynamic fan-out routing label
+- client-driven resume can continue through fan-out and dynamic fan-out routing labels when `Checkpoint.Next` stores the routing label or join node
 
 ## State Management Patterns
 
@@ -334,7 +291,7 @@ Use Mermaid export for debugging and documentation.
 
 ## Examples
 
-- [examples/hitl_agent/main.go](./examples/hitl_agent/main.go) shows middleware-based pause/resume
+- [examples/hitl_agent/main.go](./examples/hitl_agent/main.go) shows checkpoint-backed Human-in-the-Loop resume
 - [examples/middleware_agent/main.go](./examples/middleware_agent/main.go) shows logging, memory, and fallback middleware
 - [examples/react_agent/main.go](./examples/react_agent/main.go) shows a small ReAct loop
 - [examples/semantic_cache_agent/main.go](./examples/semantic_cache_agent/main.go) shows semantic-cache short-circuiting

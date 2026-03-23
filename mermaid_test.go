@@ -11,8 +11,8 @@ import (
 
 func TestExportMermaid_Simple(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
 	b.AddEdge("a", "b")
 	b.SetEntryPoint("a")
 	b.SetFinishPoint("b")
@@ -26,9 +26,9 @@ func TestExportMermaid_Simple(t *testing.T) {
 
 func TestExportMermaid_FanOut(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
+	b.AddNode("db", noopStringNode)
+	b.AddNode("web", noopStringNode)
+	b.AddNode("merge", noopStringNode)
 	b.AddFanOut("start", []string{"db", "web"}, "merge")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("merge")
@@ -44,9 +44,9 @@ func TestExportMermaid_FanOut(t *testing.T) {
 
 func TestExportMermaid_Conditional(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
-	b.AddNode("c", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
+	b.AddNode("c", noopStringNode)
 	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
 	b.AddEdge("b", "c")
 	b.SetEntryPoint("a")
@@ -61,10 +61,10 @@ func TestExportMermaid_Conditional(t *testing.T) {
 func TestExportMermaid_MultipleConditionalEdges(t *testing.T) {
 	// Each conditional edge gets a unique placeholder so the diagram does not collapse branches.
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
-	b.AddNode("c", noopNode)
-	b.AddNode("d", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
+	b.AddNode("c", noopStringNode)
+	b.AddNode("d", noopStringNode)
 	b.AddConditionalEdge("a", func(_ context.Context, _ string) (string, error) { return "b", nil })
 	b.AddConditionalEdge("b", func(_ context.Context, _ string) (string, error) { return "c", nil })
 	b.AddEdge("c", "d")
@@ -82,12 +82,16 @@ func TestExportMermaid_MultipleConditionalEdges(t *testing.T) {
 
 func TestExportMermaid_DynamicFanOut(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("db", noopNode)
-	b.AddNode("web", noopNode)
-	b.AddNode("merge", noopNode)
-	b.AddDynamicFanOut("route", func(_ context.Context, _ string) ([]string, error) { return []string{"db", "web"}, nil }, "merge")
+	b.AddNode("db", noopStringNode)
+	b.AddNode("web", noopStringNode)
+	b.AddNode("merge", noopStringNode)
+	b.AddDynamicFanOut(
+		"route",
+		func(_ context.Context, _ string) ([]string, error) { return []string{"db", "web"}, nil },
+		"merge",
+	)
 	b.AddEdge("entry", "route")
-	b.AddNode("entry", noopNode)
+	b.AddNode("entry", noopStringNode)
 	b.SetEntryPoint("entry")
 	b.SetFinishPoint("merge")
 	graph, err := b.Compile()
@@ -103,8 +107,8 @@ func TestExportMermaid_DynamicFanOut(t *testing.T) {
 func TestExportMermaid_SpecialCharNames(t *testing.T) {
 	// Node name that normalizes to empty (all special chars) gets a fallback ID.
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("!!!", noopNode)
-	b.AddNode("b", noopNode)
+	b.AddNode("!!!", noopStringNode)
+	b.AddNode("b", noopStringNode)
 	b.AddEdge("!!!", "b")
 	b.SetEntryPoint("!!!")
 	b.SetFinishPoint("b")
@@ -123,9 +127,9 @@ func TestExportMermaid_SpecialCharNames(t *testing.T) {
 func TestExportMermaid_CollidingNames(t *testing.T) {
 	// Different node names that sanitize to the same ID must get unique Mermaid IDs (no diagram collision).
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a-b", noopNode)
-	b.AddNode("a_b", noopNode)
-	b.AddNode("a b", noopNode)
+	b.AddNode("a-b", noopStringNode)
+	b.AddNode("a_b", noopStringNode)
+	b.AddNode("a b", noopStringNode)
 	b.AddEdge("a-b", "a_b")
 	b.AddEdge("a_b", "a b")
 	b.SetEntryPoint("a-b")
@@ -144,9 +148,9 @@ func TestExportMermaid_CollidingNames(t *testing.T) {
 // TestExportMermaid_SimpleLinear verifies Mermaid export for a linear graph (smoke).
 func TestExportMermaid_SimpleLinear(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
-	b.AddNode("a", noopNode)
-	b.AddNode("b", noopNode)
-	b.AddNode("c", noopNode)
+	b.AddNode("a", noopStringNode)
+	b.AddNode("b", noopStringNode)
+	b.AddNode("c", noopStringNode)
 	b.AddEdge("a", "b")
 	b.AddEdge("b", "c")
 	b.SetEntryPoint("a")

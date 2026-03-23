@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.set-matrix.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: set-matrix
+        run: |
+          MODULES=$(find . -type d \( -name ".*" -not -name "." -o -name "vendor" \) -prune -o -type f -name "go.mod" -exec dirname {} \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "modules=$MODULES" >> $GITHUB_OUTPUT
+
+  lint:
+    needs: prepare-matrix
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJson(needs.prepare-matrix.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: ${{ matrix.module }}/go.mod
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.11.3
+          working-directory: ${{ matrix.module }}
+          args: --timeout=5m
+
+  test:
+    name: Test
+    needs: [prepare-matrix, lint]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJson(needs.prepare-matrix.outputs.modules) }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          cache: true
+          go-version-file: ${{ matrix.module }}/go.mod
+      - name: Run tests
+        working-directory: ${{ matrix.module }}
+        run: go test -v -race ./...
+      - name: Hot-path benchmarks (alloc check)
+        working-directory: ${{ matrix.module }}
+        run: go test -bench='BenchmarkExecuteNode_(NoMiddleware|With5Middlewares)' -benchmem -count=1 -run=^$$ .

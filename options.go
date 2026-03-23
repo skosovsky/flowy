@@ -55,10 +55,15 @@ func applyBuildOptions(opts []BuildOption) buildOpts {
 	return o
 }
 
+// noopCancel is a shared cancel func for the no-timeout path so hot paths avoid allocating a new closure each call.
+//
+//nolint:gochecknoglobals // Must be one shared func value; a new `func() {}` literal allocates each call.
+var noopCancel = func() {}
+
 // nodeContextWithTimeout returns ctx with nodeTimeout if set.
 func nodeContextWithTimeout(ctx context.Context, cfg *runConfig) (context.Context, func()) {
 	if cfg.nodeTimeout > 0 {
 		return context.WithTimeout(ctx, cfg.nodeTimeout)
 	}
-	return ctx, func() {}
+	return ctx, noopCancel
 }

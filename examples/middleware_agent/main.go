@@ -13,41 +13,46 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func main() {
-	ctx := context.Background()
+type memoryStore struct {
+	mu   sync.RWMutex
+	data map[string]string
+}
 
-	type memoryStore struct {
-		mu   sync.RWMutex
-		data map[string]string
+func newMemoryStore() *memoryStore {
+	return &memoryStore{
+		mu:   sync.RWMutex{},
+		data: make(map[string]string),
 	}
-	// Demo-only keying by node name. Real persistence should include a thread/session ID.
-	save := func(store *memoryStore, nodeName, state string) {
-		store.mu.Lock()
-		defer store.mu.Unlock()
-		store.data[nodeName] = state
-	}
-	load := func(store *memoryStore, nodeName string) string {
-		store.mu.RLock()
-		defer store.mu.RUnlock()
-		return store.data[nodeName]
-	}
+}
 
-	memory := &memoryStore{data: make(map[string]string)}
+func (store *memoryStore) save(nodeName, state string) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.data[nodeName] = state
+}
+
+func (store *memoryStore) load(nodeName string) string {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	return store.data[nodeName]
+}
+
+func buildGraph(memory *memoryStore) *flowy.GraphBuilder[string] {
 	reducer := func(current, update string) string { return current + update }
 	b := flowy.NewGraph[string](reducer)
 
-	loggingMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
+	loggingMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
 		start := time.Now()
-		out, err := next(ctx, state)
-		log.Printf("node=%s duration=%s err=%v", meta.NodeName, time.Since(start), err)
+		out, err := chain.Next(ctx, state)
+		log.Printf("node=%s duration=%s err=%v", chain.NodeName, time.Since(start), err)
 		return out, err
 	}
 
-	memoryMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-		out, err := next(ctx, state)
+	memoryMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+		out, err := chain.Next(ctx, state)
 		if err == nil {
-			postState := meta.ApplyUpdate(state, out)
-			save(memory, meta.NodeName, postState)
+			postState := chain.ApplyUpdate(state, out)
+			memory.save(chain.NodeName, postState)
 		}
 		return out, err
 	}
@@ -56,13 +61,13 @@ func main() {
 		return "[fallback]", nil
 	}
 
-	fallbackMw := func(ctx context.Context, state string, meta flowy.MiddlewareContext[string], next flowy.NodeHandler[string]) (string, error) {
-		out, err := next(ctx, state)
+	fallbackMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+		out, err := chain.Next(ctx, state)
 		if err == nil {
 			return out, nil
 		}
 
-		log.Printf("fallback for %s: %v", meta.NodeName, err)
+		log.Printf("fallback for %s: %v", chain.NodeName, err)
 
 		// Protect the graph from dirty partial output by reusing the original input state.
 		return fallbackNode(ctx, state)
@@ -82,6 +87,19 @@ func main() {
 	b.AddEdge("unstable", "finish")
 	b.SetEntryPoint("start")
 	b.SetFinishPoint("finish")
+	return b
+}
+
+func printMemory(memory *memoryStore) {
+	fmt.Println("memory[start]:", memory.load("start"))
+	fmt.Println("memory[unstable]:", memory.load("unstable"))
+	fmt.Println("memory[finish]:", memory.load("finish"))
+}
+
+func main() {
+	ctx := context.Background()
+	memory := newMemoryStore()
+	b := buildGraph(memory)
 
 	graph, err := b.Compile()
 	if err != nil {
@@ -94,7 +112,5 @@ func main() {
 	}
 
 	fmt.Println("final:", final)
-	fmt.Println("memory[start]:", load(memory, "start"))
-	fmt.Println("memory[unstable]:", load(memory, "unstable"))
-	fmt.Println("memory[finish]:", load(memory, "finish"))
+	printMemory(memory)
 }

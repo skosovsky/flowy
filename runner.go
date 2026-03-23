@@ -10,85 +10,69 @@ import (
 
 // Graph is the compiled, immutable graph. Created only via GraphBuilder.Compile.
 type Graph[T any] struct {
-	nodes             map[string]nodeDef[T]
-	edges             map[string]string
-	conditionalEdges  map[string]ConditionalEdge[T]
-	fanOuts           map[string]*fanOutDef
-	dynamicFanOuts    map[string]*dynamicFanOutDef[T]
-	globalMiddlewares []Middleware[T]
-	entryPoint        string
-	finishPoints      map[string]bool
-	reducer           Reducer[T]
-	defaults          runConfig
+	nodes            map[string]nodeDef[T]
+	edges            map[string]string
+	conditionalEdges map[string]ConditionalEdge[T]
+	fanOuts          map[string]*fanOutDef
+	dynamicFanOuts   map[string]*dynamicFanOutDef[T]
+	entryPoint       string
+	finishPoints     map[string]bool
+	reducer          Reducer[T]
+	defaults         runConfig
+	// Reuses *ExecutionChain[T] for middleware paths to avoid one heap alloc per executeNode (see borrowExecutionChain).
+	executionChainPool sync.Pool
 }
 
-type suspendExecution[T any] struct {
+type suspendExecutionError[T any] struct {
 	state        T
 	resumeTarget string
 }
 
-func (e *suspendExecution[T]) Error() string {
+func (e *suspendExecutionError[T]) Error() string {
 	return ErrSuspend.Error()
 }
 
-func (e *suspendExecution[T]) Unwrap() error {
+func (e *suspendExecutionError[T]) Unwrap() error {
 	return ErrSuspend
 }
 
-// Stream runs the graph from the entry point and yields (Step, nil) after each successful step.
-// On error, it yields one final (Step{}, err) and stops. On ErrSuspend, it yields
-// one final Step with the saved state and resume target, then stops.
-func (g *Graph[T]) Stream(ctx context.Context, state T) iter.Seq2[Step[T], error] {
+// Stream runs the graph starting at startNode (or the compiled entry point if startNode is empty)
+// and yields (Step, nil) after each successful step. On error, it yields one final (Step{}, err) and stops.
+// On ErrSuspend, it yields one final Step with state, NodeName set to the suspending node, NextNode set to
+// the resume cursor, then stops. The caller persists state and NextNode outside the core.
+//
+// Error contract (non-suspend):
+//   - [ErrMaxStepsExceeded]: after the step budget is exhausted, yields a zero [Step] and ErrMaxStepsExceeded.
+//   - Context cancellation or deadline: if ctx is done before a step, yields a zero Step and
+//     an error wrapping the context error.
+//   - Other errors from routing or nodes: typically yields a zero Step and the error; see [Step] for
+//     when fields may be partially filled.
+//
+// See [Step] for field guarantees on success vs ErrSuspend vs other errors.
+func (g *Graph[T]) Stream(ctx context.Context, startNode string, state T) iter.Seq2[Step[T], error] {
 	return func(yield func(Step[T], error) bool) {
-		g.runStream(ctx, state, g.entryPoint, yield)
+		sn := startNode
+		if sn == "" {
+			sn = g.entryPoint
+		}
+		g.runStream(ctx, state, sn, yield)
 	}
 }
 
-// Invoke runs the graph to completion. It returns the final state on success,
-// or the last consistent state together with an error.
+// Invoke runs the graph to completion. On success it returns the final merged state.
+//
+// On ErrSuspend, it returns the snapshot state from the last step (full state for resume) and ErrSuspend.
+//
+// On other errors, behavior follows the last yield from [Stream]:
+//   - [ErrMaxStepsExceeded] or context cancellation: the iterator yields a zero [Step]; Invoke returns
+//     the last merged state from the previous successful step (or the initial state if none) and the error.
+//   - If the iterator yields a non-zero [Step].NodeName together with the error, Invoke returns
+//     step.State and the error (state associated with that failing step).
+//   - Otherwise it returns the last state from a successful prior step and the error.
 func (g *Graph[T]) Invoke(ctx context.Context, state T) (T, error) {
 	var lastState T
 	lastState = state
-	for step, err := range g.Stream(ctx, state) {
-		if err != nil {
-			if step.NodeName != "" {
-				return step.State, err
-			}
-			return lastState, err
-		}
-		lastState = step.State
-	}
-	return lastState, nil
-}
-
-// ResumeStream continues execution from startNode with the given state. Same yielding contract as Stream.
-func (g *Graph[T]) ResumeStream(ctx context.Context, state T, startNode string) iter.Seq2[Step[T], error] {
-	if startNode == "" {
-		return func(yield func(Step[T], error) bool) {
-			yield(Step[T]{}, fmt.Errorf("flowy: start node required for Resume"))
-		}
-	}
-	if !g.hasNodeOrRouting(startNode) {
-		return func(yield func(Step[T], error) bool) {
-			yield(Step[T]{}, fmt.Errorf("flowy: resume node %q not found", startNode))
-		}
-	}
-	return func(yield func(Step[T], error) bool) {
-		g.runStream(ctx, state, startNode, yield)
-	}
-}
-
-// Resume continues execution from startNode with the given state.
-func (g *Graph[T]) Resume(ctx context.Context, state T, startNode string) (T, error) {
-	if startNode == "" {
-		return state, fmt.Errorf("flowy: start node required for Resume")
-	}
-	if !g.hasNodeOrRouting(startNode) {
-		return state, fmt.Errorf("flowy: resume node %q not found", startNode)
-	}
-	var lastState T
-	lastState = state
-	for step, err := range g.ResumeStream(ctx, state, startNode) {
+	for step, err := range g.Stream(ctx, "", state) {
 		if err != nil {
 			if step.NodeName != "" {
 				return step.State, err
@@ -101,83 +85,154 @@ func (g *Graph[T]) Resume(ctx context.Context, state T, startNode string) (T, er
 }
 
 // runStream executes from startNode, calling yield after each successful node. On error or ErrSuspend, yields one final event and returns.
-func (g *Graph[T]) runStream(ctx context.Context, state T, startNode string, yield func(Step[T], error) bool) {
+func (g *Graph[T]) runStream(
+	ctx context.Context,
+	state T,
+	startNode string,
+	yield func(Step[T], error) bool,
+) {
 	current := startNode
 	cfg := &g.defaults
-	for step := 0; step < cfg.maxSteps; step++ {
+	for range cfg.maxSteps {
 		if err := ctx.Err(); err != nil {
 			wrapped := fmt.Errorf("flowy: %w", err)
 			yield(Step[T]{}, wrapped)
 			return
 		}
 
-		if fo, isFanOut := g.fanOuts[current]; isFanOut {
-			nextState, err := g.runFanOut(ctx, current, state, fo, cfg)
-			if err != nil {
-				yield(Step[T]{}, err)
-				return
-			}
-			state = nextState
-			if !yield(Step[T]{State: state, NodeName: current}, nil) {
-				return
-			}
-			current = fo.joinNode
-			continue
-		}
-		if dfo, isDynFanOut := g.dynamicFanOuts[current]; isDynFanOut {
-			targets, err := dfo.router(ctx, state)
-			if err != nil {
-				wrapped := fmt.Errorf("flowy: dynamic fan-out router %q failed: %w", current, err)
-				yield(Step[T]{}, wrapped)
-				return
-			}
-			if len(targets) > 0 {
-				tempFo := &fanOutDef{targets: targets, joinNode: dfo.joinNode}
-				nextState, err := g.runFanOut(ctx, current, state, tempFo, cfg)
-				if err != nil {
-					yield(Step[T]{}, err)
-					return
-				}
-				state = nextState
-			}
-			if !yield(Step[T]{State: state, NodeName: current}, nil) {
-				return
-			}
-			current = dfo.joinNode
-			continue
-		}
-
-		if _, ok := g.nodes[current]; !ok {
-			yield(Step[T]{}, fmt.Errorf("flowy: node %q not found", current))
-			return
-		}
-		delta, err := g.executeNode(ctx, state, current, current, cfg)
+		result, err := g.executeStep(ctx, state, current, cfg)
 		if err != nil {
 			if suspendState, resumeTarget, ok := unwrapSuspend(err, state, current); ok {
-				yield(Step[T]{State: suspendState, NodeName: resumeTarget}, ErrSuspend)
+				yield(Step[T]{State: suspendState, NodeName: current, NextNode: resumeTarget}, ErrSuspend)
 				return
 			}
 			yield(Step[T]{}, err)
 			return
 		}
-		state = g.reducer(state, delta)
-		if !yield(Step[T]{State: state, NodeName: current}, nil) {
+
+		if !g.emitStep(result, yield) {
 			return
 		}
-		if g.finishPoints[current] {
+		if result.terminal {
 			return
 		}
-		next, err := g.resolveNext(ctx, current, state)
-		if err != nil {
-			yield(Step[T]{}, err)
-			return
-		}
-		current = next
+		state = result.state
+		current = result.next
 	}
 	yield(Step[T]{}, ErrMaxStepsExceeded)
 }
 
-func (g *Graph[T]) executeNode(ctx context.Context, state T, nodeName, suspendTarget string, cfg *runConfig) (T, error) {
+type executedStep[T any] struct {
+	state    T
+	node     string
+	next     string
+	terminal bool
+}
+
+func (g *Graph[T]) executeStep(ctx context.Context, state T, current string, cfg *runConfig) (executedStep[T], error) {
+	if fo, isFanOut := g.fanOuts[current]; isFanOut {
+		nextState, err := g.runFanOut(ctx, current, state, fo, cfg)
+		if err != nil {
+			return executedStep[T]{}, err
+		}
+		return executedStep[T]{state: nextState, node: current, next: fo.joinNode}, nil
+	}
+	if dfo, isDynamicFanOut := g.dynamicFanOuts[current]; isDynamicFanOut {
+		targets, err := dfo.router(ctx, state)
+		if err != nil {
+			return executedStep[T]{}, fmt.Errorf("flowy: dynamic fan-out router %q failed: %w", current, err)
+		}
+		nextState := state
+		if len(targets) > 0 {
+			tempFo := &fanOutDef{targets: targets, joinNode: dfo.joinNode}
+			nextState, err = g.runFanOut(ctx, current, state, tempFo, cfg)
+			if err != nil {
+				return executedStep[T]{}, err
+			}
+		}
+		return executedStep[T]{state: nextState, node: current, next: dfo.joinNode}, nil
+	}
+
+	if _, ok := g.nodes[current]; !ok {
+		return executedStep[T]{}, fmt.Errorf("flowy: node %q not found", current)
+	}
+
+	delta, err := g.executeNode(ctx, state, current, current, cfg)
+	if err != nil {
+		return executedStep[T]{}, err
+	}
+
+	nextState := g.reducer(state, delta)
+	if g.finishPoints[current] {
+		return executedStep[T]{state: nextState, node: current, terminal: true}, nil
+	}
+
+	next, err := g.resolveNext(ctx, current, nextState)
+	if err != nil {
+		return executedStep[T]{}, err
+	}
+	return executedStep[T]{state: nextState, node: current, next: next}, nil
+}
+
+func (g *Graph[T]) emitStep(result executedStep[T], yield func(Step[T], error) bool) bool {
+	next := result.next
+	if result.terminal {
+		next = ""
+	}
+	return yield(Step[T]{State: result.state, NodeName: result.node, NextNode: next}, nil)
+}
+
+// mapNodeExecutionError turns raw handler errors into executeNode results (suspend envelope, fan-out rules, wrapped errors).
+func mapNodeExecutionError[T any](
+	out T,
+	err error,
+	nodeName, suspendTarget string,
+	executionKind MiddlewareExecutionKind,
+) (T, error) {
+	if err == nil {
+		return out, nil
+	}
+	if errors.Is(err, ErrSuspend) {
+		if executionKind == MiddlewareExecutionFanOutBranch {
+			return out, fmt.Errorf(
+				"flowy: ErrSuspend is not supported inside fan-out target %q; suspend before the fan-out source or after the join node",
+				nodeName,
+			)
+		}
+		return out, &suspendExecutionError[T]{state: out, resumeTarget: suspendTarget}
+	}
+	return out, fmt.Errorf("flowy: node %q: %w", nodeName, err)
+}
+
+func (g *Graph[T]) borrowExecutionChain() *ExecutionChain[T] {
+	v := g.executionChainPool.Get()
+	if v == nil {
+		return new(ExecutionChain[T])
+	}
+	c, ok := v.(*ExecutionChain[T])
+	if !ok {
+		return new(ExecutionChain[T])
+	}
+	c.released = false
+	return c
+}
+
+func (g *Graph[T]) releaseExecutionChain(c *ExecutionChain[T]) {
+	c.released = true
+	c.index = 0
+	c.middlewares = nil
+	c.handler = nil
+	c.g = nil
+	c.cfg = nil
+	g.executionChainPool.Put(c)
+}
+
+func (g *Graph[T]) executeNode(
+	ctx context.Context,
+	state T,
+	nodeName, suspendTarget string,
+	cfg *runConfig,
+) (T, error) {
 	node, ok := g.nodes[nodeName]
 	if !ok {
 		var zero T
@@ -191,61 +246,31 @@ func (g *Graph[T]) executeNode(ctx context.Context, state T, nodeName, suspendTa
 		canResolveNext = false
 	}
 
-	meta := MiddlewareContext[T]{
-		NodeName:       nodeName,
-		SuspendTarget:  suspendTarget,
-		ExecutionKind:  executionKind,
-		CanResolveNext: canResolveNext,
-		IsFinish:       g.finishPoints[nodeName],
-		ApplyUpdate: func(current T, update T) T {
-			return g.reducer(current, update)
-		},
-		ResolveNext: func(resolveCtx context.Context, postState T) (string, error) {
-			if g.finishPoints[nodeName] {
-				return "", nil
-			}
-			if !canResolveNext {
-				return "", fmt.Errorf("flowy: next node resolution is unavailable for fan-out target %q", nodeName)
-			}
-			return g.resolveNext(resolveCtx, nodeName, postState)
-		},
-	}
-
-	handler := NodeHandler[T](func(callCtx context.Context, current T) (T, error) {
-		nodeCtx, cancel := nodeContextWithTimeout(callCtx, cfg)
+	// Fast path: no middleware — skip ExecutionChain allocation path used by Next.
+	if len(node.compiledMiddlewares) == 0 {
+		nodeCtx, cancel := nodeContextWithTimeout(ctx, cfg)
 		defer cancel()
 
-		out, err := node.handler(nodeCtx, current)
-		if errors.Is(err, ErrSuspend) {
-			return current, ErrSuspend
-		}
-		return out, err
-	})
-
-	allMws := make([]Middleware[T], 0, len(g.globalMiddlewares)+len(node.middlewares))
-	allMws = append(allMws, g.globalMiddlewares...)
-	allMws = append(allMws, node.middlewares...)
-	for i := len(allMws) - 1; i >= 0; i-- {
-		mw := allMws[i]
-		next := handler
-		handler = func(callCtx context.Context, current T) (T, error) {
-			return mw(callCtx, current, meta, next)
-		}
+		out, err := node.handler(nodeCtx, state)
+		return mapNodeExecutionError(out, err, nodeName, suspendTarget, executionKind)
 	}
 
-	out, err := handler(ctx, state)
-	if err != nil {
-		if errors.Is(err, ErrSuspend) {
-			if executionKind == MiddlewareExecutionFanOutBranch {
-				return out, fmt.Errorf("flowy: ErrSuspend is not supported inside fan-out target %q; suspend before the fan-out source or after the join node", nodeName)
-			}
-			return out, &suspendExecution[T]{state: out, resumeTarget: suspendTarget}
-		}
-		return out, fmt.Errorf("flowy: node %q: %w", nodeName, err)
-	}
-	return out, nil
+	chain := g.borrowExecutionChain()
+	defer g.releaseExecutionChain(chain)
+	chain.NodeName = nodeName
+	chain.SuspendTarget = suspendTarget
+	chain.ExecutionKind = executionKind
+	chain.CanResolveNext = canResolveNext
+	chain.IsFinish = g.finishPoints[nodeName]
+	chain.g = g
+	chain.cfg = cfg
+	chain.middlewares = node.compiledMiddlewares
+	chain.handler = node.handler
+	out, err := chain.Next(ctx, state)
+	return mapNodeExecutionError(out, err, nodeName, suspendTarget, executionKind)
 }
 
+//nolint:gocognit // Fan-out coordinates branches, semaphore, cancellation, and merge; splitting would obscure the protocol.
 func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanOutDef, cfg *runConfig) (T, error) {
 	for _, targetName := range fo.targets {
 		if _, ok := g.nodes[targetName]; !ok {
@@ -278,13 +303,7 @@ func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanO
 	}
 
 	for i, targetName := range fo.targets {
-		i := i
-		targetName := targetName
-
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-
+		wg.Go(func() {
 			if sem != nil {
 				select {
 				case sem <- struct{}{}:
@@ -304,7 +323,7 @@ func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanO
 				return
 			}
 			results[i] = delta
-		}()
+		})
 	}
 
 	wg.Wait()
@@ -317,6 +336,7 @@ func (g *Graph[T]) runFanOut(ctx context.Context, from string, state T, fo *fanO
 	return state, nil
 }
 
+//nolint:nestif // Conditional routing must validate node vs fan-out vs dynamic fan-out targets in one place.
 func (g *Graph[T]) resolveNext(ctx context.Context, current string, state T) (string, error) {
 	if to, ok := g.edges[current]; ok {
 		return to, nil
@@ -341,26 +361,12 @@ func (g *Graph[T]) resolveNext(ctx context.Context, current string, state T) (st
 	return "", fmt.Errorf("flowy: no outgoing edge from node %q", current)
 }
 
-// hasNodeOrRouting reports whether name is a registered node or a fan-out/dynamic fan-out source.
-func (g *Graph[T]) hasNodeOrRouting(name string) bool {
-	if _, ok := g.nodes[name]; ok {
-		return true
-	}
-	if g.fanOuts[name] != nil {
-		return true
-	}
-	if g.dynamicFanOuts[name] != nil {
-		return true
-	}
-	return false
-}
-
 func unwrapSuspend[T any](err error, fallbackState T, fallbackTarget string) (T, string, bool) {
 	if !errors.Is(err, ErrSuspend) {
 		var zero T
 		return zero, "", false
 	}
-	var suspendErr *suspendExecution[T]
+	var suspendErr *suspendExecutionError[T]
 	if errors.As(err, &suspendErr) {
 		return suspendErr.state, suspendErr.resumeTarget, true
 	}

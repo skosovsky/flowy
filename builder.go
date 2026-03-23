@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"sync"
 )
 
 // fanOutDef describes a fan-out: one source node, multiple parallel targets, one join node.
@@ -19,8 +20,9 @@ type dynamicFanOutDef[T any] struct {
 }
 
 type nodeDef[T any] struct {
-	handler     Node[T]
-	middlewares []Middleware[T]
+	handler             Node[T]
+	middlewares         []Middleware[T] // per-node middlewares (builder state)
+	compiledMiddlewares []Middleware[T] // globals + middlewares, fixed at Compile (hot path)
 }
 
 // GraphBuilder builds a graph before compilation. Fluent API.
@@ -66,7 +68,7 @@ func (b *GraphBuilder[T]) AddNode(name string, fn Node[T], mws ...Middleware[T])
 		b.overwrittenNodes[name] = true
 	}
 	nodeMws := append([]Middleware[T](nil), mws...)
-	b.nodes[name] = nodeDef[T]{handler: fn, middlewares: nodeMws}
+	b.nodes[name] = nodeDef[T]{handler: fn, middlewares: nodeMws, compiledMiddlewares: nil}
 	return b
 }
 
@@ -134,8 +136,30 @@ func (b *GraphBuilder[T]) SetFinishPoint(name string) *GraphBuilder[T] {
 
 // Compile validates the graph and returns an immutable Graph. BuildOptions set run config (e.g. WithMaxSteps).
 func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
-	var errs []error
+	errs := b.collectCompileErrors()
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
 
+	o := applyBuildOptions(opts)
+	return b.buildGraph(o), nil
+}
+
+func (b *GraphBuilder[T]) collectCompileErrors() []error {
+	var errs []error
+	errs = append(errs, b.validateOverwriteConflicts()...)
+	errs = append(errs, b.validateTopology()...)
+	errs = append(errs, b.validateReferences()...)
+	errs = append(errs, b.validateHandlers()...)
+	errs = append(errs, b.validateRoutingConflicts()...)
+	errs = append(errs, b.validateFanOuts()...)
+	errs = append(errs, b.validateDynamicFanOuts()...)
+	errs = append(errs, b.validateFinishPoints()...)
+	return errs
+}
+
+func (b *GraphBuilder[T]) validateOverwriteConflicts() []error {
+	var errs []error
 	for name := range b.overwrittenNodes {
 		errs = append(errs, fmt.Errorf("flowy: node %q registered more than once", name))
 	}
@@ -151,24 +175,29 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 	for from := range b.overwrittenDynamicFanOutFrom {
 		errs = append(errs, fmt.Errorf("flowy: dynamic fan-out from %q registered more than once", from))
 	}
+	return errs
+}
 
+func (b *GraphBuilder[T]) validateTopology() []error {
+	var errs []error
 	if b.reducer == nil {
 		errs = append(errs, errors.New("flowy: reducer must not be nil"))
 	}
 	if b.entryPoint == "" {
 		errs = append(errs, errors.New("flowy: entry point not set"))
-	} else if _, hasNode := b.nodes[b.entryPoint]; !hasNode {
-		if _, hasFan := b.fanOuts[b.entryPoint]; !hasFan {
-			if _, hasDyn := b.dynamicFanOuts[b.entryPoint]; !hasDyn {
-				errs = append(errs, fmt.Errorf("flowy: entry point %q is not a registered node or fan-out source", b.entryPoint))
-			}
-		}
+	} else if !b.hasNodeOrRouting(b.entryPoint) {
+		errs = append(
+			errs,
+			fmt.Errorf("flowy: entry point %q is not a registered node or fan-out source", b.entryPoint),
+		)
 	}
 	if len(b.finishPoints) == 0 {
 		errs = append(errs, errors.New("flowy: no finish point set"))
 	}
+	return errs
+}
 
-	// All nodes referenced in edges/conditionalEdges/fanOuts must exist
+func (b *GraphBuilder[T]) validateReferences() []error {
 	referenced := make(map[string]bool)
 	for from, to := range b.edges {
 		referenced[from] = true
@@ -179,8 +208,8 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 	}
 	for _, fo := range b.fanOuts {
 		referenced[fo.joinNode] = true
-		for _, t := range fo.targets {
-			referenced[t] = true
+		for _, target := range fo.targets {
+			referenced[target] = true
 		}
 	}
 	for from, dfo := range b.dynamicFanOuts {
@@ -191,35 +220,36 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 		referenced[name] = true
 	}
 
+	var errs []error
 	for name := range referenced {
 		if name == "" {
 			errs = append(errs, errors.New("flowy: node name must not be empty"))
 			continue
 		}
-		if _, ok := b.nodes[name]; !ok {
-			if _, isFanOut := b.fanOuts[name]; !isFanOut {
-				if _, isDyn := b.dynamicFanOuts[name]; !isDyn {
-					errs = append(errs, fmt.Errorf("flowy: node %q not registered", name))
-				}
-			}
+		if !b.hasNodeOrRouting(name) {
+			errs = append(errs, fmt.Errorf("flowy: node %q not registered", name))
 		}
 	}
+	return errs
+}
 
-	// All nodes must have a non-nil handler to avoid panic at runtime.
+func (b *GraphBuilder[T]) validateHandlers() []error {
+	var errs []error
 	for name, node := range b.nodes {
 		if node.handler == nil {
 			errs = append(errs, fmt.Errorf("flowy: node %q has nil handler", name))
 		}
 	}
-
-	// Conditional edge router must not be nil (would panic in resolveNext at runtime).
 	for from, router := range b.conditionalEdges {
 		if router == nil {
 			errs = append(errs, fmt.Errorf("flowy: conditional edge from %q has nil router", from))
 		}
 	}
+	return errs
+}
 
-	// Conflict: same node cannot have both edge and conditionalEdge, or edge and fanOut, etc.
+func (b *GraphBuilder[T]) validateRoutingConflicts() []error {
+	var errs []error
 	for from := range b.edges {
 		if _, hasCond := b.conditionalEdges[from]; hasCond {
 			errs = append(errs, fmt.Errorf("flowy: node %q has both edge and conditional edge", from))
@@ -249,89 +279,108 @@ func (b *GraphBuilder[T]) Compile(opts ...BuildOption) (*Graph[T], error) {
 			errs = append(errs, fmt.Errorf("flowy: name %q used as both node and dynamic fan-out source", from))
 		}
 	}
+	return errs
+}
 
+func (b *GraphBuilder[T]) validateFanOuts() []error {
+	var errs []error
 	for name, fo := range b.fanOuts {
 		if len(fo.targets) == 0 {
 			errs = append(errs, fmt.Errorf("flowy: fan-out %q has no targets", name))
 		}
-		for _, t := range fo.targets {
-			if _, ok := b.nodes[t]; !ok {
-				errs = append(errs, fmt.Errorf("flowy: fan-out %q target %q is not a registered node", name, t))
+		for _, target := range fo.targets {
+			if _, ok := b.nodes[target]; !ok {
+				errs = append(errs, fmt.Errorf("flowy: fan-out %q target %q is not a registered node", name, target))
 			}
 		}
-		// joinNode must be an executable node, not a routing label (fan-out/dynamic fan-out source).
 		if _, ok := b.nodes[fo.joinNode]; !ok {
 			errs = append(errs, fmt.Errorf("flowy: fan-out %q joinNode %q is not a registered node", name, fo.joinNode))
 		} else if _, isFanOut := b.fanOuts[fo.joinNode]; isFanOut {
-			errs = append(errs, fmt.Errorf("flowy: fan-out %q joinNode %q cannot be a fan-out source", name, fo.joinNode))
+			errs = append(
+				errs,
+				fmt.Errorf("flowy: fan-out %q joinNode %q cannot be a fan-out source", name, fo.joinNode),
+			)
 		} else if _, isDyn := b.dynamicFanOuts[fo.joinNode]; isDyn {
-			errs = append(errs, fmt.Errorf("flowy: fan-out %q joinNode %q cannot be a dynamic fan-out source", name, fo.joinNode))
+			errs = append(
+				errs,
+				fmt.Errorf("flowy: fan-out %q joinNode %q cannot be a dynamic fan-out source", name, fo.joinNode),
+			)
 		}
 		if _, hasNode := b.nodes[name]; hasNode {
 			errs = append(errs, fmt.Errorf("flowy: name %q used as both node and fan-out source", name))
 		}
 	}
+	return errs
+}
 
-	// Dynamic fan-out: joinNode must exist, router must not be nil.
+func (b *GraphBuilder[T]) validateDynamicFanOuts() []error {
+	var errs []error
 	for name, dfo := range b.dynamicFanOuts {
 		if dfo.router == nil {
 			errs = append(errs, fmt.Errorf("flowy: dynamic fan-out %q has nil router", name))
 		}
 		if _, ok := b.nodes[dfo.joinNode]; !ok {
-			errs = append(errs, fmt.Errorf("flowy: dynamic fan-out %q joinNode %q is not a registered node", name, dfo.joinNode))
+			errs = append(
+				errs,
+				fmt.Errorf("flowy: dynamic fan-out %q joinNode %q is not a registered node", name, dfo.joinNode),
+			)
 		}
 	}
+	return errs
+}
 
-	// Finish points must reference registered nodes
+func (b *GraphBuilder[T]) validateFinishPoints() []error {
+	var errs []error
 	for name := range b.finishPoints {
 		if _, ok := b.nodes[name]; !ok {
 			errs = append(errs, fmt.Errorf("flowy: finish point %q not registered", name))
 		}
 	}
-
-	// Reachable set is reserved for a future optional warning about unreachable nodes.
-	reachable := make(map[string]bool)
-	reachable[b.entryPoint] = true
-	for _, to := range b.edges {
-		reachable[to] = true
-	}
-	for _, fo := range b.fanOuts {
-		reachable[fo.joinNode] = true
-		for _, t := range fo.targets {
-			reachable[t] = true
-		}
-	}
-	for _, dfo := range b.dynamicFanOuts {
-		reachable[dfo.joinNode] = true
-	}
-	_ = reachable
-
-	if len(errs) > 0 {
-		return nil, errors.Join(errs...)
-	}
-
-	o := applyBuildOptions(opts)
-
-	g := &Graph[T]{
-		nodes:             copyNodeDefs(b.nodes),
-		edges:             maps.Clone(b.edges),
-		conditionalEdges:  maps.Clone(b.conditionalEdges),
-		fanOuts:           copyFanOuts(b.fanOuts),
-		dynamicFanOuts:    copyDynamicFanOuts(b.dynamicFanOuts),
-		globalMiddlewares: append([]Middleware[T](nil), b.globalMiddlewares...),
-		entryPoint:        b.entryPoint,
-		finishPoints:      maps.Clone(b.finishPoints),
-		reducer:           b.reducer,
-		defaults:          o.run,
-	}
-	return g, nil
+	return errs
 }
 
-func copyNodeDefs[T any](m map[string]nodeDef[T]) map[string]nodeDef[T] {
+func (b *GraphBuilder[T]) hasNodeOrRouting(name string) bool {
+	if _, ok := b.nodes[name]; ok {
+		return true
+	}
+	if _, ok := b.fanOuts[name]; ok {
+		return true
+	}
+	if _, ok := b.dynamicFanOuts[name]; ok {
+		return true
+	}
+	return false
+}
+
+func (b *GraphBuilder[T]) buildGraph(o buildOpts) *Graph[T] {
+	return &Graph[T]{
+		nodes:            copyNodeDefs(b.nodes, b.globalMiddlewares),
+		edges:            maps.Clone(b.edges),
+		conditionalEdges: maps.Clone(b.conditionalEdges),
+		fanOuts:          copyFanOuts(b.fanOuts),
+		dynamicFanOuts:   copyDynamicFanOuts(b.dynamicFanOuts),
+		entryPoint:       b.entryPoint,
+		finishPoints:     maps.Clone(b.finishPoints),
+		reducer:          b.reducer,
+		defaults:         o.run,
+		executionChainPool: sync.Pool{
+			New: func() any {
+				return new(ExecutionChain[T])
+			},
+		},
+	}
+}
+
+func copyNodeDefs[T any](m map[string]nodeDef[T], globals []Middleware[T]) map[string]nodeDef[T] {
 	out := make(map[string]nodeDef[T], len(m))
 	for k, v := range m {
-		mws := append([]Middleware[T](nil), v.middlewares...)
-		out[k] = nodeDef[T]{handler: v.handler, middlewares: mws}
+		nodeMws := append([]Middleware[T](nil), v.middlewares...)
+		compiled := append(append([]Middleware[T]{}, globals...), nodeMws...)
+		out[k] = nodeDef[T]{
+			handler:             v.handler,
+			middlewares:         nodeMws,
+			compiledMiddlewares: compiled,
+		}
 	}
 	return out
 }

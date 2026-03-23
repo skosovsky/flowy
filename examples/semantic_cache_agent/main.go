@@ -12,6 +12,11 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
+const (
+	semanticSimilarityThreshold = 0.95
+	exampleGraphMaxSteps        = 20
+)
+
 // ChatMessage represents a single message in chat history (stub for demo).
 type ChatMessage struct {
 	Role string
@@ -45,7 +50,10 @@ type stubCache struct {
 }
 
 func newStubCache() *stubCache {
-	return &stubCache{store: make(map[string]string)}
+	return &stubCache{
+		mu:    sync.RWMutex{},
+		store: make(map[string]string),
+	}
 }
 
 func (c *stubCache) Get(_ context.Context, query string, _ float64) (string, bool, error) {
@@ -72,7 +80,7 @@ func (a *Agent) cacheNode(ctx context.Context, state AgentState) (AgentState, er
 	//   resp, hit, err := ragycache.NewVectorCache(pgvectorStore, openaiEmbedder).Get(ctx, query, 0.95)
 	//   span := trace.SpanFromContext(ctx)
 	//   genai.RecordCacheHit(span, hit, "pgvector_semantic_cache")
-	resp, hit, err := a.SemanticCache.Get(ctx, state.Query, 0.95)
+	resp, hit, err := a.SemanticCache.Get(ctx, state.Query, semanticSimilarityThreshold)
 	if err != nil {
 		return state, err
 	}
@@ -159,7 +167,7 @@ func main() {
 	b.AddEdge("save_cache_node", "format_response_node")
 	b.SetFinishPoint("format_response_node")
 
-	graph, err := b.Compile(flowy.WithMaxSteps(20))
+	graph, err := b.Compile(flowy.WithMaxSteps(exampleGraphMaxSteps))
 	if err != nil {
 		log.Fatal(err)
 	}

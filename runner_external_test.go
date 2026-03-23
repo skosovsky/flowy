@@ -1,96 +1,33 @@
-// Package flowy_test runs tests that need testutil (avoids import cycle).
+// Package flowy_test exercises the public API surface from outside the package.
 package flowy_test
 
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/skosovsky/flowy"
-	"github.com/skosovsky/flowy/testutil"
 )
 
 func idReducer[T any](_, update T) T { return update }
 
-// TestInvoke_HITL_ErrSuspend_Resume verifies v2 HITL: node returns ErrSuspend,
-// caller persists state+start node, Resume continues.
-func TestInvoke_HITL_ErrSuspend_Resume(t *testing.T) {
-	store := testutil.NewStore[string]()
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
-	b.AddNode("approve", func(_ context.Context, _ string) (string, error) {
-		return "", flowy.ErrSuspend
-	})
-	b.AddNode("finish", func(_ context.Context, s string) (string, error) { return s + "_finish", nil })
-	b.AddEdge("process", "approve")
-	b.AddEdge("approve", "finish")
-	b.SetEntryPoint("process")
-	b.SetFinishPoint("finish")
+func TestPublicSurface_ClearBreak(t *testing.T) {
+	graphType := reflect.TypeFor[*flowy.Graph[string]]()
+	_, hasResume := graphType.MethodByName("Resume")
+	_, hasResumeStream := graphType.MethodByName("ResumeStream")
+	_, hasThread := graphType.MethodByName("Thread")
+	_, hasWithCheckpointer := graphType.MethodByName("WithCheckpointer")
+	_, hasStream := graphType.MethodByName("Stream")
 
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	state, err := graph.Invoke(ctx, "init")
-	require.Error(t, err)
-	require.ErrorIs(t, err, flowy.ErrSuspend)
-	assert.Equal(t, "init_process", state)
-
-	require.NoError(t, store.Save(ctx, "tid1", state, "approve"))
-
-	// Resume: build same graph but approve now succeeds
-	b2 := flowy.NewGraph[string](idReducer[string])
-	b2.AddNode("process", func(_ context.Context, s string) (string, error) { return s + "_process", nil })
-	b2.AddNode("approve", func(_ context.Context, s string) (string, error) { return s + "_approve", nil })
-	b2.AddNode("finish", func(_ context.Context, s string) (string, error) { return s + "_finish", nil })
-	b2.AddEdge("process", "approve")
-	b2.AddEdge("approve", "finish")
-	b2.SetEntryPoint("process")
-	b2.SetFinishPoint("finish")
-	graph2, err := b2.Compile()
-	require.NoError(t, err)
-
-	loaded, startNode, ok := store.Load(ctx, "tid1")
-	require.True(t, ok)
-	final, err := graph2.Resume(ctx, loaded, startNode)
-	require.NoError(t, err)
-	assert.Equal(t, "init_process_approve_finish", final)
-}
-
-// TestResume_StaleStartNode ensures Resume returns an error when startNode references a missing node.
-func TestResume_StaleStartNode(t *testing.T) {
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	state, err := graph.Resume(ctx, "state", "deleted_node")
-	require.Error(t, err)
-	assert.Equal(t, "state", state)
-	assert.Contains(t, err.Error(), "not found")
-	assert.Contains(t, err.Error(), "deleted_node")
-}
-
-// TestResume_EmptyStartNode ensures Resume returns a clear error when startNode is empty.
-func TestResume_EmptyStartNode(t *testing.T) {
-	b := flowy.NewGraph[string](idReducer[string])
-	b.AddNode("a", func(_ context.Context, s string) (string, error) { return s, nil })
-	b.SetEntryPoint("a")
-	b.SetFinishPoint("a")
-	graph, err := b.Compile()
-	require.NoError(t, err)
-	ctx := context.Background()
-
-	state, err := graph.Resume(ctx, "x", "")
-	require.Error(t, err)
-	assert.Equal(t, "x", state)
-	assert.Contains(t, err.Error(), "start node")
+	assert.False(t, hasResume)
+	assert.False(t, hasResumeStream)
+	assert.False(t, hasThread)
+	assert.False(t, hasWithCheckpointer)
+	assert.True(t, hasStream)
 }
 
 // TestInvoke_Concurrent verifies that a compiled graph is safe for concurrent Invoke calls (run with -race).

@@ -51,5 +51,5 @@ func TestOptions_CompileMaxSteps_Respected(t *testing.T) {
 	ctx := context.Background()
 	_, err = graph.Invoke(ctx, "")
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrMaxStepsExceeded)
+	require.ErrorIs(t, err, ErrMaxStepsExceeded)
 }

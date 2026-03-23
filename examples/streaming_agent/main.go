@@ -15,9 +15,11 @@ type contextKey string
 
 const tokenChanKey contextKey = "tokenChan"
 
+const tokenChanCapacity = 32
+
 func main() {
 	ctx := context.Background()
-	tokenCh := make(chan string, 32)
+	tokenCh := make(chan string, tokenChanCapacity)
 	ctx = context.WithValue(ctx, tokenChanKey, tokenCh)
 
 	reducer := func(_, update string) string { return update }
