@@ -517,7 +517,9 @@ func TestStream_MaxStepsExceeded_YieldsError(t *testing.T) {
 	require.ErrorIs(t, streamErr, ErrMaxStepsExceeded)
 }
 
-func TestInvoke_NodeTimeout(t *testing.T) {
+// TestInvoke_ContextDeadlineExceededFromCaller verifies that when the caller passes a context with a
+// deadline, the graph stops and the error unwraps to [context.DeadlineExceeded] (no per-node BuildOption).
+func TestInvoke_ContextDeadlineExceededFromCaller(t *testing.T) {
 	b := NewGraph[string](idReducer[string])
 	b.AddNode("slow", func(ctx context.Context, s string) (string, error) {
 		select {
@@ -529,10 +531,58 @@ func TestInvoke_NodeTimeout(t *testing.T) {
 	})
 	b.SetEntryPoint("slow")
 	b.SetFinishPoint("slow")
-	graph, err := b.Compile(WithNodeTimeout(10 * time.Millisecond))
+	graph, err := b.Compile()
 	require.NoError(t, err)
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
 	_, err = graph.Invoke(ctx, "")
+	require.Error(t, err)
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+}
+
+// TestStream_ContextDeadlineExceededFromCaller mirrors TestInvoke_ContextDeadlineExceededFromCaller for [Graph.Stream]:
+// a deadline on the context passed into Stream must surface as [context.DeadlineExceeded].
+func TestStream_ContextDeadlineExceededFromCaller(t *testing.T) {
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("slow", func(ctx context.Context, s string) (string, error) {
+		select {
+		case <-time.After(2 * time.Second):
+			return s + "slow", nil
+		case <-ctx.Done():
+			return s, ctx.Err()
+		}
+	})
+	b.SetEntryPoint("slow")
+	b.SetFinishPoint("slow")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	var streamErr error
+	for _, err := range graph.Stream(ctx, "", "") {
+		streamErr = err
+		break
+	}
+	require.Error(t, streamErr)
+	require.ErrorIs(t, streamErr, context.DeadlineExceeded)
+}
+
+// TestInvoke_NodeInternalTimeout_WrappedErrorPreservesSentinel checks that when a node uses its own
+// short-lived context and returns [fmt.Errorf] with "%w" around innerCtx.Err(), the engine still wraps with
+// %w so [errors.Is] to [context.DeadlineExceeded] succeeds on the error returned from [Graph.Invoke].
+func TestInvoke_NodeInternalTimeout_WrappedErrorPreservesSentinel(t *testing.T) {
+	b := NewGraph[string](idReducer[string])
+	b.AddNode("micro", func(ctx context.Context, s string) (string, error) {
+		nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Millisecond)
+		defer cancel()
+		<-nodeCtx.Done()
+		return s, fmt.Errorf("api call: %w", nodeCtx.Err())
+	})
+	b.SetEntryPoint("micro")
+	b.SetFinishPoint("micro")
+	graph, err := b.Compile()
+	require.NoError(t, err)
+	_, err = graph.Invoke(context.Background(), "x")
 	require.Error(t, err)
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 }

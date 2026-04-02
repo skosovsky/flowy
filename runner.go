@@ -183,10 +183,7 @@ func (g *Graph[T]) executeNode(
 
 	// Fast path: no middleware — skip ExecutionChain allocation path used by Next.
 	if len(node.compiledMiddlewares) == 0 {
-		nodeCtx, cancel := nodeContextWithTimeout(ctx, cfg)
-		defer cancel()
-
-		out, err := node.handler(nodeCtx, state)
+		out, err := node.handler(ctx, state)
 		return mapNodeExecutionError(out, err, nodeName, suspendTarget)
 	}
 

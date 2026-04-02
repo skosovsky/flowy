@@ -172,8 +172,9 @@ make bench-hotpath
 | Option | Description |
 | --- | --- |
 | `WithMaxSteps(n)` | Maximum number of steps before returning `ErrMaxStepsExceeded` |
-| `WithNodeTimeout(d)` | Per-node timeout via derived context |
 | `WithMaxConcurrency(n)` | Maximum concurrent branch goroutines inside **`Parallel`** / **`ParallelDynamic`**; `n <= 0` means unlimited |
+
+`flowy` does **not** attach per-node deadlines: nodes receive the same `context.Context` you pass to `Invoke` / `Stream`. Use cancellation and timeouts at the call site or inside the node (see below).
 
 Example:
 
@@ -182,6 +183,70 @@ graph, err := b.Compile(
 	flowy.WithMaxSteps(50),
 	flowy.WithMaxConcurrency(4),
 )
+```
+
+## Timeouts and resilience (caller-controlled)
+
+**Macro (whole run):** wrap the graph entry with a deadline on the context you pass to `Invoke` or `Stream`:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+defer cancel()
+final, err := graph.Invoke(ctx, initialState)
+```
+
+**Micro (single node):** derive a shorter-lived context inside the node when calling flaky I/O; the graph engine stays unaware:
+
+```go
+b.AddNode("fetch", func(ctx context.Context, state MyState) (MyState, error) {
+	nodeCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return callUpstream(nodeCtx, state)
+})
+```
+
+For retries, circuit breakers, or richer policies, compose ordinary Go functions or an external executor package in user code; `flowy` does not import such libraries.
+
+### Optional: executor package (e.g. [routery](https://github.com/skosovsky/routery))
+
+`flowy` stays free of that dependency; install it only in **your** module:
+
+```bash
+go get github.com/skosovsky/routery
+```
+
+**Micro-resiliency (harden one node):** adapt the node body to an executor contract, then wrap with policies before returning to the graph:
+
+```go
+import (
+	"context"
+	"time"
+
+	"github.com/skosovsky/routery"
+)
+
+// inside AddNode("fetch_data", ...)
+exec := func(innerCtx context.Context) (MyState, error) {
+	return riskyNetworkCall(innerCtx, state)
+}
+safeExec := routery.Timeout(
+	routery.Retry(exec, routery.WithMaxAttempts(3)),
+	5*time.Second,
+)
+return safeExec(ctx)
+```
+
+**Macro-resiliency (budget for the whole run):** wrap `Invoke` (or `Stream` driver) as a single callable:
+
+```go
+graph, _ := builder.Compile()
+
+graphExec := func(ctx context.Context) (MyState, error) {
+	return graph.Invoke(ctx, initialState)
+}
+safeGraph := routery.Timeout(graphExec, 1*time.Minute)
+
+finalState, err := safeGraph(context.Background())
 ```
 
 ## Parallel merge order
@@ -226,6 +291,8 @@ The diagram reflects **edges** and **choices** only; work done inside a `Paralle
 
 ## Examples
 
+- [examples/README.md](./examples/README.md) — index and resilience pointers
+- [examples/context_deadline/main.go](./examples/context_deadline/main.go) — caller `WithTimeout` around `Invoke` (stdlib)
 - [examples/hitl_agent/main.go](./examples/hitl_agent/main.go) — checkpoint-backed Human-in-the-Loop resume
 - [examples/middleware_agent/main.go](./examples/middleware_agent/main.go) — logging, memory, and fallback middleware
 - [examples/react_agent/main.go](./examples/react_agent/main.go) — small ReAct loop

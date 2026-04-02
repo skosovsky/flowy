@@ -3,6 +3,8 @@
 // a step via [Parallel], and middleware-based cross-cutting concerns. Execution is
 // stateless: persistence and human-in-the-loop resume are implemented by the caller
 // using [Graph.Stream] steps and types from the checkpoint subpackage (see README).
+// Deadlines and cancellation are controlled by the [context.Context] passed into
+// [Graph.Invoke] / [Graph.Stream], not by compile-time timeouts inside the engine.
 //
 // State updates can be full replace (simple types) or merge/delta (complex state);
 // see the README section "State Management Patterns" for the recommended approach.

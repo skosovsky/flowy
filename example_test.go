@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"fmt"
+	"time"
 )
 
 // Example_linearGraph demonstrates minimal graph construction: reducer, two nodes,
@@ -84,4 +85,34 @@ func Example_mermaidExport() {
 	// Output:
 	// flowchart TD
 	//   a --> b
+}
+
+// Example_nodeMicroResilience shows applying a timeout inside one node while the graph
+// passes through the parent context unchanged (stdlib only; no engine BuildOption).
+func Example_nodeMicroResilience() {
+	reducer := func(_, update string) string { return update }
+	b := NewGraph[string](reducer)
+	b.AddNode("risky", func(ctx context.Context, s string) (string, error) {
+		nodeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+		// Production code would pass nodeCtx to HTTP/RPC clients, etc.
+		_ = nodeCtx
+		return s + "_ok", nil
+	})
+	b.SetEntryPoint("risky")
+	b.SetFinishPoint("risky")
+
+	graph, err := b.Compile()
+	if err != nil {
+		fmt.Println("compile error:", err)
+		return
+	}
+	out, err := graph.Invoke(context.Background(), "x")
+	if err != nil {
+		fmt.Println("invoke error:", err)
+		return
+	}
+	fmt.Println(out)
+	// Output:
+	// x_ok
 }

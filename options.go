@@ -1,16 +1,10 @@
 package flowy
 
-import (
-	"context"
-	"time"
-)
-
 const defaultMaxSteps = 1000
 
 // runConfig holds options for a run (set at Compile from BuildOption).
 type runConfig struct {
 	maxSteps       int
-	nodeTimeout    time.Duration
 	maxConcurrency int
 }
 
@@ -29,14 +23,7 @@ func WithMaxSteps(limit int) BuildOption {
 	}
 }
 
-// WithNodeTimeout sets a timeout for each node execution.
-func WithNodeTimeout(d time.Duration) BuildOption {
-	return func(o *buildOpts) {
-		o.run.nodeTimeout = d
-	}
-}
-
-// WithMaxConcurrency sets the maximum number of goroutines during a fan-out. If <= 0, no limit.
+// WithMaxConcurrency sets the maximum number of goroutines during parallel branch execution. If <= 0, no limit.
 func WithMaxConcurrency(n int) BuildOption {
 	return func(o *buildOpts) {
 		o.run.maxConcurrency = n
@@ -53,17 +40,4 @@ func applyBuildOptions(opts []BuildOption) buildOpts {
 		o.run.maxSteps = defaultMaxSteps
 	}
 	return o
-}
-
-// noopCancel is a shared cancel func for the no-timeout path so hot paths avoid allocating a new closure each call.
-//
-//nolint:gochecknoglobals // Must be one shared func value; a new `func() {}` literal allocates each call.
-var noopCancel = func() {}
-
-// nodeContextWithTimeout returns ctx with nodeTimeout if set.
-func nodeContextWithTimeout(ctx context.Context, cfg *runConfig) (context.Context, func()) {
-	if cfg.nodeTimeout > 0 {
-		return context.WithTimeout(ctx, cfg.nodeTimeout)
-	}
-	return ctx, noopCancel
 }

@@ -3,7 +3,6 @@ package flowy
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -12,7 +11,6 @@ import (
 func TestApplyBuildOptions_DefaultMaxSteps(t *testing.T) {
 	o := applyBuildOptions(nil)
 	assert.Equal(t, defaultMaxSteps, o.run.maxSteps)
-	assert.Zero(t, o.run.nodeTimeout)
 	assert.Zero(t, o.run.maxConcurrency)
 }
 
@@ -21,12 +19,6 @@ func TestApplyBuildOptions_ZeroOrNegativeMaxSteps_UseDefault(t *testing.T) {
 	assert.Equal(t, defaultMaxSteps, o0.run.maxSteps)
 	oNeg := applyBuildOptions([]BuildOption{WithMaxSteps(-1)})
 	assert.Equal(t, defaultMaxSteps, oNeg.run.maxSteps)
-}
-
-func TestApplyBuildOptions_WithNodeTimeout(t *testing.T) {
-	o := applyBuildOptions([]BuildOption{WithNodeTimeout(5 * time.Second)})
-	assert.Equal(t, 5*time.Second, o.run.nodeTimeout)
-	assert.Equal(t, defaultMaxSteps, o.run.maxSteps)
 }
 
 func TestApplyBuildOptions_WithMaxConcurrency(t *testing.T) {

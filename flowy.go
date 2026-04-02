@@ -16,9 +16,9 @@ type Choice[T any] func(ctx context.Context, state T) (string, error)
 type Reducer[T any] func(current T, update T) T
 
 // ExecutionChain carries step metadata and drives the middleware pipeline for one node execution.
-// Call Next to run the next middleware or, after the last middleware, the node handler with
-// the same timeout semantics as the runner. Middleware must not retain *ExecutionChain after
-// the function returns (no async goroutines holding the pointer).
+// Call Next to run the next middleware or, after the last middleware, the node handler receives
+// the same [context.Context] passed into Next (deadlines and cancellation are controlled by the caller).
+// Middleware must not retain *ExecutionChain after the function returns (no async goroutines holding the pointer).
 //
 // Successful middleware returns are still treated as node updates and will be passed through
 // the reducer by the runner. If a middleware returns ErrSuspend, it must return the full
@@ -57,9 +57,7 @@ func (c *ExecutionChain[T]) Next(ctx context.Context, state T) (T, error) {
 		c.index++
 		return mw(ctx, state, c)
 	}
-	nodeCtx, cancel := nodeContextWithTimeout(ctx, c.cfg)
-	defer cancel()
-	out, err := c.handler(nodeCtx, state)
+	out, err := c.handler(ctx, state)
 	if errors.Is(err, ErrSuspend) {
 		return out, ErrSuspend
 	}
