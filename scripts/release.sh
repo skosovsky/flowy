@@ -83,7 +83,7 @@ git checkout --detach HEAD --quiet
 echo "📦 Updating go.mod files..."
 for dir in $MODULES; do
     modfile="$dir/go.mod"
-    sed -i '' "s/v0.0.0/$NEW_VERSION/g" "$modfile"
+    sed -i '' "/$REPO_PREFIX/s/ v0.0.0/ $NEW_VERSION/g" "$modfile"
     sed -i '' "/$REPO_PREFIX.*=>/d" "$modfile"
     go mod edit -fmt "$modfile"
 done
