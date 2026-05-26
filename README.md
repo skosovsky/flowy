@@ -74,6 +74,32 @@ type Reducer[T any] func(current T, update T) T
 
 For simple state like `string`, the reducer often just returns `update`. For complex state, prefer delta-style updates where nodes return only changed fields and the reducer merges them.
 
+### Typed state for late prompt rendering
+
+When a graph drives an LLM pipeline, prefer carrying **typed render input** through the graph instead of pre-rendered prompt messages. A practical shape is:
+
+```go
+type PromptRenderContext[T any] struct {
+	PromptID string
+	Input    T
+}
+
+type AgentRunState[T any] struct {
+	RenderContext PromptRenderContext[T]
+	Tools         []Tool
+	History       []Message
+}
+```
+
+Intermediate nodes and middleware can mutate `Tools` or other state freely. The final LLM node should then:
+
+1. derive `allowedTools` from the current `state.Tools`,
+2. inject them into `state.RenderContext.Input`,
+3. render prompt messages once,
+4. call the LLM client with the rendered messages plus the filtered tool list.
+
+This keeps `flowy` focused on typed state transitions and avoids string sanitizers, regex patching, or map-based back-conversion in the graph core.
+
 ### Nodes
 
 A node is the basic executable unit:
@@ -169,9 +195,9 @@ make bench-hotpath
 
 ## Build Options
 
-| Option | Description |
-| --- | --- |
-| `WithMaxSteps(n)` | Maximum number of steps before returning `ErrMaxStepsExceeded` |
+| Option                  | Description                                                                                                  |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `WithMaxSteps(n)`       | Maximum number of steps before returning `ErrMaxStepsExceeded`                                               |
 | `WithMaxConcurrency(n)` | Maximum concurrent branch goroutines inside **`Parallel`** / **`ParallelDynamic`**; `n <= 0` means unlimited |
 
 `flowy` does **not** attach per-node deadlines: nodes receive the same `context.Context` you pass to `Invoke` / `Stream`. Use cancellation and timeouts at the call site or inside the node (see below).
@@ -293,6 +319,7 @@ The diagram reflects **edges** and **choices** only; work done inside a `Paralle
 
 - [examples/README.md](./examples/README.md) — index and resilience pointers
 - [examples/context_deadline/main.go](./examples/context_deadline/main.go) — caller `WithTimeout` around `Invoke` (stdlib)
+- [examples/late_prompt_agent/main.go](./examples/late_prompt_agent/main.go) — typed state + late prompt rendering in the final LLM node
 - [examples/hitl_agent/main.go](./examples/hitl_agent/main.go) — checkpoint-backed Human-in-the-Loop resume
 - [examples/middleware_agent/main.go](./examples/middleware_agent/main.go) — logging, memory, and fallback middleware
 - [examples/react_agent/main.go](./examples/react_agent/main.go) — small ReAct loop
