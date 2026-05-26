@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -115,4 +116,81 @@ func Example_nodeMicroResilience() {
 	fmt.Println(out)
 	// Output:
 	// x_ok
+}
+
+// Example_latePromptRenderContext shows the canonical LLM-style contract: the graph
+// carries [PromptRenderContext] in typed state, middleware filters tools, and the
+// final node renders once from the current state instead of patching old messages.
+func Example_latePromptRenderContext() {
+	type promptInput struct {
+		CustomerName string
+		AllowedTools []string
+	}
+	type state struct {
+		RenderContext PromptRenderContext[*promptInput]
+		Tools         []string
+	}
+	var renderedPrompt string
+
+	filterTools := func(blocked string) Middleware[state] {
+		return func(ctx context.Context, s state, chain *ExecutionChain[state]) (state, error) {
+			out, err := chain.Next(ctx, s)
+			if err != nil {
+				return out, err
+			}
+
+			filtered := make([]string, 0, len(out.Tools))
+			for _, tool := range out.Tools {
+				if tool == blocked {
+					continue
+				}
+				filtered = append(filtered, tool)
+			}
+			out.Tools = filtered
+			return out, nil
+		}
+	}
+
+	reducer := func(_ state, update state) state { return update }
+	b := NewGraph[state](reducer)
+	b.AddNode("policy", func(_ context.Context, s state) (state, error) { return s, nil }, filterTools("get_history"))
+	b.AddNode("llm", func(_ context.Context, s state) (state, error) {
+		s.RenderContext.Input.AllowedTools = append([]string(nil), s.Tools...)
+		renderedPrompt = fmt.Sprintf(
+			"prompt=%s customer=%s tools=%s",
+			s.RenderContext.PromptID,
+			s.RenderContext.Input.CustomerName,
+			strings.Join(s.RenderContext.Input.AllowedTools, ","),
+		)
+		return s, nil
+	})
+	b.AddEdge("policy", "llm")
+	b.SetEntryPoint("policy")
+	b.SetFinishPoint("llm")
+
+	graph, err := b.Compile()
+	if err != nil {
+		fmt.Println("compile error:", err)
+		return
+	}
+
+	initial := state{
+		RenderContext: PromptRenderContext[*promptInput]{
+			PromptID: "personas/sales",
+			Input: &promptInput{
+				CustomerName: "Alice",
+			},
+		},
+		Tools: []string{"book_slot", "get_history"},
+	}
+	final, err := graph.Invoke(context.Background(), initial)
+	if err != nil {
+		fmt.Println("invoke error:", err)
+		return
+	}
+
+	_ = final
+	fmt.Println(renderedPrompt)
+	// Output:
+	// prompt=personas/sales customer=Alice tools=book_slot
 }

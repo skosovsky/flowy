@@ -10,15 +10,17 @@ Runnable programs under this directory use `flowy` from the repo root (`go run .
 
 ## Late prompt rendering
 
-`flowy` should carry typed prompt input through state and render prompt messages only in the final LLM node.
+`flowy` should carry typed prompt input through state via `flowy.PromptRenderContext[T]` and render prompt messages only in the final LLM node. Treat this as the canonical contract for LLM-style graphs, not as one option among several.
 
 - [late_prompt_agent](./late_prompt_agent/main.go) — generic `PromptRenderContext[T]`, tool filtering via middleware, renderer/client injected through interfaces.
 
 For this pipeline, keep a strict clean break:
 
 - do not pass `map[string]any` through the graph as prompt input,
+- do not keep rendered system prompt messages inside graph state as transport artifacts,
 - do not add string sanitizers or regex patches for runtime tool filtering,
-- do not re-render prompt messages outside the final LLM node.
+- do not re-render prompt messages outside the final LLM node,
+- do not keep a legacy early-bound `[]Message` path as an alternative graph contract.
 
 ## Other examples
 

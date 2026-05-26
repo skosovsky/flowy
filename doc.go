@@ -8,10 +8,13 @@
 //
 // State updates can be full replace (simple types) or merge/delta (complex state);
 // see the README section "State Management Patterns" for the recommended approach.
-// For LLM-style pipelines, prefer carrying typed prompt input and tool availability
-// inside the graph state, then render prompt messages only in the final network node.
-// This keeps intermediate nodes and middleware free to mutate state (for example,
-// filter tools) without string sanitizers or prompt re-rendering elsewhere.
+// For LLM-style pipelines, use [PromptRenderContext] as the canonical transport for
+// typed prompt input inside graph state, then render prompt messages only in the
+// final network node. This keeps intermediate nodes and middleware free to mutate
+// state (for example, filter tools) without string sanitizers or prompt re-rendering
+// elsewhere. The package does not promote an alternative early-bound prompt path,
+// and rendered prompt messages should not be carried through graph state as a
+// fallback transport between nodes.
 //
 // Example:
 //

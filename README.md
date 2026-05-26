@@ -76,20 +76,17 @@ For simple state like `string`, the reducer often just returns `update`. For com
 
 ### Typed state for late prompt rendering
 
-When a graph drives an LLM pipeline, prefer carrying **typed render input** through the graph instead of pre-rendered prompt messages. A practical shape is:
+When a graph drives an LLM pipeline, the canonical `flowy` contract is to carry **typed render input** through the graph instead of pre-rendered prompt messages. Use [PromptRenderContext] in state and render prompt messages only in the final LLM node.
 
 ```go
-type PromptRenderContext[T any] struct {
-	PromptID string
-	Input    T
-}
-
 type AgentRunState[T any] struct {
-	RenderContext PromptRenderContext[T]
+	RenderContext flowy.PromptRenderContext[T]
 	Tools         []Tool
 	History       []Message
 }
 ```
+
+Here `History` means conversation turns that already happened, not a transport for the current system prompt. The prompt-system slice should be rendered on demand in the final LLM node and should not live in graph state as a parallel or fallback path.
 
 Intermediate nodes and middleware can mutate `Tools` or other state freely. The final LLM node should then:
 
@@ -98,7 +95,7 @@ Intermediate nodes and middleware can mutate `Tools` or other state freely. The 
 3. render prompt messages once,
 4. call the LLM client with the rendered messages plus the filtered tool list.
 
-This keeps `flowy` focused on typed state transitions and avoids string sanitizers, regex patching, or map-based back-conversion in the graph core.
+This keeps `flowy` focused on typed state transitions and avoids string sanitizers, regex patching, or map-based back-conversion in the graph core. `flowy` does not document or preserve a dual-path with early-bound prompt messages as an alternative API, and rendered prompt artifacts should not be carried through state between nodes.
 
 ### Nodes
 

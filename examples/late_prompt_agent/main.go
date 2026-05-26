@@ -30,25 +30,13 @@ type AllowedTool struct {
 	Description string
 }
 
-type ToolAwareInput interface {
-	SetAllowedTools([]AllowedTool)
-}
-
-type PromptRenderContext[T ToolAwareInput] struct {
-	PromptID string
-	Input    T
-}
-
-type AgentRunState[T ToolAwareInput] struct {
-	RenderContext PromptRenderContext[T]
+type AgentRunState[T any] struct {
+	RenderContext flowy.PromptRenderContext[T]
 	Tools         []Tool
 	History       []Message
-	LastRendered  []Message
-	LastReply     Message
-	RenderCount   int
 }
 
-type PromptRenderer[T ToolAwareInput] interface {
+type PromptRenderer[T any] interface {
 	Render(ctx context.Context, promptID string, input T) ([]Message, error)
 }
 
@@ -56,9 +44,10 @@ type LLMClient interface {
 	Generate(ctx context.Context, messages []Message, tools []Tool) (Message, error)
 }
 
-type LLMNode[T ToolAwareInput] struct {
-	renderer PromptRenderer[T]
-	client   LLMClient
+type LLMNode[T any] struct {
+	renderer           PromptRenderer[T]
+	client             LLMClient
+	injectAllowedTools func(input T, tools []AllowedTool) T
 }
 
 func (n LLMNode[T]) Run(ctx context.Context, state AgentRunState[T]) (AgentRunState[T], error) {
@@ -67,15 +56,12 @@ func (n LLMNode[T]) Run(ctx context.Context, state AgentRunState[T]) (AgentRunSt
 		allowedTools = append(allowedTools, AllowedTool(tool))
 	}
 
-	state.RenderContext.Input.SetAllowedTools(allowedTools)
+	state.RenderContext.Input = n.injectAllowedTools(state.RenderContext.Input, allowedTools)
 
 	rendered, err := n.renderer.Render(ctx, state.RenderContext.PromptID, state.RenderContext.Input)
 	if err != nil {
 		return state, err
 	}
-
-	state.RenderCount++
-	state.LastRendered = slices.Clone(rendered)
 
 	requestMessages := append(slices.Clone(rendered), state.History...)
 	reply, err := n.client.Generate(ctx, requestMessages, slices.Clone(state.Tools))
@@ -83,7 +69,6 @@ func (n LLMNode[T]) Run(ctx context.Context, state AgentRunState[T]) (AgentRunSt
 		return state, err
 	}
 
-	state.LastReply = reply
 	state.History = append(state.History, reply)
 	return state, nil
 }
@@ -94,8 +79,9 @@ type SalesPromptInput struct {
 	AllowedTools []AllowedTool
 }
 
-func (in *SalesPromptInput) SetAllowedTools(tools []AllowedTool) {
+func injectSalesAllowedTools(in *SalesPromptInput, tools []AllowedTool) *SalesPromptInput {
 	in.AllowedTools = slices.Clone(tools)
+	return in
 }
 
 type SalesRenderer struct{}
@@ -133,7 +119,44 @@ func (EchoLLMClient) Generate(_ context.Context, _ []Message, tools []Tool) (Mes
 	}, nil
 }
 
-func FilterToolsMiddleware[T ToolAwareInput](blockedNames ...string) flowy.Middleware[AgentRunState[T]] {
+type spyRenderer struct {
+	calls        int
+	lastPrompt   string
+	lastAllowed  []AllowedTool
+	lastRendered []Message
+	inner        PromptRenderer[*SalesPromptInput]
+}
+
+func (s *spyRenderer) Render(ctx context.Context, promptID string, input *SalesPromptInput) ([]Message, error) {
+	s.calls++
+	s.lastPrompt = promptID
+	s.lastAllowed = slices.Clone(input.AllowedTools)
+	rendered, err := s.inner.Render(ctx, promptID, input)
+	if err != nil {
+		return nil, err
+	}
+	s.lastRendered = slices.Clone(rendered)
+	return rendered, nil
+}
+
+type spyClient struct {
+	calls        int
+	lastMessages []Message
+	lastTools    []Tool
+	inner        LLMClient
+}
+
+func (s *spyClient) Generate(ctx context.Context, messages []Message, tools []Tool) (Message, error) {
+	s.calls++
+	s.lastMessages = slices.Clone(messages)
+	s.lastTools = slices.Clone(tools)
+	if s.inner != nil {
+		return s.inner.Generate(ctx, messages, tools)
+	}
+	return Message{Role: "assistant", Content: "ok"}, nil
+}
+
+func FilterToolsMiddleware[T any](blockedNames ...string) flowy.Middleware[AgentRunState[T]] {
 	blocked := make(map[string]struct{}, len(blockedNames))
 	for _, name := range blockedNames {
 		blocked[name] = struct{}{}
@@ -158,7 +181,7 @@ func FilterToolsMiddleware[T ToolAwareInput](blockedNames ...string) flowy.Middl
 	}
 }
 
-func passStateNode[T ToolAwareInput](_ context.Context, state AgentRunState[T]) (AgentRunState[T], error) {
+func passStateNode[T any](_ context.Context, state AgentRunState[T]) (AgentRunState[T], error) {
 	return state, nil
 }
 
@@ -177,8 +200,9 @@ func buildGraph(
 		FilterToolsMiddleware[*SalesPromptInput](blockedToolName),
 	)
 	builder.AddNode("llm", LLMNode[*SalesPromptInput]{
-		renderer: renderer,
-		client:   client,
+		renderer:           renderer,
+		client:             client,
+		injectAllowedTools: injectSalesAllowedTools,
 	}.Run)
 	builder.AddEdge("policy", "llm")
 	builder.SetEntryPoint("policy")
@@ -188,7 +212,7 @@ func buildGraph(
 
 func initialState() AgentRunState[*SalesPromptInput] {
 	return AgentRunState[*SalesPromptInput]{
-		RenderContext: PromptRenderContext[*SalesPromptInput]{
+		RenderContext: flowy.PromptRenderContext[*SalesPromptInput]{
 			PromptID: "personas/sales",
 			Input: &SalesPromptInput{
 				CustomerName: "Alice",
@@ -214,7 +238,9 @@ func toolNames(tools []Tool) []string {
 }
 
 func main() {
-	graph, err := buildGraph(SalesRenderer{}, EchoLLMClient{})
+	renderer := &spyRenderer{inner: SalesRenderer{}}
+	client := &spyClient{inner: EchoLLMClient{}}
+	graph, err := buildGraph(renderer, client)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -224,8 +250,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Render count:", final.RenderCount)
+	fmt.Println("Render count:", renderer.calls)
 	fmt.Println("System prompt:")
-	fmt.Println(final.LastRendered[0].Content)
-	fmt.Println("Assistant reply:", final.LastReply.Content)
+	fmt.Println(renderer.lastRendered[0].Content)
+	fmt.Println("Assistant reply:", final.History[len(final.History)-1].Content)
 }
