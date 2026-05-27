@@ -1,17 +1,40 @@
 # Human-in-the-Loop (HITL)
 
-This example shows checkpoint-backed pause/resume.
+Демонстрирует паузу графа до действия человека и продолжение через `Resume`.
 
-## Flow
+## Было (legacy)
 
-1. `process` runs normally and updates state.
-2. The `approve` node returns `ErrSuspend` until a human approves the state.
-3. `flowy` saves a checkpoint for the thread with the current state and resume target.
-4. Later, the application loads the latest checkpoint, updates the state, and calls `thread.Resume(ctx, replacementState)`.
-5. The graph continues from `Checkpoint.Next` and finishes normally.
+- Узел возвращал `(state, flowy.ErrSuspend)`.
+- Клиент вручную разбирал checkpoint и вызывал старый `Stream` с `NextNode`.
 
-## Important point
+## Стало (v1)
 
-`flowy` has a built-in checkpointing contract. This example uses `testutil.MemoryCheckpointer`, but in production you would usually plug in a durable store such as Postgres or Redis.
+1. Узел `payment` возвращает `flowy.Suspend("waiting_for_user_approval")`.
+2. Runtime автоматически вызывает `Checkpointer.Save`.
+3. HTTP/UI слой вызывает `Runner.Resume(..., flowy.WithStatePatch(approve))`.
+4. Граф продолжает с узла из snapshot (`payment`) с обновлённым state.
 
-This is the safe suspend pattern: pause on a sequential executable node. `ErrSuspend` is not supported inside fan-out branch execution.
+## Запуск
+
+```bash
+cd examples/hitl_agent
+go run main.go
+```
+
+## Lifecycle
+
+```mermaid
+sequenceDiagram
+  participant App
+  participant Runner
+  participant CP as Checkpointer
+  participant User
+
+  App->>Runner: Start(thread, state)
+  Runner->>CP: Save on Suspend
+  Runner-->>App: RunStatusSuspended
+  User->>App: Approve
+  App->>Runner: Resume(thread, WithStatePatch)
+  Runner->>CP: Save on next Suspend if any
+  Runner-->>App: RunStatusCompleted
+```

@@ -1,31 +1,15 @@
-// Package flowy provides a type-safe directed graph engine for orchestrating
-// AI agents with linear topology (edges and choices), optional concurrency inside
-// a step via [Parallel], and middleware-based cross-cutting concerns. Execution is
-// stateless: persistence and human-in-the-loop resume are implemented by the caller
-// using [Graph.Stream] steps and types from the checkpoint subpackage (see README).
-// Deadlines and cancellation are controlled by the [context.Context] passed into
-// [Graph.Invoke] / [Graph.Stream], not by compile-time timeouts inside the engine.
+// Package flowy provides a state-agnostic framework for building and running
+// agentic state machines with explicit directives and persistent resume.
 //
-// State updates can be full replace (simple types) or merge/delta (complex state);
-// see the README section "State Management Patterns" for the recommended approach.
-// For LLM-style pipelines, use [PromptRenderContext] as the canonical transport for
-// typed prompt input inside graph state, then render prompt messages only in the
-// final network node. This keeps intermediate nodes and middleware free to mutate
-// state (for example, filter tools) without string sanitizers or prompt re-rendering
-// elsewhere. The package does not promote an alternative early-bound prompt path,
-// and rendered prompt messages should not be carried through graph state as a
-// fallback transport between nodes.
+// Nodes return a typed state update and a platform directive:
 //
-// Example:
+//	func(ctx context.Context, state T) (T, flowy.Directive, error)
 //
-//	ctx := context.Background()
-//	b := flowy.NewGraph[string](func(_, u string) string { return u })
-//	b.AddNode("greet", func(ctx context.Context, s string) (string, error) { return "hello " + s, nil })
-//	b.SetEntryPoint("greet")
-//	b.SetFinishPoint("greet")
-//	graph, _ := b.Compile()
-//	result, err := graph.Invoke(ctx, "world")
-//	if err != nil {
-//		// handle error
-//	}
+// The framework owns the lifecycle loop via Runner.Start/Runner.Resume and
+// asynchronous Runner.Stream/Runner.StreamResume handles. Streams always emit
+// a terminal event (completed/suspended/failed) before channel close.
+// Use StreamHandle.Events() to consume, StreamHandle.Close() for early stop,
+// and StreamHandle.Done() to await producer completion.
+//
+// Checkpoint saving is framework-managed on suspend and context cancellation.
 package flowy

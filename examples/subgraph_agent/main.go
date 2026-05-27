@@ -1,5 +1,4 @@
-// Package main demonstrates embedding a subgraph via SubgraphNode: parent state has a nested sub-state,
-// mapIn/mapOut adapt between parent and sub; the subgraph runs as one node in the parent graph.
+// Package main demonstrates suspend/resume when parent executes a subgraph node.
 package main
 
 import (
@@ -8,68 +7,87 @@ import (
 	"log"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/testutil"
 )
 
+type childState struct {
+	Approved bool
+	Steps    []string
+}
+
+type parentState struct {
+	Child childState
+	Log   []string
+}
+
 func main() {
-	ctx := context.Background()
+	cp := testutil.NewMemoryCheckpointer[parentState]()
 
-	type SubState struct {
-		Count int
-		Label string
-	}
-	type ParentState struct {
-		Title string
-		Sub   SubState
-	}
-
-	subReducer := func(_, update SubState) SubState { return update }
-	sub, err := flowy.NewGraph[SubState](subReducer).
-		AddNode("inc", func(_ context.Context, s SubState) (SubState, error) {
-			return SubState{Count: s.Count + 1, Label: s.Label}, nil
+	subgraph, err := flowy.NewGraph(func(_ childState, u childState) childState { return u }).
+		AddNode("gate", func(_ context.Context, s childState) (childState, flowy.Directive, error) {
+			s.Steps = append(s.Steps, "gate")
+			if !s.Approved {
+				return s, flowy.Suspend("waiting_subgraph_approval"), nil
+			}
+			return s, flowy.Next("done"), nil
 		}).
-		AddNode("tag", func(_ context.Context, s SubState) (SubState, error) {
-			return SubState{Count: s.Count, Label: s.Label + "_done"}, nil
+		AddNode("done", func(_ context.Context, s childState) (childState, flowy.Directive, error) {
+			s.Steps = append(s.Steps, "done")
+			return s, flowy.End(), nil
 		}).
-		AddEdge("inc", "tag").
-		SetEntryPoint("inc").
-		SetFinishPoint("tag").
+		SetEntryPoint("gate").
 		Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	mapIn := func(p ParentState) SubState { return p.Sub }
-	mapOut := func(p ParentState, s SubState) ParentState {
-		p.Sub = s
-		return p
-	}
-
-	parentReducer := func(_, update ParentState) ParentState { return update }
-	b := flowy.NewGraph[ParentState](parentReducer)
-	b.AddNode("start", func(_ context.Context, p ParentState) (ParentState, error) {
-		p.Title = "run"
-		return p, nil
-	})
-	b.AddNode("sub", flowy.SubgraphNode(sub, mapIn, mapOut))
-	b.AddNode("end", func(_ context.Context, p ParentState) (ParentState, error) {
-		return p, nil
-	})
-	b.AddEdge("start", "sub")
-	b.AddEdge("sub", "end")
-	b.SetEntryPoint("start")
-	b.SetFinishPoint("end")
-
-	graph, err := b.Compile()
+	parent, err := flowy.NewGraph(func(_ parentState, u parentState) parentState { return u }).
+		AddNode("start", func(_ context.Context, s parentState) (parentState, flowy.Directive, error) {
+			s.Log = append(s.Log, "parent_start")
+			return s, flowy.Completed(), nil
+		}).
+		AddNode("subgraph", flowy.SubgraphNode(
+			subgraph,
+			func(s parentState) childState { return s.Child },
+			func(s parentState, child childState) parentState {
+				s.Child = child
+				return s
+			},
+		)).
+		AddNode("finalize", func(_ context.Context, s parentState) (parentState, flowy.Directive, error) {
+			s.Log = append(s.Log, "parent_finalize")
+			return s, flowy.End(), nil
+		}).
+		AddEdge("start", "subgraph").
+		AddEdge("subgraph", "finalize").
+		SetEntryPoint("start").
+		Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	initial := ParentState{Title: "", Sub: SubState{Count: 0, Label: "a"}}
-	final, err := graph.Invoke(ctx, initial)
+	runner := parent.NewRunner(cp)
+	first, err := runner.Start(context.Background(), "subgraph-thread", parentState{})
 	if err != nil {
 		log.Fatal(err)
 	}
-	fmt.Println("Title:", final.Title)
-	fmt.Println("Sub.Count:", final.Sub.Count)
-	fmt.Println("Sub.Label:", final.Sub.Label)
+	fmt.Printf(
+		"phase1 status=%s reason=%q child_steps=%v log=%v\n",
+		first.Status,
+		first.Reason,
+		first.State.Child.Steps,
+		first.State.Log,
+	)
+	if first.Status != flowy.RunStatusSuspended {
+		log.Fatalf("expected suspended status, got %s", first.Status)
+	}
+
+	second, err := runner.Resume(context.Background(), "subgraph-thread", flowy.WithStatePatch(func(s *parentState) {
+		s.Child.Approved = true
+		s.Log = append(s.Log, "parent_resume")
+	}))
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("phase2 status=%s child_steps=%v log=%v\n", second.Status, second.State.Child.Steps, second.State.Log)
 }

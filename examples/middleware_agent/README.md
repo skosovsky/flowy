@@ -1,9 +1,37 @@
-# Middleware agent
+# Middleware Agent
 
-This example demonstrates three classic middleware scenarios in one graph:
+Показывает глобальные node middleware через `GraphBuilder.Use(...)`.
 
-- `LoggingMiddleware` measures node execution time with `time.Since`
-- `MemoryMiddleware` stores the successful state for each node in an in-memory map
-- `FallbackMiddleware` wraps one unstable node and calls a fallback handler with the original state
+## Слои
 
-The important fallback rule is explicit in the code: when `next(...)` returns an error, the fallback uses the incoming `state`, not the failed node output, so partially dirty data is never committed to the graph.
+- `loggingMiddleware` — замер длительности каждого узла (шаблон для Langfuse/OpenTelemetry).
+- `flowy.RecoverMiddleware` — panic в узле превращается в ошибку, процесс не падает.
+
+## Запуск
+
+```bash
+cd examples/middleware_agent
+go run main.go
+```
+
+## Миграция с legacy
+
+| Legacy                    | v1                            |
+| ------------------------- | ----------------------------- |
+| `ExecutionChain`          | `NodeMiddleware` + `Use(...)` |
+| Локальные обёртки вручную | Onion-цепочка на compile      |
+
+## Stream + panic
+
+Второй прогон использует `Stream`: при panic в `unstable` ожидайте терминальное событие `failed` в потоке.
+
+## Boxed OTel middleware
+
+```go
+import flowyotel "github.com/skosovsky/flowy/ext/otel"
+
+flowyotel.InstallTelemetryBridge()
+graph, _ := flowy.NewGraph(reducer).
+	Use(flowyotel.TracingMiddleware[State](tracer)).
+	Compile()
+```

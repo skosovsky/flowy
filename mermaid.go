@@ -27,14 +27,15 @@ func (g *Graph[T]) ExportMermaid() string {
 		fmt.Fprintf(&b, "  %s --> %s\n", idMap[from], idMap[g.edges[from]])
 	}
 
-	choiceKeys := make([]string, 0, len(g.choices))
-	for from := range g.choices {
-		choiceKeys = append(choiceKeys, from)
+	routerKeys := make([]string, 0, len(g.conditionalEdges))
+	for from := range g.conditionalEdges {
+		routerKeys = append(routerKeys, from)
 	}
-	slices.Sort(choiceKeys)
-	for _, from := range choiceKeys {
-		placeholder := "__choice_" + idMap[from]
-		fmt.Fprintf(&b, "  %s -->|choice| %s\n", idMap[from], placeholder)
+	slices.Sort(routerKeys)
+	for _, from := range routerKeys {
+		choiceNode := "__route_" + idMap[from]
+		fmt.Fprintf(&b, "  %s --> %s\n", idMap[from], choiceNode)
+		fmt.Fprintf(&b, "  %s -->|conditional| %s\n", choiceNode, idMap[EndNode])
 	}
 	return strings.TrimSuffix(b.String(), "\n")
 }
@@ -50,9 +51,10 @@ func (g *Graph[T]) buildMermaidIDMap() map[string]string {
 		names[from] = struct{}{}
 		names[to] = struct{}{}
 	}
-	for from := range g.choices {
+	for from := range g.conditionalEdges {
 		names[from] = struct{}{}
 	}
+	names[EndNode] = struct{}{}
 
 	ordered := make([]string, 0, len(names))
 	for name := range names {

@@ -1,59 +1,64 @@
-// Package main shows composition: the seller graph embeds the analyst graph
-// as a node via AsNode(), so the inner graph runs with the same state type.
+// Package main demonstrates supervisor routing to specialized worker nodes.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/patterns"
+	"github.com/skosovsky/flowy/testutil"
 )
 
+type teamState struct {
+	Query  string
+	Intent string
+	Note   string
+}
+
 func main() {
-	ctx := context.Background()
-
-	// Shared state type so the analyst subgraph can be used as a node via AsNode().
-	type state struct {
-		Query        string
-		ResearchData string
-	}
-	reducer := func(c, u state) state {
-		if u.ResearchData != "" {
-			c.ResearchData = u.ResearchData
+	supervisor := func(_ context.Context, s teamState) (teamState, flowy.Directive, error) {
+		switch {
+		case strings.Contains(strings.ToLower(s.Query), "billing"):
+			s.Intent = "support"
+		case strings.Contains(strings.ToLower(s.Query), "buy"):
+			s.Intent = "sales"
+		default:
+			s.Intent = "unknown"
 		}
-		if u.Query != "" {
-			c.Query = u.Query
-		}
-		return c
+		return s, flowy.Completed(), nil
 	}
 
-	analystBuilder := flowy.NewGraph[state](reducer)
-	analystBuilder.AddNode("research", func(_ context.Context, s state) (state, error) {
-		s.ResearchData = "report:" + s.Query
-		return s, nil
-	})
-	analystBuilder.SetEntryPoint("research")
-	analystBuilder.SetFinishPoint("research")
-	analystGraph, err := analystBuilder.Compile()
+	workers := map[string]flowy.Node[teamState]{
+		"support_worker": func(_ context.Context, s teamState) (teamState, flowy.Directive, error) {
+			s.Note = "support: ticket opened for " + s.Query
+			return s, flowy.Completed(), nil
+		},
+		"sales_worker": func(_ context.Context, s teamState) (teamState, flowy.Directive, error) {
+			s.Note = "sales: quote prepared for " + s.Query
+			return s, flowy.Completed(), nil
+		},
+	}
+
+	graph, err := patterns.BuildSupervisor(
+		supervisor,
+		workers,
+		func(s teamState) string { return s.Intent },
+		patterns.RouteMap{
+			"support": "support_worker",
+			"sales":   "sales_worker",
+		},
+	).Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	sellerBuilder := flowy.NewGraph[state](reducer)
-	sellerBuilder.AddNode("ask_analyst", analystGraph.AsNode())
-	sellerBuilder.SetEntryPoint("ask_analyst")
-	sellerBuilder.SetFinishPoint("ask_analyst")
-
-	sellerGraph, err := sellerBuilder.Compile()
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[teamState]())
+	result, err := runner.Start(context.Background(), "team-1", teamState{Query: "I want to buy enterprise plan"})
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	initial := state{Query: "drug X"}
-	final, err := sellerGraph.Invoke(ctx, initial)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println("Research data:", final.ResearchData)
+	fmt.Printf("status=%s intent=%s note=%s\n", result.Status, result.State.Intent, result.State.Note)
 }

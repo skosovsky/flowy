@@ -1,116 +1,59 @@
-// Package main demonstrates global and local middlewares: logging, sequential
-// step persistence, and a fallback that protects the original state.
+// Package main demonstrates global middleware: logging and panic recovery.
 package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/testutil"
 )
 
-type memoryStore struct {
-	mu   sync.RWMutex
-	data map[string]string
+type agentState struct {
+	Trace []string
 }
 
-func newMemoryStore() *memoryStore {
-	return &memoryStore{
-		mu:   sync.RWMutex{},
-		data: make(map[string]string),
-	}
-}
-
-func (store *memoryStore) save(nodeName, state string) {
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	store.data[nodeName] = state
-}
-
-func (store *memoryStore) load(nodeName string) string {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	return store.data[nodeName]
-}
-
-func buildGraph(memory *memoryStore) *flowy.GraphBuilder[string] {
-	reducer := func(current, update string) string { return current + update }
-	b := flowy.NewGraph[string](reducer)
-
-	loggingMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
+func loggingMiddleware[T any](next flowy.Node[T]) flowy.Node[T] {
+	return func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		start := time.Now()
-		out, err := chain.Next(ctx, state)
-		log.Printf("node=%s duration=%s err=%v", chain.NodeName, time.Since(start), err)
-		return out, err
+		out, directive, err := next(ctx, state)
+		log.Printf("node executed in %s err=%v", time.Since(start), err)
+		return out, directive, err
 	}
-
-	memoryMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
-		out, err := chain.Next(ctx, state)
-		if err == nil {
-			postState := chain.ApplyUpdate(state, out)
-			memory.save(chain.NodeName, postState)
-		}
-		return out, err
-	}
-
-	fallbackNode := func(_ context.Context, _ string) (string, error) {
-		return "[fallback]", nil
-	}
-
-	fallbackMw := func(ctx context.Context, state string, chain *flowy.ExecutionChain[string]) (string, error) {
-		out, err := chain.Next(ctx, state)
-		if err == nil {
-			return out, nil
-		}
-
-		log.Printf("fallback for %s: %v", chain.NodeName, err)
-
-		// Protect the graph from dirty partial output by reusing the original input state.
-		return fallbackNode(ctx, state)
-	}
-
-	b.Use(loggingMw, memoryMw)
-	b.AddNode("start", func(_ context.Context, _ string) (string, error) {
-		return "[start]", nil
-	})
-	b.AddNode("unstable", func(_ context.Context, _ string) (string, error) {
-		return "[dirty]", errors.New("primary node failed")
-	}, fallbackMw)
-	b.AddNode("finish", func(_ context.Context, _ string) (string, error) {
-		return "[finish]", nil
-	})
-	b.AddEdge("start", "unstable")
-	b.AddEdge("unstable", "finish")
-	b.SetEntryPoint("start")
-	b.SetFinishPoint("finish")
-	return b
-}
-
-func printMemory(memory *memoryStore) {
-	fmt.Println("memory[start]:", memory.load("start"))
-	fmt.Println("memory[unstable]:", memory.load("unstable"))
-	fmt.Println("memory[finish]:", memory.load("finish"))
 }
 
 func main() {
-	ctx := context.Background()
-	memory := newMemoryStore()
-	b := buildGraph(memory)
-
-	graph, err := b.Compile()
+	graph, err := flowy.NewGraph(func(_ agentState, u agentState) agentState { return u }).
+		Use(loggingMiddleware[agentState], flowy.RecoverMiddleware[agentState]()).
+		AddNode("stable", func(_ context.Context, s agentState) (agentState, flowy.Directive, error) {
+			s.Trace = append(s.Trace, "stable_ok")
+			return s, flowy.Completed(), nil
+		}).
+		AddNode("unstable", func(_ context.Context, _ agentState) (agentState, flowy.Directive, error) {
+			panic("simulated node failure")
+		}).
+		AddEdge("stable", "unstable").
+		SetEntryPoint("stable").
+		Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	final, err := graph.Invoke(ctx, "init")
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState]())
+	_, err = runner.Start(context.Background(), "mw-thread", agentState{})
+	if err == nil {
+		log.Fatal("expected error from recovered panic in unstable node")
+	}
+	fmt.Printf("recovered error: %v\n", err)
+
+	stream, err := runner.Stream(context.Background(), "mw-stream", agentState{})
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("final:", final)
-	printMemory(memory)
+	for event := range stream.Events() {
+		fmt.Printf("stream event=%s node=%s err=%v\n", event.Type, event.NodeID, event.Error)
+	}
+	_ = stream.Done()
 }

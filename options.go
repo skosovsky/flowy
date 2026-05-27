@@ -2,10 +2,9 @@ package flowy
 
 const defaultMaxSteps = 1000
 
-// runConfig holds options for a run (set at Compile from BuildOption).
+// runConfig holds options for a run.
 type runConfig struct {
-	maxSteps       int
-	maxConcurrency int
+	maxSteps int
 }
 
 // buildOpts holds compile-time options.
@@ -20,13 +19,6 @@ type BuildOption func(*buildOpts)
 func WithMaxSteps(limit int) BuildOption {
 	return func(o *buildOpts) {
 		o.run.maxSteps = limit
-	}
-}
-
-// WithMaxConcurrency sets the maximum number of goroutines during parallel branch execution. If <= 0, no limit.
-func WithMaxConcurrency(n int) BuildOption {
-	return func(o *buildOpts) {
-		o.run.maxConcurrency = n
 	}
 }
 

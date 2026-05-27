@@ -1,12 +1,15 @@
 SELECT
-    id,
     thread_id,
-    run_id,
-    node_name,
-    next_node,
-    state_data::text AS state_data,
-    created_at
+    revision,
+    node_id,
+    state_payload,
+    run_meta,
+    effects,
+    updated_at
 FROM flowy_checkpoints
 WHERE thread_id = @thread_id
-ORDER BY created_at DESC, id DESC
-LIMIT @limit;
+ORDER BY revision DESC
+LIMIT CASE
+    WHEN @limit <= 0 THEN 2147483647
+    ELSE @limit
+END;

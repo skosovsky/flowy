@@ -3,93 +3,333 @@ package flowy
 import (
 	"context"
 	"errors"
+	"maps"
+	"slices"
+	"sync"
+	"time"
 )
 
-// Node is the basic computation unit. It receives the current state and returns
-// the updated state (or a delta to be merged by the Reducer).
-type Node[T any] func(ctx context.Context, state T) (T, error)
+// Node is the basic execution unit. It returns state update plus a directive.
+type Node[T any] func(ctx context.Context, state T) (T, Directive, error)
 
-// Choice is a routing function that decides which node to execute next (single next node name).
-type Choice[T any] func(ctx context.Context, state T) (string, error)
+// NodeMiddleware wraps a node handler.
+type NodeMiddleware[T any] func(next Node[T]) Node[T]
 
 // Reducer defines how to merge the current state with the update returned by a node.
 type Reducer[T any] func(current T, update T) T
 
-// ExecutionChain carries step metadata and drives the middleware pipeline for one node execution.
-// Call Next to run the next middleware or, after the last middleware, the node handler receives
-// the same [context.Context] passed into Next (deadlines and cancellation are controlled by the caller).
-// Middleware must not retain *ExecutionChain after the function returns (no async goroutines holding the pointer).
-//
-// Successful middleware returns are still treated as node updates and will be passed through
-// the reducer by the runner. If a middleware returns ErrSuspend, it must return the full
-// snapshot state for the caller.
-type ExecutionChain[T any] struct {
-	NodeName      string
-	SuspendTarget string
-	IsFinish      bool
+type directiveKind int
 
-	g           *Graph[T]
-	cfg         *runConfig
-	middlewares []Middleware[T]
-	index       int
-	handler     Node[T]
-}
-
-// ApplyUpdate merges an update into the current state using the graph reducer.
-func (c *ExecutionChain[T]) ApplyUpdate(current, update T) T {
-	return c.g.reducer(current, update)
-}
-
-// ResolveNext returns the next routing target after the current node, or an error if unavailable.
-func (c *ExecutionChain[T]) ResolveNext(ctx context.Context, postState T) (string, error) {
-	if c.g.finishPoints[c.NodeName] {
-		return "", nil
-	}
-	return c.g.resolveNext(ctx, c.NodeName, postState)
-}
-
-// Next runs the next middleware in the pipeline, or the node handler if all middleware have run.
-// Middleware order matches the historical onion: first registered global middleware runs first on
-// the way in (same order as compiledMiddlewares slice: globals then per-node, each in registration order).
-func (c *ExecutionChain[T]) Next(ctx context.Context, state T) (T, error) {
-	if c.index < len(c.middlewares) {
-		mw := c.middlewares[c.index]
-		c.index++
-		return mw(ctx, state, c)
-	}
-	out, err := c.handler(ctx, state)
-	if errors.Is(err, ErrSuspend) {
-		return out, ErrSuspend
-	}
-	return out, err
-}
-
-// Middleware is an interceptor that wraps node execution. It receives ctx, state, and a chain.
-// To continue the pipeline, call chain.Next(ctx, state). Use it for logging, tracing, metrics,
-// and fallback behavior. Persistence belongs outside the core (see Stream steps).
-type Middleware[T any] func(ctx context.Context, state T, chain *ExecutionChain[T]) (T, error)
-
-// Step describes the graph state after one graph step, yielded by Stream.
-//
-// On success, each yielded step has State, NodeName, and NextNode populated consistently.
-//
-// On ErrSuspend, the final yielded step has a full snapshot State, NodeName set to the suspending
-// node, and NextNode set to the resume cursor; Stream then stops with ErrSuspend.
-//
-// On other errors, the iterator may yield a zero Step or a partially filled Step depending on
-// where the failure occurred; callers should not rely on Step fields except for ErrSuspend.
-type Step[T any] struct {
-	State    T
-	NodeName string // Last executed node
-	NextNode string // Next node to run; empty when the graph stops at a finish point
-}
-
-// Sentinel errors for flow control and validation.
-var (
-	// ErrSuspend is returned when a node or middleware suspends execution
-	// (e.g. human-in-the-loop). The suspending node or middleware must return the
-	// full snapshot state; Invoke returns that state together with ErrSuspend.
-	ErrSuspend = errors.New("flowy: suspend execution")
-	// ErrMaxStepsExceeded is returned when the step limit is reached (e.g. infinite loop).
-	ErrMaxStepsExceeded = errors.New("flowy: max steps exceeded")
+const (
+	directiveNext directiveKind = iota + 1
+	directiveCompleted
+	directiveEnd
+	directiveSuspend
+	directiveRetry
+	directiveEffect
 )
+
+// Directive is a platform command returned by nodes.
+type Directive struct {
+	kind         directiveKind
+	nextNodeID   string
+	reason       string
+	maxAttempts  int
+	fallbackNode string
+	base         *Directive
+	effect       any
+}
+
+func directiveWithKind(kind directiveKind) Directive {
+	return Directive{
+		kind:         kind,
+		nextNodeID:   "",
+		reason:       "",
+		maxAttempts:  0,
+		fallbackNode: "",
+		base:         nil,
+		effect:       nil,
+	}
+}
+
+// Next moves execution to the provided node.
+func Next(nodeID string) Directive {
+	d := directiveWithKind(directiveNext)
+	d.nextNodeID = nodeID
+	return d
+}
+
+// Completed marks node success and asks graph router for the next edge.
+func Completed() Directive {
+	return directiveWithKind(directiveCompleted)
+}
+
+// End completes the run.
+func End() Directive {
+	return directiveWithKind(directiveEnd)
+}
+
+// Suspend pauses execution and persists snapshot.
+func Suspend(reason string) Directive {
+	d := directiveWithKind(directiveSuspend)
+	d.reason = reason
+	return d
+}
+
+// Retry reruns current node with per-node budget and optional fallback.
+func Retry(maxAttempts int, fallbackNode string) Directive {
+	d := directiveWithKind(directiveRetry)
+	d.maxAttempts = maxAttempts
+	d.fallbackNode = fallbackNode
+	return d
+}
+
+// Effect attaches a side effect payload to a base directive.
+func Effect(base Directive, payload any) Directive {
+	d := directiveWithKind(directiveEffect)
+	d.base = &base
+	d.effect = payload
+	return d
+}
+
+// IsCompleted reports whether directive is Completed.
+func (d Directive) IsCompleted() bool {
+	return d.kind == directiveCompleted
+}
+
+// Type returns directive semantic name for observability.
+func (d Directive) Type() string {
+	switch d.kind {
+	case directiveNext:
+		return "next"
+	case directiveCompleted:
+		return "completed"
+	case directiveEnd:
+		return "end"
+	case directiveSuspend:
+		return "suspend"
+	case directiveRetry:
+		return "retry"
+	case directiveEffect:
+		return "effect"
+	default:
+		return "unknown"
+	}
+}
+
+// UnwrapDirective returns base directive and collected effects.
+func UnwrapDirective(d Directive) (Directive, []any, error) {
+	effects := make([]any, 0)
+	current := d
+	for current.kind == directiveEffect {
+		effects = append(effects, current.effect)
+		if current.base == nil {
+			return Directive{}, nil, errors.New("flowy: Effect requires base directive")
+		}
+		current = *current.base
+	}
+	if current.kind == 0 {
+		return Directive{}, nil, errors.New("flowy: zero directive is not allowed")
+	}
+	slices.Reverse(effects)
+	return current, effects, nil
+}
+
+// RunStatus represents current run completion status.
+type RunStatus string
+
+const (
+	RunStatusCompleted RunStatus = "completed"
+	RunStatusSuspended RunStatus = "suspended"
+	RunStatusFailed    RunStatus = "failed"
+)
+
+// RunMetadata contains internal runner counters.
+type RunMetadata struct {
+	SegmentStartTime time.Time         `json:"segment_start_time"`
+	RetryCounts      map[string]int    `json:"retry_counts"`
+	StepCount        int               `json:"step_count"`
+	TelemetryContext map[string]string `json:"telemetry_context,omitempty"`
+}
+
+// Snapshot is a persisted run snapshot.
+type Snapshot[T any] struct {
+	ThreadID string
+	NodeID   string
+	Revision int
+	State    T
+	RunMeta  RunMetadata
+	Effects  []any
+}
+
+// Checkpointer persists and restores snapshots.
+type Checkpointer[T any] interface {
+	Save(ctx context.Context, snapshot Snapshot[T]) error
+	Load(ctx context.Context, threadID string) (Snapshot[T], error)
+	GetHistory(ctx context.Context, threadID string, limit int) ([]Snapshot[T], error)
+	Prune(ctx context.Context, threadID string, retainCount int) error
+}
+
+// StateSerializer converts state to and from bytes.
+type StateSerializer[T any] interface {
+	Marshal(state T) ([]byte, error)
+	Unmarshal(data []byte) (T, error)
+}
+
+// StateInterceptor can mutate state before save and after load.
+type StateInterceptor[T any] interface {
+	BeforeSave(ctx context.Context, state *T) error
+	AfterLoad(ctx context.Context, state *T) error
+}
+
+// ResumeOption modifies resume behavior.
+type ResumeOption[T any] interface {
+	apply(*resumeOptions[T])
+}
+
+type resumeOptions[T any] struct {
+	patches []func(*T)
+}
+
+type resumeOptionFunc[T any] func(*resumeOptions[T])
+
+//nolint:unused // called through ResumeOption.apply in graphRunner.prepareResume
+func (f resumeOptionFunc[T]) apply(opts *resumeOptions[T]) {
+	f(opts)
+}
+
+// Compile-time check that resumeOptionFunc implements ResumeOption.
+var _ ResumeOption[struct{}] = resumeOptionFunc[struct{}](nil)
+
+// WithStatePatch mutates loaded state before the first resumed node executes.
+func WithStatePatch[T any](patchFn func(state *T)) ResumeOption[T] {
+	return resumeOptionFunc[T](func(opts *resumeOptions[T]) {
+		if patchFn != nil {
+			opts.patches = append(opts.patches, patchFn)
+		}
+	})
+}
+
+// RunResult is the final state returned to the application.
+type RunResult[T any] struct {
+	State   T
+	Status  RunStatus
+	Effects []any
+	RunMeta RunMetadata
+	NodeID  string
+	Reason  string
+}
+
+type EventType string
+
+const (
+	EventNodeStarted   EventType = "node_started"
+	EventNodeCompleted EventType = "node_completed"
+	EventCompleted     EventType = "completed"
+	EventSuspended     EventType = "suspended"
+	EventFailed        EventType = "failed"
+)
+
+// RunEvent represents a single lifecycle event.
+type RunEvent[T any] struct {
+	Type     EventType
+	NodeID   string
+	State    T
+	Effect   any
+	Error    error
+	Duration time.Duration
+	Metrics  map[string]any
+}
+
+// StreamHandle controls the lifecycle of asynchronous graph streaming.
+type StreamHandle[T any] interface {
+	Events() <-chan RunEvent[T]
+	Close()
+	Done() error
+}
+
+// Runner controls lifecycle for start/resume executions.
+type Runner[T any] interface {
+	Start(ctx context.Context, threadID string, initialState T) (*RunResult[T], error)
+	Resume(ctx context.Context, threadID string, opts ...ResumeOption[T]) (*RunResult[T], error)
+	Stream(ctx context.Context, threadID string, initialState T) (StreamHandle[T], error)
+	StreamResume(ctx context.Context, threadID string, opts ...ResumeOption[T]) (StreamHandle[T], error)
+}
+
+// Sentinel errors for runner flow and validation.
+var (
+	ErrMaxStepsExceeded = errors.New("flowy: max steps exceeded")
+	ErrThreadNotFound   = errors.New("flowy: thread snapshot not found")
+)
+
+// EndNode is a terminal graph target for AddEdge/AddConditionalEdge.
+const EndNode = "__end__"
+
+type contextKey string
+
+const nodeNameContextKey contextKey = "flowy.node_name"
+
+// NodeNameFromContext returns current node id attached by runner.
+func NodeNameFromContext(ctx context.Context) string {
+	value, _ := ctx.Value(nodeNameContextKey).(string)
+	return value
+}
+
+func withNodeName(ctx context.Context, nodeName string) context.Context {
+	return context.WithValue(ctx, nodeNameContextKey, nodeName)
+}
+
+// TelemetryBridge serializes runtime tracing metadata across suspend/resume boundaries.
+type TelemetryBridge interface {
+	Extract(ctx context.Context) map[string]string
+	Inject(ctx context.Context, metadata map[string]string) context.Context
+}
+
+type noopTelemetryBridge struct{}
+
+func (noopTelemetryBridge) Extract(context.Context) map[string]string { return nil }
+
+func (noopTelemetryBridge) Inject(ctx context.Context, _ map[string]string) context.Context {
+	return ctx
+}
+
+var (
+	telemetryBridgeMu sync.RWMutex                            //nolint:gochecknoglobals // paired mutex for telemetryBridge
+	telemetryBridge   TelemetryBridge = noopTelemetryBridge{} //nolint:gochecknoglobals // process-wide bridge slot
+)
+
+// SetTelemetryBridge installs the process-wide telemetry bridge (stateless Extract/Inject only).
+func SetTelemetryBridge(bridge TelemetryBridge) {
+	telemetryBridgeMu.Lock()
+	defer telemetryBridgeMu.Unlock()
+	if bridge == nil {
+		telemetryBridge = noopTelemetryBridge{}
+		return
+	}
+	telemetryBridge = bridge
+}
+
+func extractTelemetryContext(ctx context.Context) map[string]string {
+	telemetryBridgeMu.RLock()
+	bridge := telemetryBridge
+	telemetryBridgeMu.RUnlock()
+	metadata := bridge.Extract(ctx)
+	if len(metadata) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(metadata))
+	maps.Copy(out, metadata)
+	return out
+}
+
+func injectTelemetryContext(ctx context.Context, metadata map[string]string) context.Context {
+	if len(metadata) == 0 {
+		return ctx
+	}
+	copyMetadata := make(map[string]string, len(metadata))
+	maps.Copy(copyMetadata, metadata)
+	telemetryBridgeMu.RLock()
+	bridge := telemetryBridge
+	telemetryBridgeMu.RUnlock()
+	return bridge.Inject(ctx, copyMetadata)
+}

@@ -1,122 +1,90 @@
+// Package testutil provides test helpers for flowy.
 package testutil
 
 import (
 	"context"
-	"slices"
+	"maps"
 	"sync"
 
-	"github.com/skosovsky/flowy/checkpoint"
+	"github.com/skosovsky/flowy"
 )
 
-// MemoryCheckpointer is a thread-safe in-memory checkpoint.Checkpointer for tests and examples.
-// LoadLatest and GetHistory return checkpoints ordered by CreatedAt newest-first,
-// breaking ties by Checkpoint.ID descending.
-type MemoryCheckpointer struct {
-	mu        sync.RWMutex
-	byThread  map[string][]checkpoint.Checkpoint
-	savedByID map[string]struct{}
+// MemoryCheckpointer is a thread-safe in-memory implementation of flowy.Checkpointer.
+type MemoryCheckpointer[T any] struct {
+	mu      sync.RWMutex
+	history map[string][]flowy.Snapshot[T]
 }
 
-// NewMemoryCheckpointer creates an in-memory append-only checkpointer.
-func NewMemoryCheckpointer() *MemoryCheckpointer {
-	return &MemoryCheckpointer{
-		byThread:  make(map[string][]checkpoint.Checkpoint),
-		savedByID: make(map[string]struct{}),
+func NewMemoryCheckpointer[T any]() *MemoryCheckpointer[T] {
+	return &MemoryCheckpointer[T]{
+		history: make(map[string][]flowy.Snapshot[T]),
 	}
 }
 
-// Save appends cp unless the same checkpoint ID has already been stored.
-func (m *MemoryCheckpointer) Save(ctx context.Context, cp checkpoint.Checkpoint) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-
+func (m *MemoryCheckpointer[T]) Save(_ context.Context, snapshot flowy.Snapshot[T]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-
-	if m.byThread == nil {
-		m.byThread = make(map[string][]checkpoint.Checkpoint)
-	}
-	if m.savedByID == nil {
-		m.savedByID = make(map[string]struct{})
-	}
-	if _, exists := m.savedByID[cp.ID]; exists {
-		return nil
-	}
-
-	m.byThread[cp.ThreadID] = append(m.byThread[cp.ThreadID], cloneCheckpoint(cp))
-	m.savedByID[cp.ID] = struct{}{}
+	copied := copySnapshot(snapshot)
+	m.history[snapshot.ThreadID] = append(m.history[snapshot.ThreadID], copied)
 	return nil
 }
 
-// LoadLatest returns the newest checkpoint for threadID by CreatedAt.
-func (m *MemoryCheckpointer) LoadLatest(ctx context.Context, threadID string) (checkpoint.Checkpoint, error) {
-	if err := ctx.Err(); err != nil {
-		return checkpoint.Checkpoint{}, err
-	}
-
+func (m *MemoryCheckpointer[T]) Load(_ context.Context, threadID string) (flowy.Snapshot[T], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	history := m.byThread[threadID]
-	if len(history) == 0 {
-		return checkpoint.Checkpoint{}, checkpoint.ErrNoCheckpoint
+	items := m.history[threadID]
+	if len(items) == 0 {
+		return flowy.Snapshot[T]{}, flowy.ErrThreadNotFound
 	}
-
-	return sortedClonedHistory(history)[0], nil
+	return copySnapshot(items[len(items)-1]), nil
 }
 
-// GetHistory returns newest-first history for threadID by CreatedAt.
-func (m *MemoryCheckpointer) GetHistory(
-	ctx context.Context,
+func (m *MemoryCheckpointer[T]) GetHistory(
+	_ context.Context,
 	threadID string,
 	limit int,
-) ([]checkpoint.Checkpoint, error) {
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-
+) ([]flowy.Snapshot[T], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-
-	history := m.byThread[threadID]
-	if len(history) == 0 {
-		return nil, checkpoint.ErrNoCheckpoint
+	items := m.history[threadID]
+	if len(items) == 0 {
+		return []flowy.Snapshot[T]{}, nil
 	}
-
-	count := len(history)
-	if limit > 0 && limit < count {
-		count = limit
+	if limit <= 0 || limit > len(items) {
+		limit = len(items)
 	}
-
-	sorted := sortedClonedHistory(history)
-	return sorted[:count], nil
+	out := make([]flowy.Snapshot[T], 0, limit)
+	for i := len(items) - 1; i >= len(items)-limit; i-- {
+		out = append(out, copySnapshot(items[i]))
+	}
+	return out, nil
 }
 
-func cloneCheckpoint(cp checkpoint.Checkpoint) checkpoint.Checkpoint {
-	cp.StateData = slices.Clone(cp.StateData)
-	return cp
+func (m *MemoryCheckpointer[T]) Prune(_ context.Context, threadID string, retainCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	items := m.history[threadID]
+	if len(items) == 0 {
+		return nil
+	}
+	if retainCount <= 0 {
+		delete(m.history, threadID)
+		return nil
+	}
+	if len(items) <= retainCount {
+		return nil
+	}
+	m.history[threadID] = append([]flowy.Snapshot[T](nil), items[len(items)-retainCount:]...)
+	return nil
 }
 
-func sortedClonedHistory(history []checkpoint.Checkpoint) []checkpoint.Checkpoint {
-	out := make([]checkpoint.Checkpoint, 0, len(history))
-	for _, cp := range history {
-		out = append(out, cloneCheckpoint(cp))
+func copySnapshot[T any](snapshot flowy.Snapshot[T]) flowy.Snapshot[T] {
+	cloned := snapshot
+	cloned.Effects = append([]any(nil), snapshot.Effects...)
+	if snapshot.RunMeta.RetryCounts != nil {
+		cloned.RunMeta.RetryCounts = make(map[string]int, len(snapshot.RunMeta.RetryCounts))
+		maps.Copy(cloned.RunMeta.RetryCounts, snapshot.RunMeta.RetryCounts)
 	}
-
-	slices.SortFunc(out, func(a, b checkpoint.Checkpoint) int {
-		switch {
-		case a.CreatedAt.After(b.CreatedAt):
-			return -1
-		case a.CreatedAt.Before(b.CreatedAt):
-			return 1
-		case a.ID > b.ID:
-			return -1
-		case a.ID < b.ID:
-			return 1
-		default:
-			return 0
-		}
-	})
-	return out
+	return cloned
 }

@@ -1,5 +1,3 @@
-// Package main runs a minimal ReAct-style agent: reason -> tools -> reason -> finish (with cycle).
-// The conditional edge from reason exits to finish after 2 steps; WithMaxSteps(25) caps iterations.
 package main
 
 import (
@@ -8,60 +6,46 @@ import (
 	"log"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/patterns"
+	"github.com/skosovsky/flowy/testutil"
 )
 
-const reActMaxSteps = 25
+type agentState struct {
+	Prompt   string
+	Thoughts []string
+	Done     bool
+}
 
 func main() {
-	ctx := context.Background()
-
-	type state struct {
-		messages []string
-		steps    int
+	reason := func(_ context.Context, s agentState) (agentState, flowy.Directive, error) {
+		if len(s.Thoughts) == 0 {
+			s.Thoughts = append(s.Thoughts, "need_tool")
+			return s, flowy.Completed(), nil
+		}
+		s.Done = true
+		s.Thoughts = append(s.Thoughts, "final_answer")
+		return s, flowy.Completed(), nil
 	}
-	reducer := func(current, update state) state {
-		if len(update.messages) > 0 {
-			current.messages = append(current.messages, update.messages...)
-		}
-		if update.steps > 0 {
-			current.steps = update.steps
-		}
-		return current
+	action := func(_ context.Context, s agentState) (agentState, flowy.Directive, error) {
+		s.Thoughts = append(s.Thoughts, "tool_called")
+		return s, flowy.Completed(), nil
 	}
 
-	b := flowy.NewGraph[state](reducer)
-
-	b.AddNode("reason", func(_ context.Context, s state) (state, error) {
-		return state{messages: []string{"reason"}, steps: s.steps + 1}, nil
-	})
-	b.AddNode("tools", func(_ context.Context, _ state) (state, error) {
-		return state{messages: []string{"tools"}}, nil
-	})
-	b.AddNode("finish", func(_ context.Context, _ state) (state, error) {
-		return state{messages: []string{"finish"}}, nil
-	})
-
-	b.AddChoice("reason", func(_ context.Context, s state) (string, error) {
-		if s.steps >= 2 {
-			return "finish", nil
-		}
-		return "tools", nil
-	})
-	b.AddEdge("tools", "reason")
-	b.SetEntryPoint("reason")
-	b.SetFinishPoint("finish")
-
-	graph, err := b.Compile(flowy.WithMaxSteps(reActMaxSteps))
+	const maxReActSteps = 8
+	graph, err := patterns.BuildReAct(
+		reason,
+		action,
+		func(s agentState) bool { return !s.Done },
+		maxReActSteps,
+	).Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	initial := state{messages: []string{}, steps: 0}
-	final, err := graph.Invoke(ctx, initial)
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState]())
+	result, err := runner.Start(context.Background(), "react-thread", agentState{Prompt: "hello"})
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	fmt.Println("ReAct cycle finished. Messages:", final.messages)
-	fmt.Println("Steps:", final.steps)
+	fmt.Printf("status=%s thoughts=%v\n", result.Status, result.State.Thoughts)
 }

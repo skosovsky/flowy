@@ -1,33 +1,37 @@
-# Examples
+# Flowy v1 Cookbook
 
-Runnable programs under this directory use `flowy` from the repo root (`go run ./examples/<name>` from the module root).
+Runnable-примеры на директивном API (`Node`, `Directive`, `Runner.Start/Resume/Stream`). Legacy-символы (`ErrSuspend`, `Invoke`, старый stream) не используются.
 
-## Timeouts and resilience
+## Матрица сценариев
 
-`flowy` does not set per-node deadlines. For patterns (macro/micro `context`, optional [routery](https://github.com/skosovsky/routery)), see the root [README.md](../README.md) section **Timeouts and resilience**.
+| Сценарий                          | Каталог               | Команда                                             |
+| --------------------------------- | --------------------- | --------------------------------------------------- |
+| ReAct loop                        | `react_agent`         | `cd examples/react_agent && go run main.go`         |
+| Stream + Effect + Suspend         | `streaming_agent`     | `cd examples/streaming_agent && go run main.go`     |
+| Human-in-the-Loop                 | `hitl_agent`          | `cd examples/hitl_agent && go run main.go`          |
+| Middleware + panic recovery       | `middleware_agent`    | `cd examples/middleware_agent && go run main.go`    |
+| Supervisor / multi-agent          | `multi_agent`         | `cd examples/multi_agent && go run main.go`         |
+| Context deadline + emergency save | `context_deadline`    | `cd examples/context_deadline && go run main.go`    |
+| Cache routing + late binding      | `conditional_routing` | `cd examples/conditional_routing && go run main.go` |
+| Parent + subgraph suspend/resume  | `subgraph_agent`      | `cd examples/subgraph_agent && go run main.go`      |
 
-- [context_deadline](./context_deadline/main.go) — short **stdlib** sample: caller wraps `Invoke` with `context.WithTimeout`.
+## Migration map (legacy → v1)
 
-## Late prompt rendering
+| Legacy example         | v1 cookbook           | Ключевая замена                                                |
+| ---------------------- | --------------------- | -------------------------------------------------------------- |
+| `hitl_agent`           | `hitl_agent`          | `ErrSuspend` → `Suspend()` + `Resume(WithStatePatch(...))`     |
+| `middleware_agent`     | `middleware_agent`    | execution chain → `Use(..., RecoverMiddleware)`                |
+| `multi_agent`          | `multi_agent`         | ручная маршрутизация → `patterns.BuildSupervisor` + `RouteMap` |
+| `context_deadline`     | `context_deadline`    | отмена ctx → emergency `Save` + `RunStatusSuspended`           |
+| `semantic_cache_agent` | `conditional_routing` | ветвление → `Next("output")` / `Next("heavy_llm")`             |
+| `late_prompt_agent`    | `conditional_routing` | runtime config → `WithStatePatch` на `Resume`                  |
+| `subgraph_agent`       | `subgraph_agent`      | parent `SubgraphNode` + suspend/resume через parent snapshot   |
 
-`flowy` should carry typed prompt input through state via `flowy.PromptRenderContext[T]` and render prompt messages only in the final LLM node. Treat this as the canonical contract for LLM-style graphs, not as one option among several.
+## Smoke-валидация
 
-- [late_prompt_agent](./late_prompt_agent/main.go) — generic `PromptRenderContext[T]`, tool filtering via middleware, renderer/client injected through interfaces.
-
-For this pipeline, keep a strict clean break:
-
-- do not pass `map[string]any` through the graph as prompt input,
-- do not keep rendered system prompt messages inside graph state as transport artifacts,
-- do not add string sanitizers or regex patches for runtime tool filtering,
-- do not re-render prompt messages outside the final LLM node,
-- do not keep a legacy early-bound `[]Message` path as an alternative graph contract.
-
-## Other examples
-
-- [hitl_agent](./hitl_agent/main.go) — checkpoint-backed Human-in-the-Loop resume
-- [middleware_agent](./middleware_agent/main.go) — logging, memory, fallback middleware
-- [react_agent](./react_agent/main.go) — small ReAct loop
-- [semantic_cache_agent](./semantic_cache_agent/main.go) — semantic-cache short-circuiting
-- [streaming_agent](./streaming_agent/main.go) — streaming steps
-- [subgraph_agent](./subgraph_agent/main.go) — subgraph composition
-- [multi_agent](./multi_agent/main.go) — multi-agent wiring
+```bash
+for d in react_agent streaming_agent hitl_agent middleware_agent multi_agent context_deadline conditional_routing subgraph_agent; do
+  (cd "examples/$d" && go run main.go) || exit 1
+done
+go test ./...
+```
