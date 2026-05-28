@@ -31,7 +31,7 @@ func main() {
 		return s, flowy.Completed(), nil
 	}
 
-	workers := map[string]flowy.Node[teamState]{
+	workers := map[string]flowy.Node[teamState, flowy.NoEffect]{
 		"support_worker": func(_ context.Context, s teamState) (teamState, flowy.Directive, error) {
 			s.Note = "support: ticket opened for " + s.Query
 			return s, flowy.Completed(), nil
@@ -42,7 +42,7 @@ func main() {
 		},
 	}
 
-	graph, err := patterns.BuildSupervisor(
+	graph, err := patterns.BuildSupervisor[teamState, flowy.NoEffect](
 		supervisor,
 		workers,
 		func(s teamState) string { return s.Intent },
@@ -55,7 +55,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[teamState]())
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[teamState, flowy.NoEffect]())
 	result, err := runner.Start(context.Background(), "team-1", teamState{Query: "I want to buy enterprise plan"})
 	if err != nil {
 		log.Fatal(err)

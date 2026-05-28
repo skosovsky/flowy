@@ -14,7 +14,7 @@ type memoryState struct {
 
 func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	cp := NewMemoryCheckpointer[memoryState]()
+	cp := NewMemoryCheckpointer[memoryState, int]()
 	const writes = 50
 
 	var wg sync.WaitGroup
@@ -22,13 +22,13 @@ func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = cp.Save(context.Background(), flowy.Snapshot[memoryState]{
+			_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, int]{
 				ThreadID: "thread-1",
 				Revision: i,
 				NodeID:   "node",
 				State:    memoryState{Value: i},
 				RunMeta:  flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
-				Effects:  []any{i},
+				Effects:  []int{i},
 			})
 		}(i)
 	}
@@ -53,9 +53,9 @@ func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 
 func TestMemoryCheckpointerPruneRetainsLatestN(t *testing.T) {
 	t.Parallel()
-	cp := NewMemoryCheckpointer[memoryState]()
+	cp := NewMemoryCheckpointer[memoryState, flowy.NoEffect]()
 	for i := 1; i <= 4; i++ {
-		_ = cp.Save(context.Background(), flowy.Snapshot[memoryState]{
+		_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, flowy.NoEffect]{
 			ThreadID: "thread-2",
 			Revision: i,
 			NodeID:   "node",
@@ -77,7 +77,7 @@ func TestMemoryCheckpointerPruneRetainsLatestN(t *testing.T) {
 
 func TestMemoryCheckpointerPruneNoopOnUnknownThread(t *testing.T) {
 	t.Parallel()
-	cp := NewMemoryCheckpointer[memoryState]()
+	cp := NewMemoryCheckpointer[memoryState, flowy.NoEffect]()
 	if err := cp.Prune(context.Background(), "missing", 2); err != nil {
 		t.Fatalf("prune unknown: %v", err)
 	}

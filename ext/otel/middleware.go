@@ -11,8 +11,8 @@ import (
 )
 
 // TracingMiddleware creates span per flowy node.
-func TracingMiddleware[T any](tracer trace.Tracer) flowy.NodeMiddleware[T] {
-	return func(next flowy.Node[T]) flowy.Node[T] {
+func TracingMiddleware[T, E any](tracer trace.Tracer) flowy.NodeMiddleware[T, E] {
+	return func(next flowy.Node[T, E]) flowy.Node[T, E] {
 		return func(ctx context.Context, state T) (T, flowy.Directive, error) {
 			nodeName := flowy.NodeNameFromContext(ctx)
 			if nodeName == "" {
@@ -23,7 +23,7 @@ func TracingMiddleware[T any](tracer trace.Tracer) flowy.NodeMiddleware[T] {
 			defer span.End()
 
 			out, directive, err := next(ctx, state)
-			base, _, unwrapErr := flowy.UnwrapDirective(directive)
+			base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
 			if unwrapErr != nil {
 				span.RecordError(unwrapErr)
 				span.SetStatus(codes.Error, unwrapErr.Error())

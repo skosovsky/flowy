@@ -16,7 +16,7 @@ go run main.go
 
 ## Миграция с legacy
 
-| Legacy                    | v1                            |
+| Legacy                    | v2                            |
 | ------------------------- | ----------------------------- |
 | `ExecutionChain`          | `NodeMiddleware` + `Use(...)` |
 | Локальные обёртки вручную | Onion-цепочка на compile      |
@@ -31,7 +31,7 @@ go run main.go
 import flowyotel "github.com/skosovsky/flowy/ext/otel"
 
 flowyotel.InstallTelemetryBridge()
-graph, _ := flowy.NewGraph(reducer).
-	Use(flowyotel.TracingMiddleware[State](tracer)).
+graph, _ := flowy.NewGraph[State, flowy.NoEffect](reducer).
+	Use(flowyotel.TracingMiddleware[State, flowy.NoEffect](tracer)).
 	Compile()
 ```

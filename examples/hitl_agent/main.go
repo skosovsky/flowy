@@ -1,4 +1,4 @@
-// Package main demonstrates Human-in-the-Loop: Suspend for approval, framework Save, Resume with state patch.
+// Package main demonstrates Human-in-the-Loop: Suspend for approval, framework Save, Resume with WithStateOverlay.
 package main
 
 import (
@@ -16,10 +16,10 @@ type orderState struct {
 }
 
 func main() {
-	cp := testutil.NewMemoryCheckpointer[orderState]()
+	cp := testutil.NewMemoryCheckpointer[orderState, flowy.NoEffect]()
 	threadID := "order-thread-1"
 
-	graph, err := flowy.NewGraph(func(_ orderState, u orderState) orderState { return u }).
+	graph, err := flowy.NewGraph[orderState, flowy.NoEffect](func(_ orderState, u orderState) orderState { return u }).
 		AddNode("collect", func(_ context.Context, s orderState) (orderState, flowy.Directive, error) {
 			s.Items = append(s.Items, "widget", "shipping")
 			return s, flowy.Completed(), nil
@@ -40,8 +40,9 @@ func main() {
 				return "confirm", nil
 			}
 			return flowy.EndNode, nil
-		}).
+		}, "confirm", flowy.EndNode).
 		SetEntryPoint("collect").
+		AllowNoOutgoingRoute("confirm").
 		Compile()
 	if err != nil {
 		log.Fatal(err)
@@ -58,13 +59,16 @@ func main() {
 		log.Fatal("expected suspended run before human approval")
 	}
 
-	// External handler: user clicked "Approve" — resume with patched state.
 	resumed, err := runner.Resume(
 		context.Background(),
 		threadID,
-		flowy.WithStatePatch(func(s *orderState) {
-			s.Approved = true
-		}),
+		flowy.WithStateOverlay[orderState, flowy.NoEffect](
+			orderState{Approved: true},
+			func(base, overlay orderState) orderState {
+				base.Approved = overlay.Approved
+				return base
+			},
+		),
 	)
 	if err != nil {
 		log.Fatal(err)

@@ -19,6 +19,8 @@ func TestCookbookExamplesRun(t *testing.T) {
 		"context_deadline",
 		"conditional_routing",
 		"subgraph_agent",
+		"semantic_cache_agent",
+		"late_prompt_agent",
 	}
 	for _, name := range examples {
 		t.Run(name, func(t *testing.T) {

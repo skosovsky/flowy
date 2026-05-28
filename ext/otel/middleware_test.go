@@ -21,17 +21,18 @@ func TestTracingMiddlewareCreatesSpanPerNode(t *testing.T) {
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	type state struct{}
-	b := flowy.NewGraph(func(_ state, u state) state { return u })
-	b.Use(TracingMiddleware[state](tp.Tracer("test")))
+	b := flowy.NewGraph[state, flowy.NoEffect](func(_ state, u state) state { return u })
+	b.Use(TracingMiddleware[state, flowy.NoEffect](tp.Tracer("test")))
 	b.AddNode("n", func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.End(), nil
 	})
 	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	_, err = g.NewRunner(newCP[state]{}).Start(context.Background(), "otel-span", state{})
+	_, err = g.NewRunner(newCP[state, flowy.NoEffect]{}).Start(context.Background(), "otel-span", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -55,14 +56,18 @@ func TestTracingMiddlewareRecordsNodeError(t *testing.T) {
 	defer func() { _ = tp.Shutdown(context.Background()) }()
 
 	type state struct{}
-	b := flowy.NewGraph(func(_ state, u state) state { return u })
-	b.Use(TracingMiddleware[state](tp.Tracer("test")))
+	b := flowy.NewGraph[state, flowy.NoEffect](func(_ state, u state) state { return u })
+	b.Use(TracingMiddleware[state, flowy.NoEffect](tp.Tracer("test")))
 	b.AddNode("n", func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Completed(), errors.New("boom")
 	})
 	b.SetEntryPoint("n")
-	g, _ := b.Compile()
-	_, _ = g.NewRunner(newCP[state]{}).Start(context.Background(), "otel-error", state{})
+	b.AllowNoOutgoingRoute("n")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	_, _ = g.NewRunner(newCP[state, flowy.NoEffect]{}).Start(context.Background(), "otel-error", state{})
 
 	spans := rec.Ended()
 	if len(spans) != 1 {
@@ -105,16 +110,17 @@ func TestTelemetryBridgeRoundTrip(t *testing.T) {
 	}
 }
 
-type newCP[T any] struct{}
+type newCP[T, E any] struct{}
 
-func (newCP[T]) Save(context.Context, flowy.Snapshot[T]) error { return nil }
-func (newCP[T]) Load(context.Context, string) (flowy.Snapshot[T], error) {
-	return flowy.Snapshot[T]{}, flowy.ErrThreadNotFound
+func (newCP[T, E]) Save(context.Context, flowy.Snapshot[T, E]) error { return nil }
+func (newCP[T, E]) Load(context.Context, string) (flowy.Snapshot[T, E], error) {
+	return flowy.Snapshot[T, E]{}, flowy.ErrThreadNotFound
 }
-func (newCP[T]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T], error) {
+func (newCP[T, E]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T, E], error) {
 	return nil, nil
 }
-func (newCP[T]) Prune(context.Context, string, int) error { return nil }
+func (newCP[T, E]) Prune(context.Context, string, int) error { return nil }
+func (newCP[T, E]) Delete(context.Context, string) error     { return nil }
 
 func hasAttr(attrs []attribute.KeyValue, key, value string) bool {
 	for _, attr := range attrs {

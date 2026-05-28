@@ -9,140 +9,171 @@ const (
 	streamEventBufferSize    = 32
 	contextCancelSaveTimeout = 5 * time.Second
 	terminalEventEmitTimeout = 250 * time.Millisecond
+	defaultLeaseTTL          = 30 * time.Second
+	leaseHeartbeatDivisor    = 3
 )
 
-func newRunEventNodeStarted[T any](nodeID string, state T) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventNodeStarted,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    nil,
-		Duration: 0,
-		Metrics:  nil,
+// leaseHeartbeatInterval returns renew cadence that always fits within lease TTL.
+func leaseHeartbeatInterval(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		ttl = defaultLeaseTTL
+	}
+	interval := ttl / leaseHeartbeatDivisor
+	maxInterval := ttl / 2
+	if interval > maxInterval {
+		interval = maxInterval
+	}
+	if interval <= 0 {
+		interval = maxInterval
+	}
+	if interval <= 0 {
+		interval = time.Millisecond
+	}
+	return interval
+}
+
+func newRunEventNodeStarted[T, E any](nodeID string, state T) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:      EventNodeStarted,
+		NodeID:    nodeID,
+		State:     state,
+		HasEffect: false,
 	}
 }
 
-func newRunEventNodeCompleted[T any](nodeID string, state T, duration time.Duration) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventNodeCompleted,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    nil,
-		Duration: duration,
-		Metrics:  nil,
+func newRunEventNodeCompleted[T, E any](nodeID string, state T, duration time.Duration) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:      EventNodeCompleted,
+		NodeID:    nodeID,
+		State:     state,
+		HasEffect: false,
+		Duration:  duration,
 	}
 }
 
-func newRunEventNodeCompletedWithEffect[T any](
+func newRunEventNodeCompletedWithEffect[T, E any](
 	nodeID string,
 	state T,
-	effect any,
+	effect E,
 	duration time.Duration,
-	metrics map[string]any,
-) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventNodeCompleted,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   effect,
-		Error:    nil,
-		Duration: duration,
-		Metrics:  metrics,
+) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:      EventNodeCompleted,
+		NodeID:    nodeID,
+		State:     state,
+		Effect:    effect,
+		HasEffect: true,
+		Duration:  duration,
 	}
 }
 
-func newRunEventFailed[T any](nodeID string, state T, err error) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventFailed,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    err,
-		Duration: 0,
-		Metrics:  nil,
+func newRunEventFailed[T, E any](nodeID string, state T, err error) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:   EventFailed,
+		NodeID: nodeID,
+		State:  state,
+		Error:  err,
 	}
 }
 
-func newRunEventSuspended[T any](nodeID string, state T, err error) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventSuspended,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    err,
-		Duration: 0,
-		Metrics:  nil,
+func newRunEventSuspendedNoError[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:   EventSuspended,
+		NodeID: nodeID,
+		State:  state,
+		Reason: reason,
 	}
 }
 
-func newRunEventSuspendedNoError[T any](nodeID string, state T) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventSuspended,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    nil,
-		Duration: 0,
-		Metrics:  nil,
+func newRunEventContextCanceled[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:   EventContextCanceled,
+		NodeID: nodeID,
+		State:  state,
+		Reason: reason,
 	}
 }
 
-func newRunEventCompleted[T any](nodeID string, state T) RunEvent[T] {
-	return RunEvent[T]{
-		Type:     EventCompleted,
-		NodeID:   nodeID,
-		State:    state,
-		Effect:   nil,
-		Error:    nil,
-		Duration: 0,
-		Metrics:  nil,
+func newRunEventCompleted[T, E any](nodeID string, state T) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:   EventCompleted,
+		NodeID: nodeID,
+		State:  state,
 	}
 }
 
-func newRunResultCompleted[T any](state T, effects []any, meta RunMetadata, nodeID string) *RunResult[T] {
-	return &RunResult[T]{
+func newRunEventHandoff[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:   EventHandoff,
+		NodeID: nodeID,
+		State:  state,
+		Reason: reason,
+	}
+}
+
+func newRunResultHandoff[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+	return &RunResult[T, E]{
 		State:   state,
-		Status:  RunStatusCompleted,
-		Effects: append([]any(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  "",
-	}
-}
-
-func newRunResultContextCanceled[T any](state T, effects []any, meta RunMetadata, nodeID string) *RunResult[T] {
-	return &RunResult[T]{
-		State:   state,
-		Status:  RunStatusSuspended,
-		Effects: append([]any(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  "context_canceled",
-	}
-}
-
-func newRunResultSuspended[T any](state T, effects []any, meta RunMetadata, nodeID, reason string) *RunResult[T] {
-	return &RunResult[T]{
-		State:   state,
-		Status:  RunStatusSuspended,
-		Effects: append([]any(nil), effects...),
+		Status:  RunStatusHandoff,
+		Effects: append([]E(nil), effects...),
 		RunMeta: meta,
 		NodeID:  nodeID,
 		Reason:  reason,
 	}
 }
 
-func emitEvent[T any](ctx context.Context, sink eventSink[T], event RunEvent[T]) bool {
+func newRunResultCompleted[T, E any](state T, effects []E, meta RunMetadata, nodeID string) *RunResult[T, E] {
+	return &RunResult[T, E]{
+		State:   state,
+		Status:  RunStatusCompleted,
+		Effects: append([]E(nil), effects...),
+		RunMeta: meta,
+		NodeID:  nodeID,
+	}
+}
+
+func newRunResultContextCanceled[T, E any](state T, effects []E, meta RunMetadata, nodeID string) *RunResult[T, E] {
+	return &RunResult[T, E]{
+		State:   state,
+		Status:  RunStatusContextCanceled,
+		Effects: append([]E(nil), effects...),
+		RunMeta: meta,
+		NodeID:  nodeID,
+		Reason:  "context_canceled",
+	}
+}
+
+func newRunResultSuspended[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+	return &RunResult[T, E]{
+		State:   state,
+		Status:  RunStatusSuspended,
+		Effects: append([]E(nil), effects...),
+		RunMeta: meta,
+		NodeID:  nodeID,
+		Reason:  reason,
+	}
+}
+
+func newRunResultFailed[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+	return &RunResult[T, E]{
+		State:   state,
+		Status:  RunStatusFailed,
+		Effects: append([]E(nil), effects...),
+		RunMeta: meta,
+		NodeID:  nodeID,
+		Reason:  reason,
+	}
+}
+
+func emitEvent[T, E any](ctx context.Context, sink eventSink[T, E], event RunEvent[T, E]) bool {
 	if sink == nil {
 		return true
 	}
 	return sink(ctx, event)
 }
 
-func blankNodeStepOutcome[T any](state T, meta RunMetadata, effects []any) nodeStepOutcome[T] {
-	return nodeStepOutcome[T]{
+func blankNodeStepOutcome[T, E any](state T, meta RunMetadata, effects []E) nodeStepOutcome[T, E] {
+	return nodeStepOutcome[T, E]{
 		state:        state,
 		meta:         meta,
 		effects:      effects,
@@ -151,14 +182,14 @@ func blankNodeStepOutcome[T any](state T, meta RunMetadata, effects []any) nodeS
 	}
 }
 
-func canceledNodeStepOutcome[T any](state T, meta RunMetadata, effects []any) nodeStepOutcome[T] {
+func canceledNodeStepOutcome[T, E any](state T, meta RunMetadata, effects []E) nodeStepOutcome[T, E] {
 	out := blankNodeStepOutcome(state, meta, effects)
 	out.emitCanceled = true
 	return out
 }
 
-func continueDirectiveStep[T any](nextNode string) directiveStep[T] {
-	return directiveStep[T]{
+func continueDirectiveStep[T, E any](nextNode string) directiveStep[T, E] {
+	return directiveStep[T, E]{
 		nextNode: nextNode,
 		result:   nil,
 		err:      nil,
@@ -166,8 +197,8 @@ func continueDirectiveStep[T any](nextNode string) directiveStep[T] {
 	}
 }
 
-func terminalDirectiveStep[T any](result *RunResult[T], err error) directiveStep[T] {
-	return directiveStep[T]{
+func terminalDirectiveStep[T, E any](result *RunResult[T, E], err error) directiveStep[T, E] {
+	return directiveStep[T, E]{
 		nextNode: "",
 		result:   result,
 		err:      err,
@@ -175,7 +206,7 @@ func terminalDirectiveStep[T any](result *RunResult[T], err error) directiveStep
 	}
 }
 
-func emitTerminalEvent[T any](ctx context.Context, sink eventSink[T], event RunEvent[T]) bool {
+func emitTerminalEvent[T, E any](ctx context.Context, sink eventSink[T, E], event RunEvent[T, E]) bool {
 	termCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), terminalEventEmitTimeout)
 	defer cancel()
 	return emitEvent(termCtx, sink, event)

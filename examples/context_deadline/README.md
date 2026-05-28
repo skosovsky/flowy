@@ -13,10 +13,10 @@ cd examples/context_deadline
 go run main.go
 ```
 
-Ожидайте `status=suspended`, `reason=context_canceled`, ошибку deadline и ненулевой `ticks` в checkpoint.
+Ожидайте `status=context_canceled`, `reason=context_canceled`, ошибку deadline и ненулевой `ticks` в checkpoint.
 
 ## Миграция
 
-| Legacy demo        | v1 cookbook  |
+| Legacy demo        | v2 cookbook  |
 | ------------------ | ------------ |
 | `context_deadline` | этот каталог |

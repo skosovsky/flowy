@@ -114,15 +114,15 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 		},
 	}
 	db := &fakeDB{row: row}
-	cp := NewCheckpointer[sampleState](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := NewCheckpointer[sampleState, string](db, checkpoint.JSONSerializer[sampleState]{})
 
-	err := cp.Save(context.Background(), flowy.Snapshot[sampleState]{
+	err := cp.Save(context.Background(), flowy.Snapshot[sampleState, string]{
 		ThreadID: "thread-1",
 		Revision: 2,
 		NodeID:   "node-1",
 		State:    sampleState{Value: "ok"},
 		RunMeta:  flowy.RunMetadata{SegmentStartTime: now, RetryCounts: map[string]int{"n": 1}, StepCount: 2},
-		Effects:  []any{"fx"},
+		Effects:  []string{"fx"},
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -146,7 +146,7 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 func TestLoadNoSnapshot(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{row: fakeRow{err: pgx.ErrNoRows}}
-	cp := NewCheckpointer[sampleState](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	_, err := cp.Load(context.Background(), "missing")
 	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("expected ErrNoSnapshot, got %v", err)
@@ -183,7 +183,7 @@ func TestGetHistory(t *testing.T) {
 		},
 	}
 	db := &fakeDB{rows: rows}
-	cp := NewCheckpointer[sampleState](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	history, err := cp.GetHistory(context.Background(), "thread-1", 10)
 	if err != nil {
 		t.Fatalf("history: %v", err)
@@ -199,7 +199,7 @@ func TestGetHistory(t *testing.T) {
 func TestPruneRetainsLatestN(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{}
-	cp := NewCheckpointer[sampleState](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.Prune(context.Background(), "thread-1", 3); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -211,7 +211,7 @@ func TestPruneRetainsLatestN(t *testing.T) {
 func TestPruneNoopOnMissingThread(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{}
-	cp := NewCheckpointer[sampleState](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.Prune(context.Background(), "missing-thread", 5); err != nil {
 		t.Fatalf("prune missing: %v", err)
 	}

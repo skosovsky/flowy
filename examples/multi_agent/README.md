@@ -16,6 +16,6 @@ go run main.go
 
 ## Миграция
 
-| Legacy        | v1                                      |
+| Legacy        | v2                                      |
 | ------------- | --------------------------------------- |
 | `multi_agent` | `patterns.BuildSupervisor` + `RouteMap` |

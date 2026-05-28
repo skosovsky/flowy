@@ -32,7 +32,7 @@ func main() {
 	}
 
 	const maxReActSteps = 8
-	graph, err := patterns.BuildReAct(
+	graph, err := patterns.BuildReAct[agentState, flowy.NoEffect](
 		reason,
 		action,
 		func(s agentState) bool { return !s.Done },
@@ -42,7 +42,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState]())
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState, flowy.NoEffect]())
 	result, err := runner.Start(context.Background(), "react-thread", agentState{Prompt: "hello"})
 	if err != nil {
 		log.Fatal(err)

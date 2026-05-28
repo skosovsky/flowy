@@ -21,27 +21,33 @@ type parentState struct {
 }
 
 func main() {
-	cp := testutil.NewMemoryCheckpointer[parentState]()
+	cp := testutil.NewMemoryCheckpointer[parentState, flowy.NoEffect]()
 
-	subgraph, err := flowy.NewGraph(func(_ childState, u childState) childState { return u }).
+	subgraph, err := flowy.NewGraph[childState, flowy.NoEffect](
+		func(_ childState, u childState) childState { return u },
+	).
 		AddNode("gate", func(_ context.Context, s childState) (childState, flowy.Directive, error) {
 			s.Steps = append(s.Steps, "gate")
 			if !s.Approved {
 				return s, flowy.Suspend("waiting_subgraph_approval"), nil
 			}
-			return s, flowy.Next("done"), nil
+			return s, flowy.Completed(), nil
 		}).
 		AddNode("done", func(_ context.Context, s childState) (childState, flowy.Directive, error) {
 			s.Steps = append(s.Steps, "done")
 			return s, flowy.End(), nil
 		}).
+		AddEdge("gate", "done").
+		AllowNoOutgoingRoute("done").
 		SetEntryPoint("gate").
 		Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	parent, err := flowy.NewGraph(func(_ parentState, u parentState) parentState { return u }).
+	parent, err := flowy.NewGraph[parentState, flowy.NoEffect](
+		func(_ parentState, u parentState) parentState { return u },
+	).
 		AddNode("start", func(_ context.Context, s parentState) (parentState, flowy.Directive, error) {
 			s.Log = append(s.Log, "parent_start")
 			return s, flowy.Completed(), nil
@@ -60,6 +66,7 @@ func main() {
 		}).
 		AddEdge("start", "subgraph").
 		AddEdge("subgraph", "finalize").
+		AllowNoOutgoingRoute("finalize").
 		SetEntryPoint("start").
 		Compile()
 	if err != nil {
@@ -82,10 +89,18 @@ func main() {
 		log.Fatalf("expected suspended status, got %s", first.Status)
 	}
 
-	second, err := runner.Resume(context.Background(), "subgraph-thread", flowy.WithStatePatch(func(s *parentState) {
-		s.Child.Approved = true
-		s.Log = append(s.Log, "parent_resume")
-	}))
+	second, err := runner.Resume(
+		context.Background(),
+		"subgraph-thread",
+		flowy.WithStateOverlay[parentState, flowy.NoEffect](parentState{
+			Child: childState{Approved: true},
+			Log:   []string{"parent_resume"},
+		}, func(base, overlay parentState) parentState {
+			base.Child.Approved = overlay.Child.Approved
+			base.Log = append(base.Log, overlay.Log...)
+			return base
+		}),
+	)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -28,11 +28,12 @@ func main() {
 }
 
 func run() error {
-	cp := testutil.NewMemoryCheckpointer[workState]()
+	cp := testutil.NewMemoryCheckpointer[workState, flowy.NoEffect]()
 	threadID := "deadline-thread"
 
-	graph, err := flowy.NewGraph(func(_ workState, u workState) workState { return u }).
+	graph, err := flowy.NewGraph[workState, flowy.NoEffect](func(_ workState, u workState) workState { return u }).
 		AddNode("slow", slowNode).
+		AddEdge("slow", "slow").
 		SetEntryPoint("slow").
 		Compile()
 	if err != nil {
@@ -48,7 +49,7 @@ func run() error {
 		return err
 	}
 	fmt.Printf("status=%s reason=%q ticks=%d err=%v\n", result.Status, result.Reason, result.State.Ticks, err)
-	if result.Status != flowy.RunStatusSuspended || result.Reason != "context_canceled" {
+	if result.Status != flowy.RunStatusContextCanceled || result.Reason != "context_canceled" {
 		return fmt.Errorf("unexpected cancel status: %s %q", result.Status, result.Reason)
 	}
 
@@ -67,7 +68,7 @@ func slowNode(ctx context.Context, s workState) (workState, flowy.Directive, err
 	for {
 		select {
 		case <-ctx.Done():
-			return s, flowy.Next("slow"), nil
+			return s, flowy.Completed(), nil
 		case <-ticker.C:
 			s.Ticks++
 		}

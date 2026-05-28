@@ -37,14 +37,14 @@ type DB interface {
 }
 
 // Checkpointer stores snapshots in PostgreSQL.
-type Checkpointer[T any] struct {
+type Checkpointer[T, E any] struct {
 	db         DB
 	serializer flowy.StateSerializer[T]
 }
 
 // NewCheckpointer creates a PostgreSQL-backed checkpointer.
-func NewCheckpointer[T any](db DB, serializer flowy.StateSerializer[T]) *Checkpointer[T] {
-	return &Checkpointer[T]{db: db, serializer: serializer}
+func NewCheckpointer[T, E any](db DB, serializer flowy.StateSerializer[T]) *Checkpointer[T, E] {
+	return &Checkpointer[T, E]{db: db, serializer: serializer}
 }
 
 // SchemaSQL returns the schema expected by the adapter.
@@ -52,7 +52,7 @@ func SchemaSQL() string {
 	return schemaSQL
 }
 
-func (c *Checkpointer[T]) Save(ctx context.Context, snapshot flowy.Snapshot[T]) error {
+func (c *Checkpointer[T, E]) Save(ctx context.Context, snapshot flowy.Snapshot[T, E]) error {
 	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
 	if err != nil {
 		return err
@@ -69,26 +69,26 @@ func (c *Checkpointer[T]) Save(ctx context.Context, snapshot flowy.Snapshot[T]) 
 	return err
 }
 
-func (c *Checkpointer[T]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T], error) {
+func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], error) {
 	stored, err := scanStoredSnapshot(c.db.QueryRow(ctx, loadLatestSQL, pgx.NamedArgs{"thread_id": threadID}))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return flowy.Snapshot[T]{}, checkpoint.ErrNoSnapshot
+			return flowy.Snapshot[T, E]{}, checkpoint.ErrNoSnapshot
 		}
-		return flowy.Snapshot[T]{}, err
+		return flowy.Snapshot[T, E]{}, err
 	}
-	snapshot, err := checkpoint.DecodeStoredSnapshot(stored, c.serializer)
+	snapshot, err := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
 	if err != nil {
-		return flowy.Snapshot[T]{}, err
+		return flowy.Snapshot[T, E]{}, err
 	}
 	return snapshot, nil
 }
 
-func (c *Checkpointer[T]) GetHistory(
+func (c *Checkpointer[T, E]) GetHistory(
 	ctx context.Context,
 	threadID string,
 	limit int,
-) ([]flowy.Snapshot[T], error) {
+) ([]flowy.Snapshot[T, E], error) {
 	rows, err := c.db.Query(ctx, getHistorySQL, pgx.NamedArgs{
 		"thread_id": threadID,
 		"limit":     limit,
@@ -98,13 +98,13 @@ func (c *Checkpointer[T]) GetHistory(
 	}
 	defer rows.Close()
 
-	out := make([]flowy.Snapshot[T], 0)
+	out := make([]flowy.Snapshot[T, E], 0)
 	for rows.Next() {
 		stored, scanErr := scanStoredSnapshot(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		snapshot, decodeErr := checkpoint.DecodeStoredSnapshot(stored, c.serializer)
+		snapshot, decodeErr := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -116,7 +116,7 @@ func (c *Checkpointer[T]) GetHistory(
 	return out, nil
 }
 
-func (c *Checkpointer[T]) Prune(ctx context.Context, threadID string, retainCount int) error {
+func (c *Checkpointer[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
 	if retainCount <= 0 {
 		_, err := c.db.Exec(ctx, "DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id", pgx.NamedArgs{
 			"thread_id": threadID,
@@ -126,6 +126,13 @@ func (c *Checkpointer[T]) Prune(ctx context.Context, threadID string, retainCoun
 	_, err := c.db.Exec(ctx, pruneSQL, pgx.NamedArgs{
 		"thread_id":    threadID,
 		"retain_count": retainCount,
+	})
+	return err
+}
+
+func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error {
+	_, err := c.db.Exec(ctx, "DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id", pgx.NamedArgs{
+		"thread_id": threadID,
 	})
 	return err
 }
@@ -150,4 +157,4 @@ func scanStoredSnapshot(row interface{ Scan(dest ...any) error }) (checkpoint.St
 	return stored, nil
 }
 
-var _ flowy.Checkpointer[any] = (*Checkpointer[any])(nil)
+var _ flowy.Checkpointer[any, any] = (*Checkpointer[any, any])(nil)

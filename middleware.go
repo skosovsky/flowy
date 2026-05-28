@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-func wrapNodeWithMiddlewares[T any](node Node[T], middlewares []NodeMiddleware[T]) Node[T] {
+func wrapNodeWithMiddlewares[T, E any](node Node[T, E], middlewares []NodeMiddleware[T, E]) Node[T, E] {
 	if len(middlewares) == 0 {
 		return node
 	}
@@ -21,8 +21,8 @@ func wrapNodeWithMiddlewares[T any](node Node[T], middlewares []NodeMiddleware[T
 }
 
 // RecoverMiddleware catches panic in node/middleware chain and converts it to error.
-func RecoverMiddleware[T any]() NodeMiddleware[T] {
-	return func(next Node[T]) Node[T] {
+func RecoverMiddleware[T, E any]() NodeMiddleware[T, E] {
+	return func(next Node[T, E]) Node[T, E] {
 		return func(ctx context.Context, state T) (T, Directive, error) {
 			var (
 				out       T

@@ -275,6 +275,8 @@ linters:
         - ^gopkg.in/yaml.v3.Node$
         # flowy: nodes return state deltas; internal structs are often partially filled.
         - ^github.com/skosovsky/flowy\.(Step|executedStep|GraphBuilder|runConfig)$
+        - ^github.com/skosovsky/flowy\.RunEvent$
+        - ^github.com/skosovsky/flowy\.RunResult$
         - ^github.com/skosovsky/flowy/testutil\.MemoryCheckpointer$
       # Allows empty structures in return statements.
       # Default: false

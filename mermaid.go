@@ -13,7 +13,7 @@ const mermaidEmptyIDHashMul = 31
 // ExportMermaid returns a Mermaid flowchart (TD) representation of the graph.
 // Output is deterministic (keys sorted) for stable snapshots and documentation.
 // Node names that sanitize to the same ID get unique suffixes to avoid diagram collisions.
-func (g *Graph[T]) ExportMermaid() string {
+func (g *Graph[T, E]) ExportMermaid() string {
 	idMap := g.buildMermaidIDMap()
 	var b strings.Builder
 	b.WriteString("flowchart TD\n")
@@ -42,7 +42,7 @@ func (g *Graph[T]) ExportMermaid() string {
 
 // buildMermaidIDMap returns a map from every node/routing name in the graph to a unique Mermaid-safe ID.
 // Names that sanitize to the same base ID get deterministic suffixes (_0, _1, ...) so the diagram has no collisions.
-func (g *Graph[T]) buildMermaidIDMap() map[string]string {
+func (g *Graph[T, E]) buildMermaidIDMap() map[string]string {
 	names := make(map[string]struct{})
 	for name := range g.nodes {
 		names[name] = struct{}{}

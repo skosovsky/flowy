@@ -15,8 +15,8 @@ type agentState struct {
 	Trace []string
 }
 
-func loggingMiddleware[T any](next flowy.Node[T]) flowy.Node[T] {
-	return func(ctx context.Context, state T) (T, flowy.Directive, error) {
+func loggingMiddleware(next flowy.Node[agentState, flowy.NoEffect]) flowy.Node[agentState, flowy.NoEffect] {
+	return func(ctx context.Context, state agentState) (agentState, flowy.Directive, error) {
 		start := time.Now()
 		out, directive, err := next(ctx, state)
 		log.Printf("node executed in %s err=%v", time.Since(start), err)
@@ -25,8 +25,8 @@ func loggingMiddleware[T any](next flowy.Node[T]) flowy.Node[T] {
 }
 
 func main() {
-	graph, err := flowy.NewGraph(func(_ agentState, u agentState) agentState { return u }).
-		Use(loggingMiddleware[agentState], flowy.RecoverMiddleware[agentState]()).
+	graph, err := flowy.NewGraph[agentState, flowy.NoEffect](func(_ agentState, u agentState) agentState { return u }).
+		Use(loggingMiddleware, flowy.RecoverMiddleware[agentState, flowy.NoEffect]()).
 		AddNode("stable", func(_ context.Context, s agentState) (agentState, flowy.Directive, error) {
 			s.Trace = append(s.Trace, "stable_ok")
 			return s, flowy.Completed(), nil
@@ -35,13 +35,14 @@ func main() {
 			panic("simulated node failure")
 		}).
 		AddEdge("stable", "unstable").
+		AllowNoOutgoingRoute("unstable").
 		SetEntryPoint("stable").
 		Compile()
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState]())
+	runner := graph.NewRunner(testutil.NewMemoryCheckpointer[agentState, flowy.NoEffect]())
 	_, err = runner.Start(context.Background(), "mw-thread", agentState{})
 	if err == nil {
 		log.Fatal("expected error from recovered panic in unstable node")

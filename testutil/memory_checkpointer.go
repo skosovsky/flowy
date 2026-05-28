@@ -10,18 +10,18 @@ import (
 )
 
 // MemoryCheckpointer is a thread-safe in-memory implementation of flowy.Checkpointer.
-type MemoryCheckpointer[T any] struct {
+type MemoryCheckpointer[T, E any] struct {
 	mu      sync.RWMutex
-	history map[string][]flowy.Snapshot[T]
+	history map[string][]flowy.Snapshot[T, E]
 }
 
-func NewMemoryCheckpointer[T any]() *MemoryCheckpointer[T] {
-	return &MemoryCheckpointer[T]{
-		history: make(map[string][]flowy.Snapshot[T]),
+func NewMemoryCheckpointer[T, E any]() *MemoryCheckpointer[T, E] {
+	return &MemoryCheckpointer[T, E]{
+		history: make(map[string][]flowy.Snapshot[T, E]),
 	}
 }
 
-func (m *MemoryCheckpointer[T]) Save(_ context.Context, snapshot flowy.Snapshot[T]) error {
+func (m *MemoryCheckpointer[T, E]) Save(_ context.Context, snapshot flowy.Snapshot[T, E]) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	copied := copySnapshot(snapshot)
@@ -29,38 +29,38 @@ func (m *MemoryCheckpointer[T]) Save(_ context.Context, snapshot flowy.Snapshot[
 	return nil
 }
 
-func (m *MemoryCheckpointer[T]) Load(_ context.Context, threadID string) (flowy.Snapshot[T], error) {
+func (m *MemoryCheckpointer[T, E]) Load(_ context.Context, threadID string) (flowy.Snapshot[T, E], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := m.history[threadID]
 	if len(items) == 0 {
-		return flowy.Snapshot[T]{}, flowy.ErrThreadNotFound
+		return flowy.Snapshot[T, E]{}, flowy.ErrThreadNotFound
 	}
 	return copySnapshot(items[len(items)-1]), nil
 }
 
-func (m *MemoryCheckpointer[T]) GetHistory(
+func (m *MemoryCheckpointer[T, E]) GetHistory(
 	_ context.Context,
 	threadID string,
 	limit int,
-) ([]flowy.Snapshot[T], error) {
+) ([]flowy.Snapshot[T, E], error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	items := m.history[threadID]
 	if len(items) == 0 {
-		return []flowy.Snapshot[T]{}, nil
+		return []flowy.Snapshot[T, E]{}, nil
 	}
 	if limit <= 0 || limit > len(items) {
 		limit = len(items)
 	}
-	out := make([]flowy.Snapshot[T], 0, limit)
+	out := make([]flowy.Snapshot[T, E], 0, limit)
 	for i := len(items) - 1; i >= len(items)-limit; i-- {
 		out = append(out, copySnapshot(items[i]))
 	}
 	return out, nil
 }
 
-func (m *MemoryCheckpointer[T]) Prune(_ context.Context, threadID string, retainCount int) error {
+func (m *MemoryCheckpointer[T, E]) Prune(_ context.Context, threadID string, retainCount int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -75,16 +75,27 @@ func (m *MemoryCheckpointer[T]) Prune(_ context.Context, threadID string, retain
 	if len(items) <= retainCount {
 		return nil
 	}
-	m.history[threadID] = append([]flowy.Snapshot[T](nil), items[len(items)-retainCount:]...)
+	m.history[threadID] = append([]flowy.Snapshot[T, E](nil), items[len(items)-retainCount:]...)
 	return nil
 }
 
-func copySnapshot[T any](snapshot flowy.Snapshot[T]) flowy.Snapshot[T] {
+func (m *MemoryCheckpointer[T, E]) Delete(_ context.Context, threadID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.history, threadID)
+	return nil
+}
+
+func copySnapshot[T, E any](snapshot flowy.Snapshot[T, E]) flowy.Snapshot[T, E] {
 	cloned := snapshot
-	cloned.Effects = append([]any(nil), snapshot.Effects...)
+	cloned.Effects = append([]E(nil), snapshot.Effects...)
 	if snapshot.RunMeta.RetryCounts != nil {
 		cloned.RunMeta.RetryCounts = make(map[string]int, len(snapshot.RunMeta.RetryCounts))
 		maps.Copy(cloned.RunMeta.RetryCounts, snapshot.RunMeta.RetryCounts)
+	}
+	if snapshot.RunMeta.BudgetCounts != nil {
+		cloned.RunMeta.BudgetCounts = make(map[string]int, len(snapshot.RunMeta.BudgetCounts))
+		maps.Copy(cloned.RunMeta.BudgetCounts, snapshot.RunMeta.BudgetCounts)
 	}
 	return cloned
 }

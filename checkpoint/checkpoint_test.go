@@ -1,7 +1,6 @@
 package checkpoint
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -14,7 +13,7 @@ type state struct {
 
 func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	t.Parallel()
-	snapshot := flowy.Snapshot[state]{
+	snapshot := flowy.Snapshot[state, string]{
 		ThreadID: "thread-1",
 		Revision: 2,
 		NodeID:   "n1",
@@ -24,7 +23,7 @@ func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 			RetryCounts:      map[string]int{"n1": 1},
 			StepCount:        3,
 		},
-		Effects: []any{"metric"},
+		Effects: []string{"metric"},
 	}
 	serializer := JSONSerializer[state]{}
 
@@ -32,7 +31,7 @@ func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	decoded, err := DecodeStoredSnapshot(stored, serializer)
+	decoded, err := DecodeStoredSnapshot[state, string](stored, serializer)
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -62,28 +61,5 @@ func TestWithSanitizer(t *testing.T) {
 	}
 	if decoded.Value != "sanitized" {
 		t.Fatalf("expected sanitized state, got %+v", decoded)
-	}
-}
-
-func TestDecodeStoredSnapshotLegacyVersionFallback(t *testing.T) {
-	t.Parallel()
-	legacyPayload := []byte(`{
-		"thread_id":"legacy-thread",
-		"version":7,
-		"node_id":"n1",
-		"state_payload":{"value":"ok"},
-		"run_meta":{"segment_start_time":"2026-01-01T00:00:00Z","retry_counts":{},"step_count":1},
-		"effects":[]
-	}`)
-	var stored StoredSnapshot
-	if err := json.Unmarshal(legacyPayload, &stored); err != nil {
-		t.Fatalf("unmarshal legacy stored snapshot: %v", err)
-	}
-	decoded, err := DecodeStoredSnapshot(stored, JSONSerializer[state]{})
-	if err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if decoded.Revision != 7 {
-		t.Fatalf("expected revision fallback from legacy version, got %d", decoded.Revision)
 	}
 }

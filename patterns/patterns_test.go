@@ -8,16 +8,17 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-type memCP[T any] struct{}
+type memCP[T, E any] struct{}
 
-func (memCP[T]) Save(context.Context, flowy.Snapshot[T]) error { return nil }
-func (memCP[T]) Load(context.Context, string) (flowy.Snapshot[T], error) {
-	return flowy.Snapshot[T]{}, flowy.ErrThreadNotFound
+func (memCP[T, E]) Save(context.Context, flowy.Snapshot[T, E]) error { return nil }
+func (memCP[T, E]) Load(context.Context, string) (flowy.Snapshot[T, E], error) {
+	return flowy.Snapshot[T, E]{}, flowy.ErrThreadNotFound
 }
-func (memCP[T]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T], error) {
-	return []flowy.Snapshot[T]{}, nil
+func (memCP[T, E]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T, E], error) {
+	return []flowy.Snapshot[T, E]{}, nil
 }
-func (memCP[T]) Prune(context.Context, string, int) error { return nil }
+func (memCP[T, E]) Prune(context.Context, string, int) error { return nil }
+func (memCP[T, E]) Delete(context.Context, string) error     { return nil }
 
 func TestBuildReActMaxSteps(t *testing.T) {
 	t.Parallel()
@@ -30,14 +31,14 @@ func TestBuildReActMaxSteps(t *testing.T) {
 		s.Pending = true
 		return s, flowy.Completed(), nil
 	}
-	b := BuildReAct(reason, action, func(s state) bool { return s.Pending }, 1)
+	b := BuildReAct[state, flowy.NoEffect](reason, action, func(s state) bool { return s.Pending }, 1)
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	_, err = g.NewRunner(memCP[state]{}).Start(context.Background(), "r1", state{})
-	if !errors.Is(err, flowy.ErrMaxStepsExceeded) {
-		t.Fatalf("expected max steps exceeded, got %v", err)
+	_, err = g.NewRunner(memCP[state, flowy.NoEffect]{}).Start(context.Background(), "r1", state{})
+	if !errors.Is(err, flowy.ErrRetryBudgetExceeded) {
+		t.Fatalf("expected retry budget exceeded, got %v", err)
 	}
 }
 
@@ -47,7 +48,7 @@ func TestBuildSupervisor(t *testing.T) {
 	supervisor := func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Completed(), nil
 	}
-	workers := map[string]flowy.Node[state]{
+	workers := map[string]flowy.Node[state, flowy.NoEffect]{
 		"sales_worker": func(_ context.Context, s state) (state, flowy.Directive, error) {
 			s.Intent = "sales_done"
 			return s, flowy.Completed(), nil
@@ -60,7 +61,7 @@ func TestBuildSupervisor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res, err := g.NewRunner(memCP[state]{}).Start(context.Background(), "s1", state{Intent: "sales"})
+	res, err := g.NewRunner(memCP[state, flowy.NoEffect]{}).Start(context.Background(), "s1", state{Intent: "sales"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -88,12 +89,12 @@ func TestBuildEvaluatorOptimizerRetriesToGenerator(t *testing.T) {
 	evaluator := func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Completed(), nil
 	}
-	b := BuildEvaluatorOptimizer(generator, evaluator, func(s state) bool { return s.Valid }, 3)
+	b := BuildEvaluatorOptimizer[state, flowy.NoEffect](generator, evaluator, func(s state) bool { return s.Valid }, 3)
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	res, err := g.NewRunner(memCP[state]{}).Start(context.Background(), "ev-1", state{})
+	res, err := g.NewRunner(memCP[state, flowy.NoEffect]{}).Start(context.Background(), "ev-1", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

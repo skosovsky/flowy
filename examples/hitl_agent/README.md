@@ -7,11 +7,11 @@
 - Узел возвращал `(state, flowy.ErrSuspend)`.
 - Клиент вручную разбирал checkpoint и вызывал старый `Stream` с `NextNode`.
 
-## Стало (v1)
+## Стало (v2)
 
 1. Узел `payment` возвращает `flowy.Suspend("waiting_for_user_approval")`.
 2. Runtime автоматически вызывает `Checkpointer.Save`.
-3. HTTP/UI слой вызывает `Runner.Resume(..., flowy.WithStatePatch(approve))`.
+3. HTTP/UI слой вызывает `Runner.Resume(..., flowy.WithStateOverlay(approve))`.
 4. Граф продолжает с узла из snapshot (`payment`) с обновлённым state.
 
 ## Запуск
@@ -34,7 +34,7 @@ sequenceDiagram
   Runner->>CP: Save on Suspend
   Runner-->>App: RunStatusSuspended
   User->>App: Approve
-  App->>Runner: Resume(thread, WithStatePatch)
+  App->>Runner: Resume(thread, WithStateOverlay)
   Runner->>CP: Save on next Suspend if any
   Runner-->>App: RunStatusCompleted
 ```

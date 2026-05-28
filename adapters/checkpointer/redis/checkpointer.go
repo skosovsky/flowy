@@ -22,7 +22,7 @@ type Options struct {
 }
 
 // Checkpointer stores snapshots in Redis list history (latest at index 0).
-type Checkpointer[T any] struct {
+type Checkpointer[T, E any] struct {
 	client     goredis.Cmdable
 	prefix     string
 	ttl        time.Duration
@@ -30,16 +30,16 @@ type Checkpointer[T any] struct {
 }
 
 // NewCheckpointer creates a Redis-backed checkpointer.
-func NewCheckpointer[T any](
+func NewCheckpointer[T, E any](
 	client goredis.Cmdable,
 	opts Options,
 	serializer flowy.StateSerializer[T],
-) *Checkpointer[T] {
+) *Checkpointer[T, E] {
 	prefix := opts.Prefix
 	if prefix == "" {
 		prefix = defaultPrefix
 	}
-	return &Checkpointer[T]{
+	return &Checkpointer[T, E]{
 		client:     client,
 		prefix:     prefix,
 		ttl:        opts.TTL,
@@ -47,7 +47,7 @@ func NewCheckpointer[T any](
 	}
 }
 
-func (c *Checkpointer[T]) Save(ctx context.Context, snapshot flowy.Snapshot[T]) error {
+func (c *Checkpointer[T, E]) Save(ctx context.Context, snapshot flowy.Snapshot[T, E]) error {
 	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
 	if err != nil {
 		return err
@@ -66,22 +66,22 @@ func (c *Checkpointer[T]) Save(ctx context.Context, snapshot flowy.Snapshot[T]) 
 	return nil
 }
 
-func (c *Checkpointer[T]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T], error) {
+func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], error) {
 	values, err := c.client.LRange(ctx, c.historyKey(threadID), 0, 0).Result()
 	if err != nil {
-		return flowy.Snapshot[T]{}, err
+		return flowy.Snapshot[T, E]{}, err
 	}
 	if len(values) == 0 {
-		return flowy.Snapshot[T]{}, checkpoint.ErrNoSnapshot
+		return flowy.Snapshot[T, E]{}, checkpoint.ErrNoSnapshot
 	}
 	return c.decode(values[0])
 }
 
-func (c *Checkpointer[T]) GetHistory(
+func (c *Checkpointer[T, E]) GetHistory(
 	ctx context.Context,
 	threadID string,
 	limit int,
-) ([]flowy.Snapshot[T], error) {
+) ([]flowy.Snapshot[T, E], error) {
 	end := int64(-1)
 	if limit > 0 {
 		end = int64(limit - 1)
@@ -90,7 +90,7 @@ func (c *Checkpointer[T]) GetHistory(
 	if err != nil {
 		return nil, err
 	}
-	out := make([]flowy.Snapshot[T], 0, len(values))
+	out := make([]flowy.Snapshot[T, E], 0, len(values))
 	for _, item := range values {
 		snapshot, decodeErr := c.decode(item)
 		if decodeErr != nil {
@@ -101,7 +101,7 @@ func (c *Checkpointer[T]) GetHistory(
 	return out, nil
 }
 
-func (c *Checkpointer[T]) Prune(ctx context.Context, threadID string, retainCount int) error {
+func (c *Checkpointer[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
 	key := c.historyKey(threadID)
 	if retainCount <= 0 {
 		return c.client.Del(ctx, key).Err()
@@ -109,20 +109,24 @@ func (c *Checkpointer[T]) Prune(ctx context.Context, threadID string, retainCoun
 	return c.client.LTrim(ctx, key, 0, int64(retainCount-1)).Err()
 }
 
-func (c *Checkpointer[T]) decode(raw string) (flowy.Snapshot[T], error) {
+func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error {
+	return c.client.Del(ctx, c.historyKey(threadID)).Err()
+}
+
+func (c *Checkpointer[T, E]) decode(raw string) (flowy.Snapshot[T, E], error) {
 	var stored checkpoint.StoredSnapshot
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		return flowy.Snapshot[T]{}, fmt.Errorf("redis checkpoint unmarshal: %w", err)
+		return flowy.Snapshot[T, E]{}, fmt.Errorf("redis checkpoint unmarshal: %w", err)
 	}
-	snapshot, err := checkpoint.DecodeStoredSnapshot(stored, c.serializer)
+	snapshot, err := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
 	if err != nil {
-		return flowy.Snapshot[T]{}, err
+		return flowy.Snapshot[T, E]{}, err
 	}
 	return snapshot, nil
 }
 
-func (c *Checkpointer[T]) historyKey(threadID string) string {
+func (c *Checkpointer[T, E]) historyKey(threadID string) string {
 	return fmt.Sprintf("%s:thread:%s:history", c.prefix, threadID)
 }
 
-var _ flowy.Checkpointer[any] = (*Checkpointer[any])(nil)
+var _ flowy.Checkpointer[any, any] = (*Checkpointer[any, any])(nil)

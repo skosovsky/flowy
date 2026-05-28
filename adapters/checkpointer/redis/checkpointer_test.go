@@ -17,8 +17,8 @@ type state struct {
 	Value string `json:"value"`
 }
 
-func testSnapshot(revision int, value string) flowy.Snapshot[state] {
-	return flowy.Snapshot[state]{
+func testSnapshot(revision int, value string) flowy.Snapshot[state, string] {
+	return flowy.Snapshot[state, string]{
 		ThreadID: "t1",
 		Revision: revision,
 		NodeID:   "n1",
@@ -32,8 +32,8 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state](client, Options{}, checkpoint.JSONSerializer[state]{})
-	err := cp.Save(context.Background(), flowy.Snapshot[state]{
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	err := cp.Save(context.Background(), flowy.Snapshot[state, string]{
 		ThreadID: "t1",
 		Revision: 1,
 		NodeID:   "n1",
@@ -43,7 +43,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 			RetryCounts:      map[string]int{"n1": 1},
 			StepCount:        3,
 		},
-		Effects: []any{"fx"},
+		Effects: []string{"fx"},
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -67,7 +67,7 @@ func TestLoadNoSnapshot(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
 	_, err := cp.Load(context.Background(), "missing")
 	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("expected ErrNoSnapshot, got %v", err)
@@ -80,7 +80,7 @@ func TestGetHistory(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
 	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
 	_ = cp.Save(context.Background(), testSnapshot(2, "v2"))
 	history, err := cp.GetHistory(context.Background(), "t1", 10)
@@ -101,7 +101,7 @@ func TestPruneRetainsLatestN(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
 	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
 	_ = cp.Save(context.Background(), testSnapshot(2, "v2"))
 	_ = cp.Save(context.Background(), testSnapshot(3, "v3"))
@@ -124,7 +124,7 @@ func TestPruneDeleteAllWhenRetainNonPositive(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
 	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
 	if err := cp.Prune(context.Background(), "t1", 0); err != nil {
 		t.Fatalf("prune: %v", err)
