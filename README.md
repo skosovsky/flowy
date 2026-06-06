@@ -22,17 +22,18 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 
 ## Migration from v1
 
-| v1                                | Current API                                                           |
-| --------------------------------- | --------------------------------------------------------------------- |
-| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge` |
-| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                         |
-| `Effect(base, any)`               | `Effect[E](base, payload E)`                                          |
-| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                |
-| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                       |
-| `WithResumeReconciler`            | `ResumableState.Reconcile()` + conditional edges                      |
-| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`               |
-| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`            |
-| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget(ctx, name, n)`          |
+| v1                                | Current API                                                              |
+| --------------------------------- | ------------------------------------------------------------------------ |
+| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`    |
+| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                            |
+| `Effect(base, any)`               | `Effect[E](base, payload E)`                                             |
+| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                   |
+| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                          |
+| `WithResumeReconciler`            | `ResumableState.Reconcile()` + conditional edges                         |
+| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                  |
+| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`               |
+| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)` |
+| —                                 | + `ContextWithRunMetadata` for isolated node execution outside Runner    |
 
 ### Migration example (routing)
 

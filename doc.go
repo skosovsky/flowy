@@ -24,6 +24,10 @@
 // (postRunCleanup). Prune (retention) runs in-loop on suspend/handoff/cancel
 // before releaseLease.
 //
+// Named budgets use UseBudget to record consumption and BudgetUsed to read
+// current usage from the active execution context. ContextWithRunMetadata
+// provisions a valid context for isolated node execution outside Runner.
+//
 // Typed bindings use BindingKey[T] + Bind/Extract (not persisted in Snapshot).
 // Lease-aware delete uses Checkpointer.DeleteIfIdle; pair postgres/redis
 // checkpointer with adapters/lease for distributed deployments.

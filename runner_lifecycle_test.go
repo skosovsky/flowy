@@ -1274,6 +1274,42 @@ func TestWithRunMetadataSeedsBudget(t *testing.T) {
 	}
 }
 
+func TestBudgetUsedReadsActiveRunMetadata(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
+		if BudgetUsed(ctx, "tokens") != 2 {
+			t.Fatalf("expected seeded budget 2 before use, got %d", BudgetUsed(ctx, "tokens"))
+		}
+		_ = UseBudget(ctx, "tokens", 1)
+		if BudgetUsed(ctx, "tokens") != 3 {
+			t.Fatalf("expected budget 3 after use, got %d", BudgetUsed(ctx, "tokens"))
+		}
+		return s, End(), nil
+	})
+	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, err = g.NewRunner(newMemoryCP[state, NoEffect]()).Start(
+		context.Background(),
+		"budget-used-th",
+		state{},
+		WithRunMetadata[state, NoEffect](RunMetadataInput{
+			BudgetCounts: map[string]int{"tokens": 2},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+}
+
 func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 	t.Parallel()
 
@@ -1394,9 +1430,7 @@ func TestWithRunMetadataOnResume(t *testing.T) {
 	})
 	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
 		_ = UseBudget(ctx, "tokens", 3)
-		if meta, ok := runMetadataFromContext(ctx); ok {
-			s.Tokens = meta.BudgetCounts["tokens"]
-		}
+		s.Tokens = BudgetUsed(ctx, "tokens")
 		return s, End(), nil
 	})
 	b.AddEdge("wait", "n")
@@ -1445,9 +1479,7 @@ func TestResumePreservesBudgetUnlessOverridden(t *testing.T) {
 		return s, Completed(), nil
 	})
 	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
-		if meta, ok := runMetadataFromContext(ctx); ok {
-			s.Tokens = meta.BudgetCounts["tokens"]
-		}
+		s.Tokens = BudgetUsed(ctx, "tokens")
 		return s, End(), nil
 	})
 	b.AddEdge("wait", "n")

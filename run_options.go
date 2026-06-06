@@ -87,6 +87,7 @@ func applyRunOptions[T, E any](opts ...RunOption[T, E]) runInvocationOptions[T, 
 }
 
 // UseBudget records consumption of a named budget in run metadata.
+// See also BudgetUsed for read access.
 func UseBudget(ctx context.Context, name string, amount int) error {
 	meta, ok := runMetadataFromContext(ctx)
 	if !ok {
@@ -100,6 +101,25 @@ func UseBudget(ctx context.Context, name string, amount int) error {
 	}
 	meta.BudgetCounts[name] += amount
 	return nil
+}
+
+// BudgetUsed returns the consumed units for a named budget from the active execution context.
+// It returns 0 if the budget is not found or the context does not contain run metadata.
+func BudgetUsed(ctx context.Context, name string) int {
+	meta, ok := runMetadataFromContext(ctx)
+	if !ok || meta == nil || meta.BudgetCounts == nil {
+		return 0
+	}
+	return meta.BudgetCounts[name]
+}
+
+// ContextWithRunMetadata injects RunMetadata into the provided context.
+// Use it for Isolated Node Execution outside the Runner lifecycle: dry-runs,
+// debugging, utilities, and direct node handler invocation (including unit tests).
+func ContextWithRunMetadata(ctx context.Context, input RunMetadataInput) context.Context {
+	meta := newRunMetadata()
+	mergeRunMetadataInput(&meta, input)
+	return withRunMetadata(ctx, &meta)
 }
 
 type runMetadataContextKey struct{}

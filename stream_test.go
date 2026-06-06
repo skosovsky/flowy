@@ -265,9 +265,7 @@ func TestWithRunMetadataOnStream(t *testing.T) {
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
 		_ = UseBudget(ctx, "tokens", 3)
-		if meta, ok := runMetadataFromContext(ctx); ok {
-			s.Tokens = meta.BudgetCounts["tokens"]
-		}
+		s.Tokens = BudgetUsed(ctx, "tokens")
 		return s, End(), nil
 	})
 	b.SetEntryPoint("n")
@@ -532,9 +530,7 @@ func TestWithRunMetadataOnStreamResume(t *testing.T) {
 	})
 	b.AddNode("done", func(ctx context.Context, s state) (state, Directive, error) {
 		_ = UseBudget(ctx, "tokens", 4)
-		if meta, ok := runMetadataFromContext(ctx); ok {
-			s.Tokens = meta.BudgetCounts["tokens"]
-		}
+		s.Tokens = BudgetUsed(ctx, "tokens")
 		return s, End(), nil
 	})
 	b.AddEdge("save", "done")

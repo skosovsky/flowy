@@ -346,9 +346,7 @@ func TestSubgraphDoesNotInheritParentRunMetadata(t *testing.T) {
 
 	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
 	subBuilder.AddNode("read", func(ctx context.Context, s childState) (childState, Directive, error) {
-		if meta, ok := runMetadataFromContext(ctx); ok {
-			s.ParentTokens = meta.BudgetCounts["tokens"]
-		}
+		s.ParentTokens = BudgetUsed(ctx, "tokens")
 		return s, End(), nil
 	})
 	subBuilder.AllowNoOutgoingRoute("read")
