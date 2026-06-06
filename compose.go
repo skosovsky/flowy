@@ -17,7 +17,8 @@ type SubgraphSlot[Sub, E any] struct {
 // SubgraphNode runs a subgraph with state mapped from parent to sub and back.
 // For suspend/handoff resume at the inner node, use SubgraphNodeWithSlot.
 // Nested subgraph runners do not inherit parent RunOptions (WithBindings, WithRunMetadata,
-// WithRunLease, WithStateOverlay). Parent ctx values and BindingFromContext still apply in subgraph nodes.
+// WithRunLease, WithStateOverlay, WithSuspendPointerResolver, WithHandoffScheduler,
+// WithCheckpointErrorPolicy). Parent ctx values and BindingFromContext still apply in subgraph nodes.
 func SubgraphNode[Parent, Sub, E any](
 	sub *Graph[Sub, E],
 	mapIn func(Parent) Sub,
@@ -41,40 +42,47 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 	mapOut func(Parent, Sub) Parent,
 ) Node[Parent, E] {
 	return func(ctx context.Context, parentState Parent) (Parent, Directive, error) {
-		cp := newCaptureCheckpointer[Sub, E]()
+		cp := newSubgraphCheckpointer[Sub, E](ctx)
 		threadID := subgraphThreadID(ctx)
 
 		var result *RunResult[Sub, E]
 		var err error
 		if slot, ok := loadSlot(parentState); ok && slot.ExecutionPointer != "" {
-			_ = cp.Save(ctx, Snapshot[Sub, E]{
+			if seedErr := cp.Save(ctx, Snapshot[Sub, E]{
 				ThreadID:         threadID,
 				ExecutionPointer: slot.ExecutionPointer,
 				Revision:         slot.Revision,
 				State:            slot.State,
 				RunMeta:          slot.RunMeta,
 				Effects:          append([]E(nil), slot.Effects...),
+			}); seedErr != nil {
+				return parentState, Fail("subgraph seed"), seedErr
+			}
+			result, err = sub.NewRunner(cp).Resume(ctx, ResumeToken{
+				ThreadID:   threadID,
+				Generation: slot.Revision,
 			})
-			result, err = sub.NewRunner(cp).Resume(ctx, threadID)
 		} else {
 			subState := mapIn(parentState)
 			result, err = sub.NewRunner(cp).Start(ctx, threadID, subState)
 		}
 		if err != nil {
-			return parentState, Completed(), err
+			return parentState, Fail("subgraph"), err
 		}
 
 		parentState = mapOut(parentState, result.State)
 		if result.Status == RunStatusSuspended || result.Status == RunStatusHandoff {
-			if snap, loadErr := cp.Load(ctx, threadID); loadErr == nil {
-				parentState = storeSlot(parentState, SubgraphSlot[Sub, E]{
-					ExecutionPointer: snap.ExecutionPointer,
-					Revision:         snap.Revision,
-					State:            snap.State,
-					RunMeta:          snap.RunMeta,
-					Effects:          append([]E(nil), snap.Effects...),
-				})
+			snap, loadErr := cp.Load(ctx, threadID)
+			if loadErr != nil {
+				return parentState, Fail("subgraph slot"), loadErr
 			}
+			parentState = storeSlot(parentState, SubgraphSlot[Sub, E]{
+				ExecutionPointer: snap.ExecutionPointer,
+				Revision:         snap.Revision,
+				State:            snap.State,
+				RunMeta:          snap.RunMeta,
+				Effects:          append([]E(nil), snap.Effects...),
+			})
 		}
 
 		switch result.Status {
@@ -95,6 +103,43 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		default:
 			return parentState, Fail("subgraph failed"), nil
 		}
+	}
+}
+
+type subgraphTestMode int
+
+const (
+	subgraphTestModeNone subgraphTestMode = iota
+	subgraphTestModeFailSeedSave
+	subgraphTestModeFailSlotLoad
+)
+
+type subgraphTestModeKey struct{}
+
+// withSubgraphTestMode configures ephemeral subgraph checkpointer behavior for tests.
+func withSubgraphTestMode(ctx context.Context, mode subgraphTestMode) context.Context {
+	return context.WithValue(ctx, subgraphTestModeKey{}, mode)
+}
+
+func newSubgraphCheckpointer[Sub, E any](ctx context.Context) Checkpointer[Sub, E] {
+	mode, _ := ctx.Value(subgraphTestModeKey{}).(subgraphTestMode)
+	switch mode {
+	case subgraphTestModeFailSeedSave:
+		base := newCaptureCheckpointer[Sub, E]()
+		return &failingCaptureCheckpointer[Sub, E]{
+			captureCheckpointer: *base,
+			failSave:            true,
+			failLoad:            false,
+		}
+	case subgraphTestModeFailSlotLoad:
+		base := newCaptureCheckpointer[Sub, E]()
+		return &failingCaptureCheckpointer[Sub, E]{
+			captureCheckpointer: *base,
+			failSave:            false,
+			failLoad:            true,
+		}
+	default:
+		return newCaptureCheckpointer[Sub, E]()
 	}
 }
 

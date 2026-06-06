@@ -48,7 +48,7 @@ func main() {
 	}
 	fmt.Printf("first status=%s step=%d\n", first.Status, first.State.Step)
 
-	second, err := runner.Resume(context.Background(), "lease-thread", leaseOpts)
+	second, err := runner.Resume(context.Background(), first.ResumeToken, leaseOpts)
 	if err != nil {
 		log.Fatal(err)
 	}

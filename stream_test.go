@@ -315,9 +315,9 @@ func TestStreamResume(t *testing.T) {
 	b.SetEntryPoint("save")
 	g, _ := b.Compile()
 	runner := g.NewRunner(cp)
-	_, _ = runner.Start(context.Background(), "resume-1", state{})
+	startRes, _ := runner.Start(context.Background(), "resume-1", state{})
 
-	handle, err := runner.StreamResume(context.Background(), "resume-1")
+	handle, err := runner.StreamResume(context.Background(), startRes.ResumeToken)
 	if err != nil {
 		t.Fatalf("stream resume: %v", err)
 	}
@@ -339,7 +339,10 @@ func TestStreamResumeMissingThread(t *testing.T) {
 		SetEntryPoint("n").
 		AllowNoOutgoingRoute("n").
 		Compile()
-	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).StreamResume(context.Background(), "missing")
+	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).StreamResume(
+		context.Background(),
+		ResumeToken{ThreadID: "missing"},
+	)
 	if !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected ErrThreadNotFound, got %v", err)
 	}
@@ -355,7 +358,7 @@ func TestStreamResumeRequiresCheckpointer(t *testing.T) {
 		AllowNoOutgoingRoute("n").
 		Compile()
 	var cp Checkpointer[state, NoEffect]
-	_, err := g.NewRunner(cp).StreamResume(context.Background(), "missing")
+	_, err := g.NewRunner(cp).StreamResume(context.Background(), ResumeToken{ThreadID: "missing"})
 	if err == nil {
 		t.Fatal("expected checkpointer required error")
 	}
@@ -543,14 +546,14 @@ func TestWithRunMetadataOnStreamResume(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	runner := g.NewRunner(cp)
-	_, err = runner.Start(context.Background(), "stream-resume-meta-th", state{})
+	startRes, err := runner.Start(context.Background(), "stream-resume-meta-th", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
 	handle, err := runner.StreamResume(
 		context.Background(),
-		"stream-resume-meta-th",
+		startRes.ResumeToken,
 		WithRunMetadata[state, NoEffect](RunMetadataInput{
 			BudgetCounts: map[string]int{"tokens": 3},
 		}),

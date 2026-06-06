@@ -20,13 +20,16 @@ type RunOption[T, E any] interface {
 }
 
 type runInvocationOptions[T, E any] struct {
-	bindings           *RunBindings
-	overlay            *T
-	overlayMerger      StateMerger[T]
-	invariantValidator InvariantValidator[T]
-	runMetadata        RunMetadataInput
-	leaseOwner         string
-	leaseTTL           time.Duration
+	bindings               *RunBindings
+	overlay                *T
+	overlayMerger          StateMerger[T]
+	invariantValidator     InvariantValidator[T]
+	runMetadata            RunMetadataInput
+	leaseOwner             string
+	leaseTTL               time.Duration
+	suspendPointerResolver SuspendPointerResolver[T]
+	handoffScheduler       HandoffScheduler
+	checkpointPolicy       CheckpointFailurePolicy
 }
 
 type runOptionFunc[T, E any] func(*runInvocationOptions[T, E])
@@ -74,6 +77,46 @@ func WithRunLease[T, E any](owner string, ttl time.Duration) RunOption[T, E] {
 		opts.leaseOwner = owner
 		opts.leaseTTL = ttl
 	})
+}
+
+// WithSuspendPointerResolver normalizes ExecutionPointer before Suspend/Handoff checkpoint saves.
+func WithSuspendPointerResolver[T, E any](resolver SuspendPointerResolver[T]) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.suspendPointerResolver = resolver
+	})
+}
+
+// WithHandoffScheduler schedules continuation after a successful handoff checkpoint save.
+func WithHandoffScheduler[T, E any](scheduler HandoffScheduler) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.handoffScheduler = scheduler
+	})
+}
+
+// WithCheckpointErrorPolicy sets behavior when Checkpointer.Save fails during terminal saves.
+// SoftWarn emits EventCheckpointFailed on Stream/StreamResume only; sync Start/Resume swallow
+// the save error without observable signal and do not populate ResumeToken. Terminal flow
+// continues with reason suffixes suspended_checkpoint_skipped, handoff_checkpoint_skipped, or
+// context_canceled_checkpoint_skipped when the checkpoint was not persisted.
+func WithCheckpointErrorPolicy[T, E any](policy CheckpointFailurePolicy) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.checkpointPolicy = policy
+	})
+}
+
+func resolveSuspendPointer[T any](
+	state T,
+	current string,
+	resolver SuspendPointerResolver[T],
+) (ExecutionPointer, error) {
+	if resolver == nil {
+		return ExecutionPointer(current), nil
+	}
+	ptr, err := resolver(state, ExecutionPointer(current))
+	if err != nil {
+		return "", fmt.Errorf("flowy: suspend pointer resolver: %w", err)
+	}
+	return ptr, nil
 }
 
 func applyRunOptions[T, E any](opts ...RunOption[T, E]) runInvocationOptions[T, E] {

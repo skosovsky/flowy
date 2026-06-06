@@ -160,6 +160,14 @@ const (
 	RunStatusHandoff         RunStatus = "handoff"
 )
 
+// Terminal reason suffixes when checkpoint save is skipped or post-save policy fails.
+const (
+	ReasonSuspendedCheckpointSkipped       = "suspended_checkpoint_skipped"
+	ReasonHandoffCheckpointSkipped         = "handoff_checkpoint_skipped"
+	ReasonContextCanceledCheckpointSkipped = "context_canceled_checkpoint_skipped"
+	ReasonContextCanceledSaveFailed        = "context_canceled_save_failed"
+)
+
 // SegmentEndReason describes why a compute segment ended.
 type SegmentEndReason string
 
@@ -254,6 +262,34 @@ type StateInterceptor[T any] interface {
 	AfterLoad(ctx context.Context, state *T) error
 }
 
+// ResumeToken identifies a persisted thread snapshot for optimistic-concurrency resume.
+// Generation maps to Snapshot.Revision after the terminal save that produced the token.
+type ResumeToken struct {
+	ThreadID   string
+	Generation int
+}
+
+// ResumeTokenFromSnapshot builds a resume token from a loaded snapshot.
+func ResumeTokenFromSnapshot[T, E any](s Snapshot[T, E]) ResumeToken {
+	return ResumeToken{ThreadID: s.ThreadID, Generation: s.Revision}
+}
+
+// SuspendPointerResolver overrides the execution pointer stored on Suspend/Handoff saves.
+type SuspendPointerResolver[T any] func(state T, suspendNode ExecutionPointer) (ExecutionPointer, error)
+
+// HandoffScheduler publishes a resume token to an external continuation queue after handoff save.
+type HandoffScheduler interface {
+	ScheduleContinuation(ctx context.Context, token ResumeToken) error
+}
+
+// CheckpointFailurePolicy controls runner behavior when Checkpointer.Save fails.
+type CheckpointFailurePolicy string
+
+const (
+	CheckpointPolicyHardFail CheckpointFailurePolicy = "hard_fail"
+	CheckpointPolicySoftWarn CheckpointFailurePolicy = "soft_warn"
+)
+
 // RunResult is the final state returned to the application.
 type RunResult[T, E any] struct {
 	State            T
@@ -262,18 +298,20 @@ type RunResult[T, E any] struct {
 	RunMeta          RunMetadata
 	ExecutionPointer ExecutionPointer
 	Reason           string
+	ResumeToken      ResumeToken // set after persisted Suspend/Handoff terminal save only
 }
 
 type EventType string
 
 const (
-	EventNodeStarted     EventType = "node_started"
-	EventNodeCompleted   EventType = "node_completed"
-	EventCompleted       EventType = "completed"
-	EventSuspended       EventType = "suspended"
-	EventFailed          EventType = "failed"
-	EventHandoff         EventType = "handoff"
-	EventContextCanceled EventType = "context_canceled"
+	EventNodeStarted      EventType = "node_started"
+	EventNodeCompleted    EventType = "node_completed"
+	EventCompleted        EventType = "completed"
+	EventSuspended        EventType = "suspended"
+	EventFailed           EventType = "failed"
+	EventHandoff          EventType = "handoff"
+	EventContextCanceled  EventType = "context_canceled"
+	EventCheckpointFailed EventType = "checkpoint_failed"
 )
 
 // RunEvent represents a single lifecycle event with typed effect payload.
@@ -298,9 +336,9 @@ type StreamHandle[T, E any] interface {
 // Runner controls lifecycle for start/resume executions.
 type Runner[T, E any] interface {
 	Start(ctx context.Context, threadID string, initialState T, opts ...RunOption[T, E]) (*RunResult[T, E], error)
-	Resume(ctx context.Context, threadID string, opts ...RunOption[T, E]) (*RunResult[T, E], error)
+	Resume(ctx context.Context, token ResumeToken, opts ...RunOption[T, E]) (*RunResult[T, E], error)
 	Stream(ctx context.Context, threadID string, initialState T, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
-	StreamResume(ctx context.Context, threadID string, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
+	StreamResume(ctx context.Context, token ResumeToken, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
 	// HandoffToBackground requests graceful termination of the active foreground execution on this runner instance only.
 	// It cancels the in-process run, waits until the handoff checkpoint is persisted, then returns.
 	// A background worker on any instance must call Resume with a new lease; cross-process handoff uses checkpoint + lease, not this API alone.
@@ -319,6 +357,9 @@ var (
 	ErrInvalidSnapshot         = errors.New("flowy: snapshot has invalid or empty execution pointer")
 	ErrResumeReconcileFailed   = errors.New("flowy: resume reconcile failed")
 	ErrResumeStartNodeNotFound = errors.New("flowy: resume start node not found")
+	ErrStaleResumeToken        = errors.New("flowy: stale resume token")
+	ErrHandoffScheduleFailed   = errors.New("flowy: handoff schedule failed")
+	ErrInvalidResumeToken      = errors.New("flowy: invalid resume token")
 )
 
 // EndNode is a terminal graph target for AddEdge/AddConditionalEdge.

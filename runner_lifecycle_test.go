@@ -78,7 +78,7 @@ func TestResumeReconcilerAfterOverlay(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = runner.Resume(context.Background(), "reconcile-th",
+	_, err = resumeLoaded(context.Background(), runner, cp, "reconcile-th",
 		WithStateOverlay[reconcileOverlayState, NoEffect](
 			reconcileOverlayState{Overlay: "user-input"},
 			func(base, overlay reconcileOverlayState) reconcileOverlayState {
@@ -312,7 +312,7 @@ func TestHandoffToBackgroundThenImmediateResume(t *testing.T) {
 		t.Fatalf("handoff: %v", handoffErr)
 	}
 
-	res, err := runner.Resume(context.Background(), "handoff-resume-th")
+	res, err := resumeLoaded(context.Background(), runner, cp, "handoff-resume-th")
 	if err != nil {
 		t.Fatalf("resume after handoff: %v", err)
 	}
@@ -351,7 +351,7 @@ func TestRetentionLimitOnHandoff(t *testing.T) {
 		if i == 0 {
 			_, err = runner.Start(context.Background(), "handoff-retention-th", state{})
 		} else {
-			_, err = runner.Resume(context.Background(), "handoff-retention-th")
+			_, err = resumeLoaded(context.Background(), runner, cp, "handoff-retention-th")
 		}
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
@@ -495,7 +495,7 @@ func TestRetentionLimitOnContextCancel(t *testing.T) {
 		if i == 0 {
 			_, err = runner.Start(context.Background(), "th", state{})
 		} else {
-			_, err = runner.Resume(context.Background(), "th")
+			_, err = resumeLoaded(context.Background(), runner, cp, "th")
 		}
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
@@ -506,7 +506,7 @@ func TestRetentionLimitOnContextCancel(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _ = runner.Resume(ctx, "th")
+		_, _ = resumeLoaded(ctx, runner, cp, "th")
 	}()
 	time.Sleep(10 * time.Millisecond)
 	cancel()
@@ -552,7 +552,7 @@ func TestResumeResetsStepCount(t *testing.T) {
 		t.Fatalf("expected step count 1 after start, got %d", snap.RunMeta.StepCount)
 	}
 
-	_, err = runner.Resume(context.Background(), "th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "th")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -628,7 +628,7 @@ func TestRetentionLimitOnSuspend(t *testing.T) {
 		if i == 0 {
 			_, err = runner.Start(context.Background(), "th", state{})
 		} else {
-			_, err = runner.Resume(context.Background(), "th")
+			_, err = resumeLoaded(context.Background(), runner, cp, "th")
 		}
 		if err != nil {
 			t.Fatalf("run %d: %v", i, err)
@@ -666,7 +666,10 @@ func TestOverlayWithoutMergerFails(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = runner.Resume(context.Background(), "th", WithStateOverlay[state, NoEffect](state{V: "overlay"}, nil))
+	_, err = resumeLoaded(
+		context.Background(), runner, cp, "th",
+		WithStateOverlay[state, NoEffect](state{V: "overlay"}, nil),
+	)
 	if !errors.Is(err, ErrOverlayMergerRequired) {
 		t.Fatalf("expected ErrOverlayMergerRequired, got %v", err)
 	}
@@ -1354,7 +1357,7 @@ func TestResumeUsesSnapshotExecutionPointer(t *testing.T) {
 		t.Fatalf("expected pointer gate, got %q", cp.last.ExecutionPointer)
 	}
 
-	res, err := runner.Resume(context.Background(), "ptr-th")
+	res, err := resumeLoaded(context.Background(), runner, cp, "ptr-th")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -1402,7 +1405,7 @@ func TestWithRunMetadataOnResume(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	res, err := runner.Resume(context.Background(), "meta-resume-th",
+	res, err := resumeLoaded(context.Background(), runner, cp, "meta-resume-th",
 		WithRunMetadata[state, NoEffect](RunMetadataInput{
 			BudgetCounts: map[string]int{"tokens": 4},
 		}),
@@ -1454,7 +1457,7 @@ func TestResumePreservesBudgetUnlessOverridden(t *testing.T) {
 		t.Fatalf("expected persisted budget 2, got %d", cp.last.RunMeta.BudgetCounts["tokens"])
 	}
 
-	res, err := runner.Resume(context.Background(), "budget-th")
+	res, err := resumeLoaded(context.Background(), runner, cp, "budget-th")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -1488,7 +1491,7 @@ func TestResumeWithoutReconcilerSucceeds(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	_, err = runner.Resume(context.Background(), "no-rec-th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "no-rec-th")
 	if err != nil {
 		t.Fatalf("resume without reconciler should succeed: %v", err)
 	}
@@ -1538,7 +1541,7 @@ func TestResumeReconcileError(t *testing.T) {
 			if err != nil {
 				t.Fatalf("start: %v", err)
 			}
-			_, err = runner.Resume(context.Background(), tc.thread)
+			_, err = resumeLoaded(context.Background(), runner, cp, tc.thread)
 			if err == nil || !errors.Is(err, ErrResumeReconcileFailed) ||
 				!strings.Contains(err.Error(), tc.msg) {
 				t.Fatalf("expected wrapped reconcile error with %q, got %v", tc.msg, err)
@@ -1583,7 +1586,7 @@ func TestResumeReconcilerValueReceiverDoesNotPropagateState(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = runner.Resume(context.Background(), "val-rec-th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "val-rec-th")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -1613,7 +1616,7 @@ func TestEmptyExecutionPointerReturnsErrInvalidSnapshot(t *testing.T) {
 	b.AllowNoOutgoingRoute("n")
 	g, _ := b.Compile()
 
-	_, err := g.NewRunner(cp).Resume(context.Background(), "empty-ptr")
+	_, err := resumeLoaded(context.Background(), g.NewRunner(cp), cp, "empty-ptr")
 	if !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
 	}
@@ -1732,7 +1735,7 @@ func TestStreamResumeReleasesLeaseOnPrepareResumeError(t *testing.T) {
 		WithRunLease[state, NoEffect]("worker-1", time.Minute),
 	}
 
-	_, err = runner.StreamResume(context.Background(), "missing-stream-resume-th", leaseOpts...)
+	_, err = runner.StreamResume(context.Background(), ResumeToken{ThreadID: "missing-stream-resume-th"}, leaseOpts...)
 	if !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected ErrThreadNotFound, got %v", err)
 	}

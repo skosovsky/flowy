@@ -115,7 +115,7 @@ func TestRunnerSuspendSavesAndResumeWithPatch(t *testing.T) {
 
 	resumed, err := runner.Resume(
 		context.Background(),
-		"th-1",
+		res.ResumeToken,
 		WithStateOverlay[state, string](state{Value: 10}, func(base, overlay state) state {
 			base.Value += overlay.Value
 			return base
@@ -301,7 +301,7 @@ func TestInterceptorsAreApplied(t *testing.T) {
 	snap := cp.reads["i"]
 	snap.State = interceptState{Value: "v2"}
 	cp.reads["i"] = snap
-	res, err := g.NewRunner(cp, testInterceptor{}).Resume(context.Background(), "i")
+	res, err := g.NewRunner(cp, testInterceptor{}).Resume(context.Background(), ResumeTokenFromSnapshot(snap))
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -591,7 +591,7 @@ func TestNodeMiddlewareContextPropagationOnResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	res, err := runner.Resume(context.Background(), "resume-mw")
+	res, err := resumeLoaded(context.Background(), runner, cp, "resume-mw")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -649,7 +649,7 @@ func TestResumeRestoresTelemetryContext(t *testing.T) {
 		t.Fatalf("expected telemetry saved in run meta, got %+v", cp.last.RunMeta.TelemetryContext)
 	}
 
-	res, err := runner.Resume(context.Background(), "trace-thread")
+	res, err := resumeLoaded(context.Background(), runner, cp, "trace-thread")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}

@@ -12,14 +12,32 @@
 // may already be persisted without a delivered event (persist-vs-event semantics).
 //
 // Resume pipeline (prepareResume order):
-//  1. Checkpointer.Load → ExecutionPointer from snapshot
-//  2. StateInterceptor.AfterLoad (optional)
-//  3. WithStateOverlay (optional)
-//  4. resetSegmentCounters (StepCount/Segment; BudgetCounts preserved)
-//  5. WithRunMetadata merge (optional)
-//  6. ResumeReconciler.ReconcileResume (optional pointer rewind)
-//  7. validate active ExecutionPointer (non-empty, node exists in graph)
-//  8. execute from active (post-reconcile) ExecutionPointer
+//  1. ResumeToken validation (ThreadID required)
+//  2. Checkpointer.Load → OCC: token.Generation == snapshot.Revision
+//  3. StateInterceptor.AfterLoad (optional)
+//  4. WithStateOverlay (optional)
+//  5. resetSegmentCounters (StepCount/Segment; BudgetCounts preserved)
+//  6. WithRunMetadata merge (optional)
+//  7. ResumeReconciler.ReconcileResume (optional pointer rewind)
+//  8. validate active ExecutionPointer (non-empty, node exists in graph)
+//  9. execute from active (post-reconcile) ExecutionPointer
+//
+// Suspend/Handoff save path: WithSuspendPointerResolver normalizes ExecutionPointer before Save.
+// Handoff Outbox: WithHandoffScheduler schedules ResumeToken after save (snapshot retained on schedule error).
+// Soft checkpoint: WithCheckpointErrorPolicy(SoftWarn) emits EventCheckpointFailed on
+// Stream/StreamResume without aborting terminal flow; sync Start/Resume have no event sink.
+// ResumeToken is set only after a persisted Suspend/Handoff terminal save. When SoftWarn
+// skips persist, terminal reasons use *_checkpoint_skipped suffixes.
+//
+// Post-save retention (Prune) runs on successful suspend/handoff/cancel checkpoint saves.
+// Retention failure returns terminal success status with a wrapped error and reason suffix
+// *_retention_failed (checkpoint already persisted). Prune is skipped when cancel save
+// HardFails (early return) or when only schedule fails before finalize (prune still runs
+// on schedule-fail path after persisted handoff save).
+//
+// ResumeTokenFromSnapshot builds a ResumeToken from a loaded snapshot (Generation = Revision).
+// ErrStaleResumeToken, ErrInvalidResumeToken, ErrHandoffScheduleFailed, ErrThreadNotFound are
+// returned from Resume/StreamResume on OCC or validation failures.
 //
 // WithInvariantValidator runs in-loop during execute, not in prepareResume.
 //

@@ -36,13 +36,18 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream`, д�
 | `BudgetUsed` / `ContextWithRunMetadata`        | — (isolated node pattern)                                | `run_options_test.go`                                                                                              |
 | `DeleteIfIdle` / lease-aware delete            | `lease_agent` (`WithDeleteOnSuccess` demo)               | `runner_lifecycle_test.go`, adapter tests                                                                          |
 | Subgraph slot resume                           | `subgraph_slot_agent`                                    | `compose_test.go`                                                                                                  |
+| `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                      | `runner_lifecycle_contracts_test.go`                                                                               |
+| `WithSuspendPointerResolver`                   | —                                                        | `runner_lifecycle_contracts_test.go`                                                                               |
+| `WithHandoffScheduler` (Outbox)                | —                                                        | `runner_lifecycle_contracts_test.go`                                                                               |
+| `WithCheckpointErrorPolicy(SoftWarn)`          | — (use Stream)                                           | `runner_lifecycle_contracts_test.go`                                                                               |
 | Named budgets                                  | —                                                        | `runner_lifecycle_test.go`                                                                                         |
 | Lease + checkpoint handoff (in-memory, unit)   | —                                                        | `runner_lifecycle_test.go`, `lease.go`                                                                             |
 
 Общие правила:
 
 - Роутинг только через `AddEdge` / `AddConditionalEdge` с обязательными `allowedTargets` (без `Next(nodeID)`).
-- Resume pipeline: `Load` → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
+- Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.Generation == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
+- Task18 orchestration: `WithSuspendPointerResolver` (save-path pointer normalize), `WithHandoffScheduler` (Outbox after handoff save), `WithCheckpointErrorPolicy(SoftWarn)` (Stream-only `EventCheckpointFailed`). Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
 - Handoff: `Handoff(reason)` или `HandoffToBackground` (только активный run **в том же процессе** runner); другой воркер — `Resume` + новый lease по checkpoint.
 - Lease: `WithRunLease` обязателен при `WithLeaseManager`; повторный `Start` на занятый thread → `ErrThreadBusy`; после TTL другой owner может `Acquire`.
 

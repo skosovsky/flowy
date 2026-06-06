@@ -79,7 +79,7 @@ func main() {
 		first.State.Child.Step,
 	)
 
-	second, err := runner.Resume(context.Background(), "slot-thread")
+	second, err := runner.Resume(context.Background(), first.ResumeToken)
 	if err != nil {
 		log.Fatal(err)
 	}

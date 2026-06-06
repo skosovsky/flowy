@@ -7,7 +7,7 @@
 1. Parent стартует и вызывает `subgraph`.
 2. Child node `gate` делает `Suspend("waiting_subgraph_approval")`.
 3. Parent получает `RunStatusSuspended` и сохраняет snapshot.
-4. `Resume(..., WithStateOverlay(...))` обновляет parent state (`Child.Approved=true`).
+4. `Resume(ctx, first.ResumeToken, WithStateOverlay(...))` обновляет parent state (`Child.Approved=true`).
 5. Parent снова входит в `subgraph`, child проходит `gate` и завершает run.
 
 ## Важный нюанс

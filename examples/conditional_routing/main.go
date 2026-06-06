@@ -72,7 +72,7 @@ func main() {
 
 	bound, err := lateRunner.Resume(
 		context.Background(),
-		"route-late",
+		pending.ResumeToken,
 		flowy.WithStateOverlay[routeState, flowy.NoEffect](
 			routeState{AllowedTools: []string{"search", "calculator"}},
 			func(base, overlay routeState) routeState {
@@ -101,7 +101,7 @@ func main() {
 
 	rewound, err := rewindRunner.Resume(
 		context.Background(),
-		"route-rewind",
+		pendingRewind.ResumeToken,
 		flowy.WithStateOverlay[routeState, flowy.NoEffect](
 			routeState{AllowedTools: []string{"search"}, SkipPrepare: true},
 			func(base, overlay routeState) routeState {

@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -237,11 +238,14 @@ func TestSubgraphHandoffResumeContinuity(t *testing.T) {
 	if first.Status != RunStatusHandoff {
 		t.Fatalf("expected handoff, got %s", first.Status)
 	}
+	if first.ResumeToken.Generation <= 0 {
+		t.Fatalf("expected parent ResumeToken on handoff, got %+v", first.ResumeToken)
+	}
 	if first.State.Slot.ExecutionPointer != "step1" || first.State.Child.Step != 1 {
 		t.Fatalf("expected subgraph slot at step1, got slot=%+v child=%+v", first.State.Slot, first.State.Child)
 	}
 
-	second, err := runner.Resume(context.Background(), "sub-resume-th")
+	second, err := runner.Resume(context.Background(), first.ResumeToken)
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -320,11 +324,14 @@ func TestSubgraphSuspendSlotResumeContinuity(t *testing.T) {
 	if first.Status != RunStatusSuspended {
 		t.Fatalf("expected suspended, got %s", first.Status)
 	}
+	if first.ResumeToken.Generation <= 0 {
+		t.Fatalf("expected parent ResumeToken on suspend, got %+v", first.ResumeToken)
+	}
 	if first.State.Slot.ExecutionPointer != "work" || first.State.Child.Step != 1 {
 		t.Fatalf("unexpected slot after suspend: slot=%+v child=%+v", first.State.Slot, first.State.Child)
 	}
 
-	second, err := runner.Resume(context.Background(), "sub-suspend-th")
+	second, err := runner.Resume(context.Background(), first.ResumeToken)
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -333,6 +340,221 @@ func TestSubgraphSuspendSlotResumeContinuity(t *testing.T) {
 	}
 	if second.State.Child.Step != 2 {
 		t.Fatalf("expected child step 2 after slot resume, got %d", second.State.Child.Step)
+	}
+}
+
+func TestComposeSubgraphResumeToken(t *testing.T) {
+	t.Parallel()
+
+	type childState struct {
+		Step int
+	}
+	type parentState struct {
+		Child childState
+		Slot  SubgraphSlot[childState, NoEffect]
+	}
+
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		s.Step++
+		if s.Step < 3 {
+			return s, Suspend("child-wait"), nil
+		}
+		return s, End(), nil
+	})
+	subBuilder.SetEntryPoint("work")
+	subBuilder.AllowNoOutgoingRoute("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(s parentState) childState { return s.Child },
+		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
+			if s.Slot.ExecutionPointer == "" {
+				return SubgraphSlot[childState, NoEffect]{}, false
+			}
+			return s.Slot, true
+		},
+		func(s parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			s.Slot = slot
+			return s
+		},
+		func(s parentState, child childState) parentState {
+			s.Child = child
+			return s
+		},
+	))
+	parentBuilder.AddNode("finalize", func(_ context.Context, s parentState) (parentState, Directive, error) {
+		return s, End(), nil
+	})
+	parentBuilder.AddEdge("sub", "finalize")
+	parentBuilder.AllowNoOutgoingRoute("finalize")
+	parentBuilder.SetEntryPoint("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	cp := newMemoryCP[parentState, NoEffect]()
+	runner := parentGraph.NewRunner(cp)
+
+	first, err := runner.Start(context.Background(), "compose-token-th", parentState{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if first.ResumeToken.Generation <= 0 {
+		t.Fatalf("expected parent OCC ResumeToken, got %+v", first.ResumeToken)
+	}
+	if first.State.Slot.Revision <= 0 {
+		t.Fatalf("expected inner slot revision, got %+v", first.State.Slot)
+	}
+	if first.State.Slot.ExecutionPointer != "work" {
+		t.Fatalf("expected inner slot pointer work, got %q", first.State.Slot.ExecutionPointer)
+	}
+
+	second, err := runner.Resume(context.Background(), first.ResumeToken)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if second.Status != RunStatusSuspended {
+		t.Fatalf("expected second suspend, got %s", second.Status)
+	}
+	if second.State.Child.Step != 2 {
+		t.Fatalf("expected inner step 2, got %d", second.State.Child.Step)
+	}
+
+	third, err := runner.Resume(context.Background(), second.ResumeToken)
+	if err != nil {
+		t.Fatalf("third resume: %v", err)
+	}
+	if third.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %s", third.Status)
+	}
+	if third.State.Child.Step != 3 {
+		t.Fatalf("expected inner step 3, got %d", third.State.Child.Step)
+	}
+
+	_, err = runner.Resume(context.Background(), first.ResumeToken)
+	if !errors.Is(err, ErrStaleResumeToken) {
+		t.Fatalf("expected stale token, got %v", err)
+	}
+}
+
+func TestSubgraphSlotStoreFailure(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{ Step int }
+	type parentState struct {
+		Child childState
+		Slot  SubgraphSlot[childState, NoEffect]
+	}
+
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		s.Step++
+		return s, Suspend("child-wait"), nil
+	})
+	subBuilder.SetEntryPoint("work")
+	subBuilder.AllowNoOutgoingRoute("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(s parentState) childState { return s.Child },
+		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
+			if s.Slot.ExecutionPointer == "" {
+				return SubgraphSlot[childState, NoEffect]{}, false
+			}
+			return s.Slot, true
+		},
+		func(s parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			s.Slot = slot
+			return s
+		},
+		func(s parentState, child childState) parentState {
+			s.Child = child
+			return s
+		},
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	ctx := withSubgraphTestMode(context.Background(), subgraphTestModeFailSlotLoad)
+	_, err = parentGraph.NewRunner(newMemoryCP[parentState, NoEffect]()).Start(ctx, "slot-load-fail-th", parentState{})
+	if err == nil {
+		t.Fatal("expected subgraph slot load failure")
+	}
+	if !strings.Contains(err.Error(), "subgraph slot") {
+		t.Fatalf("expected subgraph slot error, got %v", err)
+	}
+}
+
+func TestSubgraphSeedSaveFailure(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{ Step int }
+	type parentState struct {
+		Child childState
+		Slot  SubgraphSlot[childState, NoEffect]
+	}
+
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		return s, End(), nil
+	})
+	subBuilder.SetEntryPoint("work")
+	subBuilder.AllowNoOutgoingRoute("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(s parentState) childState { return s.Child },
+		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
+			return SubgraphSlot[childState, NoEffect]{
+				ExecutionPointer: "work",
+				Revision:         1,
+				State:            s.Child,
+			}, true
+		},
+		func(s parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			s.Slot = slot
+			return s
+		},
+		func(s parentState, child childState) parentState {
+			s.Child = child
+			return s
+		},
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	ctx := withSubgraphTestMode(context.Background(), subgraphTestModeFailSeedSave)
+	_, err = parentGraph.NewRunner(newMemoryCP[parentState, NoEffect]()).Start(ctx, "seed-fail-th", parentState{})
+	if err == nil {
+		t.Fatal("expected subgraph seed save failure")
+	}
+	if !strings.Contains(err.Error(), "subgraph seed") {
+		t.Fatalf("expected subgraph seed error, got %v", err)
 	}
 }
 

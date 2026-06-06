@@ -8,6 +8,7 @@ import (
 const (
 	streamEventBufferSize    = 32
 	contextCancelSaveTimeout = 5 * time.Second
+	handoffScheduleTimeout   = 5 * time.Second
 	terminalEventEmitTimeout = 250 * time.Millisecond
 	defaultLeaseTTL          = 30 * time.Second
 	leaseHeartbeatDivisor    = 3
@@ -108,6 +109,15 @@ func newRunEventHandoff[T, E any](pointer string, state T, reason string) RunEve
 		ExecutionPointer: ExecutionPointer(pointer),
 		State:            state,
 		Reason:           reason,
+	}
+}
+
+func newRunEventCheckpointFailed[T, E any](pointer string, state T, err error) RunEvent[T, E] {
+	return RunEvent[T, E]{
+		Type:             EventCheckpointFailed,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Error:            err,
 	}
 }
 

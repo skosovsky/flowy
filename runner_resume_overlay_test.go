@@ -57,7 +57,7 @@ func TestResumeReconcilerPointerRewind(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	res, err := runner.Resume(context.Background(), "rewind-th",
+	res, err := resumeLoaded(context.Background(), runner, cp, "rewind-th",
 		WithStateOverlay[rewindOverlayState, NoEffect](
 			rewindOverlayState{},
 			func(base, _ rewindOverlayState) rewindOverlayState {
@@ -113,7 +113,7 @@ func TestResumeReconcilerInvalidPointer(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = runner.Resume(context.Background(), "invalid-ptr-th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "invalid-ptr-th")
 	if err == nil || !errors.Is(err, ErrResumeStartNodeNotFound) ||
 		!strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("expected ErrResumeStartNodeNotFound for ghost node, got %v", err)
@@ -151,7 +151,7 @@ func TestResumeReconcilerEmptyPointer(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = runner.Resume(context.Background(), "empty-rec-ptr-th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "empty-rec-ptr-th")
 	if !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
 	}

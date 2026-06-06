@@ -61,7 +61,7 @@ func main() {
 
 	resumed, err := runner.Resume(
 		context.Background(),
-		threadID,
+		result.ResumeToken,
 		flowy.WithStateOverlay[orderState, flowy.NoEffect](
 			orderState{Approved: true},
 			func(base, overlay orderState) orderState {

@@ -91,7 +91,7 @@ func main() {
 
 	second, err := runner.Resume(
 		context.Background(),
-		"subgraph-thread",
+		first.ResumeToken,
 		flowy.WithStateOverlay[parentState, flowy.NoEffect](parentState{
 			Child: childState{Approved: true},
 			Log:   []string{"parent_resume"},

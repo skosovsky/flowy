@@ -30,6 +30,10 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 | `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                   |
 | string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                          |
 | `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                    |
+| `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, Generation})`            |
+| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)         |
+| Manual handoff queue + rollback   | `WithHandoffScheduler` (Outbox: save → schedule; snapshot сохраняется)   |
+| context error collectors          | `WithCheckpointErrorPolicy(SoftWarn)` + `EventCheckpointFailed`          |
 | ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                  |
 | Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`               |
 | Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)` |
@@ -54,14 +58,15 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 
 ### Resume pipeline (order)
 
-1. `Checkpointer.Load` → `ExecutionPointer` из snapshot (без внешнего start node)
-2. `StateInterceptor.AfterLoad` (optional)
-3. `WithStateOverlay` (optional, deterministic merge)
-4. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
-5. `WithRunMetadata` merge (optional)
-6. `ResumeReconciler.ReconcileResume()` (optional pointer rewind после overlay)
-7. validate active `ExecutionPointer` (non-empty, узел в графе)
-8. `execute` с активного (post-reconcile) `ExecutionPointer`
+1. `ResumeToken` validation (`ThreadID` non-empty)
+2. `Checkpointer.Load` → OCC: `token.Generation` must equal `snapshot.Revision`
+3. `StateInterceptor.AfterLoad` (optional)
+4. `WithStateOverlay` (optional, deterministic merge)
+5. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
+6. `WithRunMetadata` merge (optional)
+7. `ResumeReconciler.ReconcileResume()` (optional pointer rewind после overlay)
+8. validate active `ExecutionPointer` (non-empty, узел в графе)
+9. `execute` с активного (post-reconcile) `ExecutionPointer`
 
 `WithInvariantValidator` — in-loop в `execute`, не в `prepareResume`.
 
@@ -111,8 +116,8 @@ runner := graph.NewRunnerWithOptions(cp, []flowy.RunnerOption[State, Effect]{
     flowy.WithLeaseManager[State, Effect](leaseMgr),
 })
 
-// State may implement ResumeReconciler (pointer receiver when T is a struct).
-res, err := runner.Resume(ctx, threadID,
+// После Suspend/Handoff используйте result.ResumeToken (или ResumeTokenFromSnapshot после Load).
+res, err := runner.Resume(ctx, suspended.ResumeToken,
     flowy.WithBindings[State, Effect](bindings),
     flowy.WithStateOverlay[State, Effect](overlay, mergeFn),
     flowy.WithRunMetadata[State, Effect](flowy.RunMetadataInput{
@@ -122,6 +127,12 @@ res, err := runner.Resume(ctx, threadID,
     flowy.WithRunLease[State, Effect]("worker-1", 30*time.Second),
 )
 ```
+
+### Lifecycle contracts (Task18)
+
+- **Save-path pointer:** `WithSuspendPointerResolver` нормализует `ExecutionPointer` до `Save` на Suspend/Handoff (Checkpointer остаётся dumb CRUD).
+- **Handoff Outbox:** `WithHandoffScheduler` — save → `ScheduleContinuation(token)`; при ошибке schedule snapshot **сохраняется**, `RunResult.ResumeToken` доступен для retry публикации (`errors.Is(err, ErrHandoffScheduleFailed)`).
+- **Soft checkpoint errors:** `WithCheckpointErrorPolicy(CheckpointPolicySoftWarn)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow.
 
 Для нескольких зависимостей одного типа используйте distinct wrapper types в `BindingKey[...]` (как в stdlib `context`).
 
@@ -150,7 +161,7 @@ Redis: `Options.LeasePrefix` checkpointer должен совпадать с `Op
 
 - Локальные aliases: `type Node = flowy.Node[State, Effect]`
 - Type inference: `NewGraph[State](reducer)` → укажите `E` явно при неоднозначности: `NewGraph[State, Effect](...)`
-- Handoff: foreground run завершается с `RunStatusHandoff` + checkpoint; background worker вызывает `Resume` (без передачи горутин/каналов между воркерами).
+- Handoff: foreground run завершается с `RunStatusHandoff` + checkpoint + `ResumeToken`; background worker вызывает `Resume(token)` (без передачи горутин/каналов между воркерами).
 - Lease: при `WithLeaseManager` всегда указывайте `WithRunLease(owner, ttl)`; `MemoryLeaseManager` только для dev/tests
 
 ## Quality Gates
