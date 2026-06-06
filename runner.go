@@ -426,22 +426,23 @@ func (r *graphRunner[T, E]) prepareResume(
 	resetSegmentCounters(&meta)
 	mergeRunMetadataInput(&meta, inv.runMetadata)
 
+	activePointer := snapshot.ExecutionPointer
 	var reconcileErr error
-	state, reconcileErr = reconcileState(state)
+	state, activePointer, reconcileErr = reconcileResume(state, activePointer)
 	if reconcileErr != nil {
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, reconcileErr
 	}
 
-	if snapshot.ExecutionPointer == "" {
+	if activePointer == "" {
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, ErrInvalidSnapshot
 	}
-	startNode := string(snapshot.ExecutionPointer)
+	startNode := string(activePointer)
 
 	if _, ok := r.graph.nodes[startNode]; !ok {
 		var zero T
-		return "", zero, RunMetadata{}, nil, 0, fmt.Errorf("flowy: resume start node %q not found", startNode)
+		return "", zero, RunMetadata{}, nil, 0, fmt.Errorf("%w: %q", ErrResumeStartNodeNotFound, startNode)
 	}
 
 	return startNode, state, meta, append([]E(nil), snapshot.Effects...), snapshot.Revision, nil

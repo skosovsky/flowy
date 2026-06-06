@@ -16,16 +16,21 @@ type routeState struct {
 	Query        string
 	Answer       string
 	AllowedTools []string
+	SkipPrepare  bool
+	PrepareRuns  int
 }
 
-func (s *routeState) Reconcile() error {
+func (s *routeState) ReconcileResume(currentPtr flowy.ExecutionPointer) (flowy.ExecutionPointer, error) {
 	if slices.Contains(s.AllowedTools, "") {
-		return errors.New("empty tool name")
+		return currentPtr, errors.New("empty tool name")
 	}
 	if len(s.AllowedTools) > 0 {
 		s.AllowedTools = append([]string(nil), s.AllowedTools...)
 	}
-	return nil
+	if currentPtr == "prepare" && s.SkipPrepare {
+		return "check_cache", nil
+	}
+	return currentPtr, nil
 }
 
 func main() {
@@ -80,6 +85,37 @@ func main() {
 		log.Fatal(err)
 	}
 	fmt.Printf("late-bind status=%s answer=%q tools=%v\n", bound.Status, bound.State.Answer, bound.State.AllowedTools)
+
+	rewindRunner := lateGraph.NewRunner(cp)
+	pendingRewind, err := rewindRunner.Start(
+		context.Background(),
+		"route-rewind",
+		routeState{Query: "explain supervisors"},
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if pendingRewind.Status != flowy.RunStatusSuspended {
+		log.Fatalf("expected suspended before rewind, got %s", pendingRewind.Status)
+	}
+
+	rewound, err := rewindRunner.Resume(
+		context.Background(),
+		"route-rewind",
+		flowy.WithStateOverlay[routeState, flowy.NoEffect](
+			routeState{AllowedTools: []string{"search"}, SkipPrepare: true},
+			func(base, overlay routeState) routeState {
+				base.AllowedTools = overlay.AllowedTools
+				base.SkipPrepare = overlay.SkipPrepare
+				return base
+			},
+		),
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Printf("rewind status=%s prepare_runs=%d answer=%q\n",
+		rewound.Status, rewound.State.PrepareRuns, rewound.State.Answer)
 }
 
 func buildCacheRouter(cache map[string]string) *flowy.GraphBuilder[routeState, flowy.NoEffect] {
@@ -101,6 +137,7 @@ func buildCacheRouter(cache map[string]string) *flowy.GraphBuilder[routeState, f
 func buildLateBindingRouter(cache map[string]string) *flowy.GraphBuilder[routeState, flowy.NoEffect] {
 	return flowy.NewGraph[routeState, flowy.NoEffect](func(_ routeState, u routeState) routeState { return u }).
 		AddNode("prepare", func(_ context.Context, s routeState) (routeState, flowy.Directive, error) {
+			s.PrepareRuns++
 			if len(s.AllowedTools) == 0 {
 				return s, flowy.Suspend("await_runtime_config"), nil
 			}

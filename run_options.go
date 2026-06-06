@@ -133,19 +133,22 @@ func runMetadataFromContext(ctx context.Context) (*RunMetadata, bool) {
 	return meta, ok
 }
 
-func reconcileState[T any](state T) (T, error) {
-	if rs, ok := any(&state).(ResumableState); ok {
-		if err := rs.Reconcile(); err != nil {
-			return state, fmt.Errorf("flowy: state reconcile: %w", err)
-		}
-		return state, nil
+// reconcileResume invokes ResumeReconciler when state implements it.
+// Caller must assign the returned state back; when T is a struct, mutations apply
+// to a local copy inside this helper until reassigned.
+func reconcileResume[T any](state T, currentPtr ExecutionPointer) (T, ExecutionPointer, error) {
+	rr, ok := any(state).(ResumeReconciler)
+	if !ok {
+		rr, ok = any(&state).(ResumeReconciler)
 	}
-	if rs, ok := any(state).(ResumableState); ok {
-		if err := rs.Reconcile(); err != nil {
-			return state, fmt.Errorf("flowy: state reconcile: %w", err)
-		}
+	if !ok {
+		return state, currentPtr, nil
 	}
-	return state, nil
+	newPtr, err := rr.ReconcileResume(currentPtr)
+	if err != nil {
+		return state, "", fmt.Errorf("%w: %w", ErrResumeReconcileFailed, err)
+	}
+	return state, newPtr, nil
 }
 
 func mergeRunMetadataInput(meta *RunMetadata, input RunMetadataInput) {

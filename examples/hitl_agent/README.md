@@ -12,7 +12,7 @@
 1. Узел `payment` возвращает `flowy.Suspend("waiting_for_user_approval")`.
 2. Runtime автоматически вызывает `Checkpointer.Save`.
 3. HTTP/UI слой вызывает `Runner.Resume(..., flowy.WithStateOverlay(approve))`.
-4. Граф продолжает с узла из snapshot (`payment`) с обновлённым state.
+4. По умолчанию граф продолжает с `ExecutionPointer` из snapshot (`payment`) с обновлённым state. Если overlay делает wait-узел stale (например, пришёл новый маршрут вместо ожидания ответа), реализуйте `ResumeReconciler.ReconcileResume` и верните другой узел — см. `examples/conditional_routing` (сценарий rewind) и `runner_resume_overlay_test.go`.
 
 ## Запуск
 

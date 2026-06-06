@@ -36,54 +36,6 @@ func TestLegacyNextDirectiveFails(t *testing.T) {
 	}
 }
 
-func TestResumeOverlayThenReconcileOrder(t *testing.T) {
-	t.Parallel()
-
-	b := NewGraph[reconcileOverlayState, NoEffect](func(cur, upd reconcileOverlayState) reconcileOverlayState {
-		cur.Base = upd.Base
-		if upd.Overlay != "" {
-			cur.Overlay = upd.Overlay
-		}
-		return cur
-	})
-	b.AddNode("wait", func(_ context.Context, s reconcileOverlayState) (reconcileOverlayState, Directive, error) {
-		return s, Suspend("input"), nil
-	})
-	b.AllowNoOutgoingRoute("wait")
-	b.SetEntryPoint("wait")
-	g, err := b.Compile()
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	cp := newMemoryCP[reconcileOverlayState, NoEffect]()
-	runner := g.NewRunner(cp)
-	_, err = runner.Start(context.Background(), "th", reconcileOverlayState{Base: "from-checkpoint"})
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	_, err = runner.Resume(context.Background(), "th",
-		WithStateOverlay[reconcileOverlayState, NoEffect](
-			reconcileOverlayState{Overlay: "user-input"},
-			func(base, overlay reconcileOverlayState) reconcileOverlayState {
-				base.Overlay = overlay.Overlay
-				return base
-			},
-		),
-	)
-	if err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	snap, loadErr := cp.Load(context.Background(), "th")
-	if loadErr != nil {
-		t.Fatalf("load: %v", loadErr)
-	}
-	if snap.State.seenBase != "from-checkpoint" || snap.State.seenOver != "user-input" {
-		t.Fatalf("overlay before reconcile: %+v", snap.State)
-	}
-}
-
 type reconcileOverlayState struct {
 	Base     string
 	Overlay  string
@@ -92,14 +44,14 @@ type reconcileOverlayState struct {
 	seenOver string
 }
 
-func (s *reconcileOverlayState) Reconcile() error {
+func (s *reconcileOverlayState) ReconcileResume(currentPtr ExecutionPointer) (ExecutionPointer, error) {
 	s.seenBase = s.Base
 	s.seenOver = s.Overlay
 	s.Derived = s.Base + ":" + s.Overlay
-	return nil
+	return currentPtr, nil
 }
 
-func TestResumableStateReconcileAfterOverlay(t *testing.T) {
+func TestResumeReconcilerAfterOverlay(t *testing.T) {
 	t.Parallel()
 
 	b := NewGraph[reconcileOverlayState, NoEffect](func(cur, upd reconcileOverlayState) reconcileOverlayState {
@@ -1361,6 +1313,8 @@ func TestRuntimeRetryWithoutAddRetryRoute(t *testing.T) {
 	}
 }
 
+// TestResumeUsesSnapshotExecutionPointer covers the default resume path without ResumeReconciler.
+// Complements TestResumeReconcilerPointerRewind in runner_resume_overlay_test.go.
 func TestResumeUsesSnapshotExecutionPointer(t *testing.T) {
 	t.Parallel()
 
@@ -1509,68 +1463,136 @@ func TestResumePreservesBudgetUnlessOverridden(t *testing.T) {
 	}
 }
 
-type valueReconcileState struct {
-	Base    string
-	Derived string
-}
-
-func (s valueReconcileState) Reconcile() error {
-	s.Derived = "lost:" + s.Base //nolint:govet,staticcheck // value receiver: write intentionally discarded
-	return nil
-}
-
-func TestResumableStateValueReceiverDoesNotMutate(t *testing.T) {
-	t.Parallel()
-
-	b := NewGraph[valueReconcileState, NoEffect](
-		func(_ valueReconcileState, u valueReconcileState) valueReconcileState {
-			return u
-		},
-	)
-	b.AddNode("wait", func(_ context.Context, s valueReconcileState) (valueReconcileState, Directive, error) {
-		return s, Suspend("hold"), nil
-	})
-	b.SetEntryPoint("wait")
-	b.AllowNoOutgoingRoute("wait")
-	g, _ := b.Compile()
-	cp := newMemoryCP[valueReconcileState, NoEffect]()
-	runner := g.NewRunner(cp)
-	_, _ = runner.Start(context.Background(), "val-th", valueReconcileState{Base: "x"})
-	_, err := runner.Resume(context.Background(), "val-th")
-	if err != nil {
-		t.Fatalf("resume: %v", err)
-	}
-	if cp.last.State.Derived != "" {
-		t.Fatalf("value-receiver Reconcile must not mutate persisted state, got %q", cp.last.State.Derived)
-	}
-}
-
-type failReconcileState struct {
+type noReconcilerState struct {
 	Base string
 }
 
-func (s *failReconcileState) Reconcile() error {
-	return errors.New("reconcile failed")
-}
-
-func TestResumableStateReconcileError(t *testing.T) {
+func TestResumeWithoutReconcilerSucceeds(t *testing.T) {
 	t.Parallel()
 
-	b := NewGraph[failReconcileState, NoEffect](func(_ failReconcileState, u failReconcileState) failReconcileState {
+	b := NewGraph[noReconcilerState, NoEffect](func(_ noReconcilerState, u noReconcilerState) noReconcilerState {
 		return u
 	})
-	b.AddNode("wait", func(_ context.Context, s failReconcileState) (failReconcileState, Directive, error) {
+	b.AddNode("wait", func(_ context.Context, s noReconcilerState) (noReconcilerState, Directive, error) {
 		return s, Suspend("hold"), nil
 	})
 	b.SetEntryPoint("wait")
 	b.AllowNoOutgoingRoute("wait")
-	g, _ := b.Compile()
-	cp := newMemoryCP[failReconcileState, NoEffect]()
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	cp := newMemoryCP[noReconcilerState, NoEffect]()
 	runner := g.NewRunner(cp)
-	_, _ = runner.Start(context.Background(), "rec-err-th", failReconcileState{})
-	_, err := runner.Resume(context.Background(), "rec-err-th")
-	if err == nil || !strings.Contains(err.Error(), "reconcile failed") {
-		t.Fatalf("expected reconcile error, got %v", err)
+	_, err = runner.Start(context.Background(), "no-rec-th", noReconcilerState{Base: "x"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	_, err = runner.Resume(context.Background(), "no-rec-th")
+	if err != nil {
+		t.Fatalf("resume without reconciler should succeed: %v", err)
+	}
+}
+
+type reconcileErrState struct {
+	msg string
+}
+
+func (s *reconcileErrState) ReconcileResume(_ ExecutionPointer) (ExecutionPointer, error) {
+	return "", errors.New(s.msg)
+}
+
+func TestResumeReconcileError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name   string
+		thread string
+		msg    string
+	}{
+		{name: "reconcile_failed", thread: "rec-err-th", msg: "reconcile failed"},
+		{name: "rewind_failed", thread: "rewind-err-th", msg: "rewind failed"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := NewGraph[reconcileErrState, NoEffect](
+				func(_ reconcileErrState, u reconcileErrState) reconcileErrState {
+					return u
+				},
+			)
+			b.AddNode("wait", func(_ context.Context, s reconcileErrState) (reconcileErrState, Directive, error) {
+				return s, Suspend("hold"), nil
+			})
+			b.SetEntryPoint("wait")
+			b.AllowNoOutgoingRoute("wait")
+			g, err := b.Compile()
+			if err != nil {
+				t.Fatalf("compile: %v", err)
+			}
+			cp := newMemoryCP[reconcileErrState, NoEffect]()
+			runner := g.NewRunner(cp)
+			_, err = runner.Start(context.Background(), tc.thread, reconcileErrState{msg: tc.msg})
+			if err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			_, err = runner.Resume(context.Background(), tc.thread)
+			if err == nil || !errors.Is(err, ErrResumeReconcileFailed) ||
+				!strings.Contains(err.Error(), tc.msg) {
+				t.Fatalf("expected wrapped reconcile error with %q, got %v", tc.msg, err)
+			}
+		})
+	}
+}
+
+type valueReceiverReconcileState struct {
+	Derived string
+}
+
+func (s valueReceiverReconcileState) ReconcileResume(currentPtr ExecutionPointer) (ExecutionPointer, error) {
+	s.Derived = "mutated-on-copy" //nolint:govet,staticcheck // value receiver mutates a copy only
+	return currentPtr, nil
+}
+
+func TestResumeReconcilerValueReceiverDoesNotPropagateState(t *testing.T) {
+	t.Parallel()
+
+	b := NewGraph[valueReceiverReconcileState, NoEffect](
+		func(_ valueReceiverReconcileState, u valueReceiverReconcileState) valueReceiverReconcileState {
+			return u
+		},
+	)
+	b.AddNode("wait", func(_ context.Context, s valueReceiverReconcileState) (
+		valueReceiverReconcileState, Directive, error,
+	) {
+		return s, Suspend("hold"), nil
+	})
+	b.AllowNoOutgoingRoute("wait")
+	b.SetEntryPoint("wait")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[valueReceiverReconcileState, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "val-rec-th", valueReceiverReconcileState{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	_, err = runner.Resume(context.Background(), "val-rec-th")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	snap, err := cp.Load(context.Background(), "val-rec-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if snap.State.Derived != "" {
+		t.Fatalf("value receiver must not propagate state mutations; got Derived=%q", snap.State.Derived)
 	}
 }
 

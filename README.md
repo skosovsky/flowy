@@ -29,7 +29,7 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 | `Effect(base, any)`               | `Effect[E](base, payload E)`                                             |
 | `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                   |
 | string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                          |
-| `WithResumeReconciler`            | `ResumableState.Reconcile()` + conditional edges                         |
+| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                    |
 | ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                  |
 | Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`               |
 | Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)` |
@@ -59,8 +59,26 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 3. `WithStateOverlay` (optional, deterministic merge)
 4. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
 5. `WithRunMetadata` merge (optional)
-6. `ResumableState.Reconcile()` (optional, если state реализует интерфейс)
-7. `execute` с сохранённого `ExecutionPointer`
+6. `ResumeReconciler.ReconcileResume()` (optional pointer rewind после overlay)
+7. validate active `ExecutionPointer` (non-empty, узел в графе)
+8. `execute` с активного (post-reconcile) `ExecutionPointer`
+
+`WithInvariantValidator` — in-loop в `execute`, не в `prepareResume`.
+
+### Pointer rewind
+
+Когда overlay делает сохранённый wait-узел stale (например, HITL: вместо ответа пользователя пришёл новый маршрут), реализуйте `ResumeReconciler` на state и верните другой `ExecutionPointer` из `ReconcileResume`. Движок валидирует, что узел существует в графе, и стартует execute с возвращённого pointer.
+
+```go
+func (s *MyState) ReconcileResume(currentPtr flowy.ExecutionPointer) (flowy.ExecutionPointer, error) {
+    if currentPtr == "wait_user" && s.RouteReady {
+        return "router", nil
+    }
+    return currentPtr, nil
+}
+```
+
+См. `examples/conditional_routing` (сценарий 4 — rewind), `examples/hitl_agent` (default overlay resume без rewind) и unit-тест `TestResumeReconcilerPointerRewind` в `runner_resume_overlay_test.go`.
 
 `DeleteIfIdle` и delete-on-success применяются **после** `execute` и `releaseLease` (`postRunCleanup`). `Prune` (retention) — **in-loop** при suspend/handoff/cancel, до release.
 Prod: paired `adapters/checkpointer/*` + `adapters/lease/*` с одним store/prefix.
@@ -93,6 +111,7 @@ runner := graph.NewRunnerWithOptions(cp, []flowy.RunnerOption[State, Effect]{
     flowy.WithLeaseManager[State, Effect](leaseMgr),
 })
 
+// State may implement ResumeReconciler (pointer receiver when T is a struct).
 res, err := runner.Resume(ctx, threadID,
     flowy.WithBindings[State, Effect](bindings),
     flowy.WithStateOverlay[State, Effect](overlay, mergeFn),

@@ -17,8 +17,11 @@
 //  3. WithStateOverlay (optional)
 //  4. resetSegmentCounters (StepCount/Segment; BudgetCounts preserved)
 //  5. WithRunMetadata merge (optional)
-//  6. ResumableState.Reconcile (optional)
-//  7. execute from ExecutionPointer
+//  6. ResumeReconciler.ReconcileResume (optional pointer rewind)
+//  7. validate active ExecutionPointer (non-empty, node exists in graph)
+//  8. execute from active (post-reconcile) ExecutionPointer
+//
+// WithInvariantValidator runs in-loop during execute, not in prepareResume.
 //
 // DeleteIfIdle and delete-on-success run after execute and releaseLease
 // (postRunCleanup). Prune (retention) runs in-loop on suspend/handoff/cancel

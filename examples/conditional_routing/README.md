@@ -6,7 +6,8 @@
 
 1. **Cache miss** — `check_cache` → `heavy_llm` → `output`.
 2. **Cache hit** — `check_cache` → `output` (без LLM).
-3. **Late binding** — `Resume(..., WithStateOverlay(...))` добавляет `AllowedTools` до выполнения узлов.
+3. **Late binding** — overlay применяется до execute; `prepare` выполняется повторно с `AllowedTools` (без rewind). Для пропуска stale-узла — сценарий 4.
+4. **Pointer rewind** — suspend на `prepare`, overlay с `SkipPrepare=true`, `ReconcileResume("prepare")` → `check_cache` (узел `prepare` не выполняется повторно; `prepare_runs=1`).
 
 ## Запуск
 
@@ -15,9 +16,9 @@ cd examples/conditional_routing
 go run main.go
 ```
 
-## ResumableState.Reconcile
+## ResumeReconciler.ReconcileResume
 
-`agentState` реализует `ResumableState`: после overlay `Reconcile()` нормализует `AllowedTools` перед execute (см. `main.go`).
+`routeState` реализует `ResumeReconciler`: после overlay `ReconcileResume` нормализует `AllowedTools` и при `SkipPrepare` перематывает с `prepare` на `check_cache` (сценарий 4 в `main.go`).
 
 ## v2 routing
 

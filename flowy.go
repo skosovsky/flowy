@@ -182,9 +182,14 @@ type SegmentInfo struct {
 // ExecutionPointer is the persisted resume point (current graph node id).
 type ExecutionPointer string
 
-// ResumableState may reconcile derived fields after overlay merge and before execution.
-type ResumableState interface {
-	Reconcile() error
+// ResumeReconciler may adjust state and the resume execution pointer after overlay merge.
+// When T is a struct and ReconcileResume mutates state, implement on a pointer receiver;
+// the runner reassigns state from reconcileResume (see run_options.go).
+type ResumeReconciler interface {
+	// ReconcileResume is called after overlay merge and before node execution.
+	// Return currentPtr unchanged to keep the snapshot pointer, or a different
+	// ExecutionPointer to rewind execution (e.g. after overlay invalidates the saved node).
+	ReconcileResume(currentPtr ExecutionPointer) (ExecutionPointer, error)
 }
 
 // RunMetadataInput is injectable run metadata for a single Start/Resume/Stream invocation.
@@ -304,14 +309,16 @@ type Runner[T, E any] interface {
 
 // Sentinel errors for runner flow and validation.
 var (
-	ErrMaxStepsExceeded    = errors.New("flowy: max steps exceeded")
-	ErrThreadNotFound      = errors.New("flowy: thread snapshot not found")
-	ErrLegacyNext          = errors.New("flowy: Next(nodeID) was removed; use Completed() and graph edges")
-	ErrLeaseOwnerRequired  = errors.New("flowy: WithRunLease owner is required when LeaseManager is configured")
-	ErrLeaseLost           = errors.New("flowy: thread lease lost or expired")
-	ErrNoActiveExecution   = errors.New("flowy: no active execution to hand off")
-	ErrRetryBudgetExceeded = errors.New("flowy: per-node retry budget exceeded")
-	ErrInvalidSnapshot     = errors.New("flowy: snapshot has invalid or empty execution pointer")
+	ErrMaxStepsExceeded        = errors.New("flowy: max steps exceeded")
+	ErrThreadNotFound          = errors.New("flowy: thread snapshot not found")
+	ErrLegacyNext              = errors.New("flowy: Next(nodeID) was removed; use Completed() and graph edges")
+	ErrLeaseOwnerRequired      = errors.New("flowy: WithRunLease owner is required when LeaseManager is configured")
+	ErrLeaseLost               = errors.New("flowy: thread lease lost or expired")
+	ErrNoActiveExecution       = errors.New("flowy: no active execution to hand off")
+	ErrRetryBudgetExceeded     = errors.New("flowy: per-node retry budget exceeded")
+	ErrInvalidSnapshot         = errors.New("flowy: snapshot has invalid or empty execution pointer")
+	ErrResumeReconcileFailed   = errors.New("flowy: resume reconcile failed")
+	ErrResumeStartNodeNotFound = errors.New("flowy: resume start node not found")
 )
 
 // EndNode is a terminal graph target for AddEdge/AddConditionalEdge.
