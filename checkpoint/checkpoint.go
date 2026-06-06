@@ -92,7 +92,7 @@ func EncodeStoredSnapshot[T, E any](
 	return StoredSnapshot{
 		ThreadID:     snapshot.ThreadID,
 		Revision:     snapshot.Revision,
-		NodeID:       snapshot.NodeID,
+		NodeID:       string(snapshot.ExecutionPointer),
 		StatePayload: statePayload,
 		RunMeta:      metaPayload,
 		Effects:      effectsPayload,
@@ -121,11 +121,11 @@ func DecodeStoredSnapshot[T, E any](
 	}
 
 	return flowy.Snapshot[T, E]{
-		ThreadID: stored.ThreadID,
-		Revision: stored.Revision,
-		NodeID:   stored.NodeID,
-		State:    state,
-		RunMeta:  meta,
-		Effects:  effects,
+		ThreadID:         stored.ThreadID,
+		Revision:         stored.Revision,
+		ExecutionPointer: flowy.ExecutionPointer(stored.NodeID),
+		State:            state,
+		RunMeta:          meta,
+		Effects:          effects,
 	}, nil
 }

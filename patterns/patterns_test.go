@@ -20,6 +20,9 @@ func (memCP[T, E]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T,
 func (memCP[T, E]) Prune(context.Context, string, int) error { return nil }
 func (memCP[T, E]) Delete(context.Context, string) error     { return nil }
 
+// DeleteIfIdle is a test stub (no lease store).
+func (memCP[T, E]) DeleteIfIdle(context.Context, string) error { return nil }
+
 func TestBuildReActMaxSteps(t *testing.T) {
 	t.Parallel()
 	type state struct{ Pending bool }

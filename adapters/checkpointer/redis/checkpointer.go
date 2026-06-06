@@ -19,14 +19,18 @@ const defaultPrefix = "flowy"
 type Options struct {
 	Prefix string
 	TTL    time.Duration
+	// LeasePrefix is the Redis key prefix for lease records used by atomic DeleteIfIdle.
+	// Defaults to Prefix when empty. Lease keys: {LeasePrefix}:lease:{threadID}
+	LeasePrefix string
 }
 
 // Checkpointer stores snapshots in Redis list history (latest at index 0).
 type Checkpointer[T, E any] struct {
-	client     goredis.Cmdable
-	prefix     string
-	ttl        time.Duration
-	serializer flowy.StateSerializer[T]
+	client      goredis.Cmdable
+	prefix      string
+	leasePrefix string
+	ttl         time.Duration
+	serializer  flowy.StateSerializer[T]
 }
 
 // NewCheckpointer creates a Redis-backed checkpointer.
@@ -39,11 +43,16 @@ func NewCheckpointer[T, E any](
 	if prefix == "" {
 		prefix = defaultPrefix
 	}
+	leasePrefix := opts.LeasePrefix
+	if leasePrefix == "" {
+		leasePrefix = prefix
+	}
 	return &Checkpointer[T, E]{
-		client:     client,
-		prefix:     prefix,
-		ttl:        opts.TTL,
-		serializer: serializer,
+		client:      client,
+		prefix:      prefix,
+		leasePrefix: leasePrefix,
+		ttl:         opts.TTL,
+		serializer:  serializer,
 	}
 }
 
@@ -113,6 +122,30 @@ func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error 
 	return c.client.Del(ctx, c.historyKey(threadID)).Err()
 }
 
+const deleteIfIdleScript = `
+if redis.call('exists', KEYS[2]) == 1 then
+  return 0
+end
+return redis.call('del', KEYS[1])
+`
+
+func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	result, err := c.client.Eval(ctx, deleteIfIdleScript, []string{
+		c.historyKey(threadID),
+		c.leaseKey(threadID),
+	}).Int64()
+	if err != nil {
+		return err
+	}
+	if result == 0 {
+		held, existsErr := c.client.Exists(ctx, c.leaseKey(threadID)).Result()
+		if existsErr == nil && held > 0 {
+			return flowy.ErrThreadBusy
+		}
+	}
+	return nil
+}
+
 func (c *Checkpointer[T, E]) decode(raw string) (flowy.Snapshot[T, E], error) {
 	var stored checkpoint.StoredSnapshot
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
@@ -129,4 +162,12 @@ func (c *Checkpointer[T, E]) historyKey(threadID string) string {
 	return fmt.Sprintf("%s:thread:%s:history", c.prefix, threadID)
 }
 
+func (c *Checkpointer[T, E]) leaseKey(threadID string) string {
+	return fmt.Sprintf("%s:lease:%s", c.leasePrefix, threadID)
+}
+
+// NativeDeleteIfIdle marks atomic delete-if-idle in Redis storage.
+func (*Checkpointer[T, E]) NativeDeleteIfIdle() {}
+
 var _ flowy.Checkpointer[any, any] = (*Checkpointer[any, any])(nil)
+var _ flowy.NativeDeleteIfIdleCheckpointer = (*Checkpointer[any, any])(nil)

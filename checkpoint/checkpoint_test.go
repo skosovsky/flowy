@@ -14,10 +14,10 @@ type state struct {
 func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	t.Parallel()
 	snapshot := flowy.Snapshot[state, string]{
-		ThreadID: "thread-1",
-		Revision: 2,
-		NodeID:   "n1",
-		State:    state{Value: "ok"},
+		ThreadID:         "thread-1",
+		Revision:         2,
+		ExecutionPointer: "n1",
+		State:            state{Value: "ok"},
 		RunMeta: flowy.RunMetadata{
 			SegmentStartTime: time.Now().UTC(),
 			RetryCounts:      map[string]int{"n1": 1},
@@ -35,7 +35,7 @@ func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if decoded.ThreadID != snapshot.ThreadID || decoded.NodeID != snapshot.NodeID {
+	if decoded.ThreadID != snapshot.ThreadID || decoded.ExecutionPointer != snapshot.ExecutionPointer {
 		t.Fatalf("decoded snapshot mismatch: %+v", decoded)
 	}
 	if decoded.Revision != 2 {

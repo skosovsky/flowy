@@ -29,6 +29,9 @@ var getHistorySQL string
 //go:embed sql/prune.sql
 var pruneSQL string
 
+//go:embed sql/delete_if_idle.sql
+var deleteIfIdleSQL string
+
 // DB captures the pgx methods used by the adapter.
 type DB interface {
 	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
@@ -130,11 +133,30 @@ func (c *Checkpointer[T, E]) Prune(ctx context.Context, threadID string, retainC
 	return err
 }
 
+// Delete removes checkpoints unconditionally. Prefer DeleteIfIdle for runner policies.
 func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error {
 	_, err := c.db.Exec(ctx, "DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id", pgx.NamedArgs{
 		"thread_id": threadID,
 	})
 	return err
+}
+
+func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	tag, err := c.db.Exec(ctx, deleteIfIdleSQL, pgx.NamedArgs{"thread_id": threadID})
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		var held bool
+		row := c.db.QueryRow(ctx,
+			"SELECT EXISTS (SELECT 1 FROM flowy_leases WHERE thread_id = @thread_id AND expires_at > NOW())",
+			pgx.NamedArgs{"thread_id": threadID},
+		)
+		if scanErr := row.Scan(&held); scanErr == nil && held {
+			return flowy.ErrThreadBusy
+		}
+	}
+	return nil
 }
 
 func scanStoredSnapshot(row interface{ Scan(dest ...any) error }) (checkpoint.StoredSnapshot, error) {
@@ -157,4 +179,8 @@ func scanStoredSnapshot(row interface{ Scan(dest ...any) error }) (checkpoint.St
 	return stored, nil
 }
 
+// NativeDeleteIfIdle marks atomic delete-if-idle in PostgreSQL storage.
+func (*Checkpointer[T, E]) NativeDeleteIfIdle() {}
+
 var _ flowy.Checkpointer[any, any] = (*Checkpointer[any, any])(nil)
+var _ flowy.NativeDeleteIfIdleCheckpointer = (*Checkpointer[any, any])(nil)

@@ -3,8 +3,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"slices"
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/testutil"
@@ -14,6 +16,16 @@ type routeState struct {
 	Query        string
 	Answer       string
 	AllowedTools []string
+}
+
+func (s *routeState) Reconcile() error {
+	if slices.Contains(s.AllowedTools, "") {
+		return errors.New("empty tool name")
+	}
+	if len(s.AllowedTools) > 0 {
+		s.AllowedTools = append([]string(nil), s.AllowedTools...)
+	}
+	return nil
 }
 
 func main() {

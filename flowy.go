@@ -179,6 +179,20 @@ type SegmentInfo struct {
 	EndReason SegmentEndReason `json:"end_reason,omitempty"`
 }
 
+// ExecutionPointer is the persisted resume point (current graph node id).
+type ExecutionPointer string
+
+// ResumableState may reconcile derived fields after overlay merge and before execution.
+type ResumableState interface {
+	Reconcile() error
+}
+
+// RunMetadataInput is injectable run metadata for a single Start/Resume/Stream invocation.
+type RunMetadataInput struct {
+	BudgetCounts     map[string]int
+	TelemetryContext map[string]string
+}
+
 // RunMetadata contains internal runner counters.
 type RunMetadata struct {
 	Segment          SegmentInfo       `json:"segment"`
@@ -191,12 +205,12 @@ type RunMetadata struct {
 
 // Snapshot is a persisted run snapshot (bindings are never stored).
 type Snapshot[T, E any] struct {
-	ThreadID string
-	NodeID   string
-	Revision int
-	State    T
-	RunMeta  RunMetadata
-	Effects  []E
+	ThreadID         string
+	ExecutionPointer ExecutionPointer
+	Revision         int
+	State            T
+	RunMeta          RunMetadata
+	Effects          []E
 }
 
 // Checkpointer persists and restores snapshots.
@@ -205,7 +219,22 @@ type Checkpointer[T, E any] interface {
 	Load(ctx context.Context, threadID string) (Snapshot[T, E], error)
 	GetHistory(ctx context.Context, threadID string, limit int) ([]Snapshot[T, E], error)
 	Prune(ctx context.Context, threadID string, retainCount int) error
+	// Delete unconditionally removes snapshots. Prefer DeleteIfIdle for runner retention policies.
 	Delete(ctx context.Context, threadID string) error
+	// DeleteIfIdle removes snapshots only when the thread has no active lease (see ErrThreadBusy).
+	DeleteIfIdle(ctx context.Context, threadID string) error
+}
+
+// NativeDeleteIfIdleCheckpointer marks adapters with atomic DeleteIfIdle in shared storage.
+// Runner auto-wraps with LeaseGuard only when this marker is absent.
+type NativeDeleteIfIdleCheckpointer interface {
+	NativeDeleteIfIdle()
+}
+
+// NativeLeaseManager marks lease adapters that persist into the same store as native checkpointers.
+// Required when using NativeDeleteIfIdleCheckpointer with WithLeaseManager (postgres/redis pairs).
+type NativeLeaseManager interface {
+	NativeLeaseManager()
 }
 
 // StateSerializer converts state to and from bytes.
@@ -222,12 +251,12 @@ type StateInterceptor[T any] interface {
 
 // RunResult is the final state returned to the application.
 type RunResult[T, E any] struct {
-	State   T
-	Status  RunStatus
-	Effects []E
-	RunMeta RunMetadata
-	NodeID  string
-	Reason  string
+	State            T
+	Status           RunStatus
+	Effects          []E
+	RunMeta          RunMetadata
+	ExecutionPointer ExecutionPointer
+	Reason           string
 }
 
 type EventType string
@@ -244,14 +273,14 @@ const (
 
 // RunEvent represents a single lifecycle event with typed effect payload.
 type RunEvent[T, E any] struct {
-	Type      EventType
-	NodeID    string
-	State     T
-	Effect    E
-	HasEffect bool
-	Error     error
-	Duration  time.Duration
-	Reason    string // terminal lifecycle reason (suspend, handoff, context cancel)
+	Type             EventType
+	ExecutionPointer ExecutionPointer
+	State            T
+	Effect           E
+	HasEffect        bool
+	Error            error
+	Duration         time.Duration
+	Reason           string // terminal lifecycle reason (suspend, handoff, context cancel)
 }
 
 // StreamHandle controls the lifecycle of asynchronous graph streaming.
@@ -282,6 +311,7 @@ var (
 	ErrLeaseLost           = errors.New("flowy: thread lease lost or expired")
 	ErrNoActiveExecution   = errors.New("flowy: no active execution to hand off")
 	ErrRetryBudgetExceeded = errors.New("flowy: per-node retry budget exceeded")
+	ErrInvalidSnapshot     = errors.New("flowy: snapshot has invalid or empty execution pointer")
 )
 
 // EndNode is a terminal graph target for AddEdge/AddConditionalEdge.

@@ -3,14 +3,13 @@ package flowy
 import (
 	"context"
 	"errors"
+	"fmt"
+	"maps"
 	"time"
 )
 
 // StateMerger merges snapshot base state with invocation overlay deterministically.
 type StateMerger[T any] func(base, overlay T) T
-
-// ResumeReconciler remaps resume start node after overlay merge.
-type ResumeReconciler[T, E any] func(snapshot Snapshot[T, E]) (startNode string, err error)
 
 // InvariantValidator validates state after reducer and before checkpoint save.
 type InvariantValidator[T any] func(state T) error
@@ -24,8 +23,8 @@ type runInvocationOptions[T, E any] struct {
 	bindings           *RunBindings
 	overlay            *T
 	overlayMerger      StateMerger[T]
-	reconciler         ResumeReconciler[T, E]
 	invariantValidator InvariantValidator[T]
+	runMetadata        RunMetadataInput
 	leaseOwner         string
 	leaseTTL           time.Duration
 }
@@ -55,10 +54,10 @@ func WithStateOverlay[T, E any](overlay T, merger StateMerger[T]) RunOption[T, E
 // ErrOverlayMergerRequired is returned when overlay is set without a merger.
 var ErrOverlayMergerRequired = errors.New("flowy: WithStateOverlay requires a non-nil merger")
 
-// WithResumeReconciler remaps start node after overlay merge.
-func WithResumeReconciler[T, E any](fn ResumeReconciler[T, E]) RunOption[T, E] {
+// WithRunMetadata merges invocation metadata into run metadata before execution.
+func WithRunMetadata[T, E any](input RunMetadataInput) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
-		opts.reconciler = fn
+		opts.runMetadata = input
 	})
 }
 
@@ -112,4 +111,34 @@ func withRunMetadata(ctx context.Context, meta *RunMetadata) context.Context {
 func runMetadataFromContext(ctx context.Context) (*RunMetadata, bool) {
 	meta, ok := ctx.Value(runMetadataContextKey{}).(*RunMetadata)
 	return meta, ok
+}
+
+func reconcileState[T any](state T) (T, error) {
+	if rs, ok := any(&state).(ResumableState); ok {
+		if err := rs.Reconcile(); err != nil {
+			return state, fmt.Errorf("flowy: state reconcile: %w", err)
+		}
+		return state, nil
+	}
+	if rs, ok := any(state).(ResumableState); ok {
+		if err := rs.Reconcile(); err != nil {
+			return state, fmt.Errorf("flowy: state reconcile: %w", err)
+		}
+	}
+	return state, nil
+}
+
+func mergeRunMetadataInput(meta *RunMetadata, input RunMetadataInput) {
+	if len(input.BudgetCounts) > 0 {
+		if meta.BudgetCounts == nil {
+			meta.BudgetCounts = map[string]int{}
+		}
+		maps.Copy(meta.BudgetCounts, input.BudgetCounts)
+	}
+	if len(input.TelemetryContext) > 0 {
+		if meta.TelemetryContext == nil {
+			meta.TelemetryContext = map[string]string{}
+		}
+		maps.Copy(meta.TelemetryContext, input.TelemetryContext)
+	}
 }

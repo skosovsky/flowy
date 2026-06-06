@@ -41,7 +41,7 @@ func main() {
 		fmt.Printf(
 			"event=%s node=%s has_effect=%v effect=%v err=%v\n",
 			event.Type,
-			event.NodeID,
+			event.ExecutionPointer,
 			event.HasEffect,
 			event.Effect,
 			event.Error,

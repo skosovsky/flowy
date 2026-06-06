@@ -19,6 +19,9 @@ type LeaseManager interface {
 	Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) error
 	Renew(ctx context.Context, threadID, owner string, ttl time.Duration) error
 	Release(ctx context.Context, threadID, owner string) error
+	IsHeld(ctx context.Context, threadID string) (bool, error)
+	// Holder returns the active lease owner when held.
+	Holder(ctx context.Context, threadID string) (owner string, held bool, err error)
 }
 
 type leaseRecord struct {
@@ -83,6 +86,22 @@ func (m *MemoryLeaseManager) Renew(_ context.Context, threadID, owner string, tt
 	rec.expiresAt = now.Add(ttl)
 	m.leases[threadID] = rec
 	return nil
+}
+
+func (m *MemoryLeaseManager) IsHeld(ctx context.Context, threadID string) (bool, error) {
+	_, held, err := m.Holder(ctx, threadID)
+	return held, err
+}
+
+func (m *MemoryLeaseManager) Holder(_ context.Context, threadID string) (string, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	rec, ok := m.leases[threadID]
+	if !ok || !rec.expiresAt.After(m.now()) {
+		return "", false, nil
+	}
+	return rec.owner, true, nil
 }
 
 func (m *MemoryLeaseManager) Release(_ context.Context, threadID, owner string) error {

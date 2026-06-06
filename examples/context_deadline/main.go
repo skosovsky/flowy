@@ -57,7 +57,12 @@ func run() error {
 	if loadErr != nil {
 		return loadErr
 	}
-	fmt.Printf("checkpoint saved node=%s ticks=%d revision=%d\n", snap.NodeID, snap.State.Ticks, snap.Revision)
+	fmt.Printf(
+		"checkpoint saved node=%s ticks=%d revision=%d\n",
+		snap.ExecutionPointer,
+		snap.State.Ticks,
+		snap.Revision,
+	)
 	return nil
 }
 

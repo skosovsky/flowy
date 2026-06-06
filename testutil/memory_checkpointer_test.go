@@ -23,12 +23,12 @@ func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, int]{
-				ThreadID: "thread-1",
-				Revision: i,
-				NodeID:   "node",
-				State:    memoryState{Value: i},
-				RunMeta:  flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
-				Effects:  []int{i},
+				ThreadID:         "thread-1",
+				Revision:         i,
+				ExecutionPointer: "node",
+				State:            memoryState{Value: i},
+				RunMeta:          flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
+				Effects:          []int{i},
 			})
 		}(i)
 	}
@@ -56,10 +56,10 @@ func TestMemoryCheckpointerPruneRetainsLatestN(t *testing.T) {
 	cp := NewMemoryCheckpointer[memoryState, flowy.NoEffect]()
 	for i := 1; i <= 4; i++ {
 		_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, flowy.NoEffect]{
-			ThreadID: "thread-2",
-			Revision: i,
-			NodeID:   "node",
-			State:    memoryState{Value: i},
+			ThreadID:         "thread-2",
+			Revision:         i,
+			ExecutionPointer: "node",
+			State:            memoryState{Value: i},
 		})
 	}
 

@@ -15,6 +15,10 @@ cd examples/conditional_routing
 go run main.go
 ```
 
+## ResumableState.Reconcile
+
+`agentState` реализует `ResumableState`: после overlay `Reconcile()` нормализует `AllowedTools` перед execute (см. `main.go`).
+
 ## v2 routing
 
 | Старый подход                                 | v2                                                           |

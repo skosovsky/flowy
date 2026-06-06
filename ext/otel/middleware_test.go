@@ -122,6 +122,9 @@ func (newCP[T, E]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T,
 func (newCP[T, E]) Prune(context.Context, string, int) error { return nil }
 func (newCP[T, E]) Delete(context.Context, string) error     { return nil }
 
+// DeleteIfIdle is a test stub (no persistence).
+func (newCP[T, E]) DeleteIfIdle(context.Context, string) error { return nil }
+
 func hasAttr(attrs []attribute.KeyValue, key, value string) bool {
 	for _, attr := range attrs {
 		if string(attr.Key) == key && attr.Value.AsString() == value {

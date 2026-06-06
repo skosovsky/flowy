@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 )
@@ -25,6 +26,7 @@ type graphRunner[T, E any] struct {
 	checkpointer Checkpointer[T, E]
 	interceptors []StateInterceptor[T]
 	leaseManager LeaseManager
+	logger       *slog.Logger
 	sessions     sync.Map // threadID -> *runSession
 }
 
@@ -81,11 +83,20 @@ func (g *Graph[T, E]) NewRunnerWithOptions(
 		checkpointer: checkpointer,
 		interceptors: append([]StateInterceptor[T](nil), interceptors...),
 		leaseManager: nil,
+		logger:       slog.Default(),
 		sessions:     sync.Map{},
 	}
 	for _, opt := range runnerOpts {
 		if opt != nil {
 			opt(r)
+		}
+	}
+	if r.leaseManager != nil && r.checkpointer != nil {
+		type leaseGuarded interface{ isLeaseGuardCheckpointer() }
+		if _, guarded := r.checkpointer.(leaseGuarded); !guarded {
+			if _, native := r.checkpointer.(NativeDeleteIfIdleCheckpointer); !native {
+				r.checkpointer = NewLeaseGuardCheckpointer(r.checkpointer, r.leaseManager)
+			}
 		}
 	}
 	return r
@@ -101,11 +112,13 @@ func (r *graphRunner[T, E]) Start(
 	if err := r.acquireLease(ctx, threadID, inv); err != nil {
 		return nil, err
 	}
-	defer func() { _ = r.releaseLease(context.WithoutCancel(ctx), threadID, inv) }()
 
 	meta := newRunMetadata()
+	mergeRunMetadataInput(&meta, inv.runMetadata)
 	runCtx := r.attachInvocation(ctx, inv, &meta)
-	return r.execute(runCtx, threadID, r.graph.entryPoint, initialState, meta, nil, 0, nil, inv)
+	result, err := r.execute(runCtx, threadID, r.graph.entryPoint, initialState, meta, nil, 0, nil, inv)
+	r.postRunCleanup(context.WithoutCancel(ctx), threadID, inv, result)
+	return result, err
 }
 
 func (r *graphRunner[T, E]) Resume(
@@ -120,14 +133,20 @@ func (r *graphRunner[T, E]) Resume(
 	if err := r.acquireLease(ctx, threadID, inv); err != nil {
 		return nil, err
 	}
-	defer func() { _ = r.releaseLease(context.WithoutCancel(ctx), threadID, inv) }()
 
 	startNode, state, meta, effects, revision, err := r.prepareResume(ctx, threadID, inv)
 	if err != nil {
+		r.logReleaseLeaseError(
+			context.WithoutCancel(ctx),
+			threadID,
+			r.releaseLease(context.WithoutCancel(ctx), threadID, inv),
+		)
 		return nil, err
 	}
 	runCtx := injectTelemetryContext(r.attachInvocation(ctx, inv, &meta), meta.TelemetryContext)
-	return r.execute(runCtx, threadID, startNode, state, meta, effects, revision, nil, inv)
+	result, runErr := r.execute(runCtx, threadID, startNode, state, meta, effects, revision, nil, inv)
+	r.postRunCleanup(context.WithoutCancel(ctx), threadID, inv, result)
+	return result, runErr
 }
 
 func (r *graphRunner[T, E]) Stream(
@@ -141,10 +160,11 @@ func (r *graphRunner[T, E]) Stream(
 		return nil, err
 	}
 	meta := newRunMetadata()
+	mergeRunMetadataInput(&meta, inv.runMetadata)
 	runCtx := r.attachInvocation(ctx, inv, &meta)
 	return r.startStream(runCtx, func(sink eventSink[T, E]) error {
-		defer func() { _ = r.releaseLease(context.WithoutCancel(runCtx), threadID, inv) }()
-		_, err := r.execute(runCtx, threadID, r.graph.entryPoint, initialState, meta, nil, 0, sink, inv)
+		result, err := r.execute(runCtx, threadID, r.graph.entryPoint, initialState, meta, nil, 0, sink, inv)
+		r.postRunCleanup(context.WithoutCancel(runCtx), threadID, inv, result)
 		return err
 	}), nil
 }
@@ -163,14 +183,18 @@ func (r *graphRunner[T, E]) StreamResume(
 	}
 	startNode, state, meta, effects, revision, err := r.prepareResume(ctx, threadID, inv)
 	if err != nil {
-		_ = r.releaseLease(context.WithoutCancel(ctx), threadID, inv)
+		r.logReleaseLeaseError(
+			context.WithoutCancel(ctx),
+			threadID,
+			r.releaseLease(context.WithoutCancel(ctx), threadID, inv),
+		)
 		return nil, err
 	}
 	runCtx := injectTelemetryContext(r.attachInvocation(ctx, inv, &meta), meta.TelemetryContext)
 	return r.startStream(runCtx, func(sink eventSink[T, E]) error {
-		defer func() { _ = r.releaseLease(context.WithoutCancel(runCtx), threadID, inv) }()
-		_, err := r.execute(runCtx, threadID, startNode, state, meta, effects, revision, sink, inv)
-		return err
+		result, runErr := r.execute(runCtx, threadID, startNode, state, meta, effects, revision, sink, inv)
+		r.postRunCleanup(context.WithoutCancel(runCtx), threadID, inv, result)
+		return runErr
 	}), nil
 }
 
@@ -258,6 +282,13 @@ func (r *graphRunner[T, E]) attachInvocation(
 func (r *graphRunner[T, E]) acquireLease(ctx context.Context, threadID string, inv runInvocationOptions[T, E]) error {
 	if r.leaseManager == nil {
 		return nil
+	}
+	if _, nativeCP := r.checkpointer.(NativeDeleteIfIdleCheckpointer); nativeCP {
+		if _, paired := r.leaseManager.(NativeLeaseManager); !paired {
+			return errors.New(
+				"flowy: native DeleteIfIdle checkpointer requires paired adapters/lease manager (postgres or redis)",
+			)
+		}
 	}
 	if inv.leaseOwner == "" {
 		return ErrLeaseOwnerRequired
@@ -393,28 +424,20 @@ func (r *graphRunner[T, E]) prepareResume(
 		meta.RetryCounts = map[string]int{}
 	}
 	resetSegmentCounters(&meta)
+	mergeRunMetadataInput(&meta, inv.runMetadata)
 
-	startNode := snapshot.NodeID
-
-	// 3) Reconcile resume point on merged state
-	if inv.reconciler != nil {
-		reconcileSnap := Snapshot[T, E]{
-			ThreadID: snapshot.ThreadID,
-			NodeID:   snapshot.NodeID,
-			Revision: snapshot.Revision,
-			State:    state,
-			RunMeta:  meta,
-			Effects:  append([]E(nil), snapshot.Effects...),
-		}
-		reconciled, reconcileErr := inv.reconciler(reconcileSnap)
-		if reconcileErr != nil {
-			var zero T
-			return "", zero, RunMetadata{}, nil, 0, reconcileErr
-		}
-		if reconciled != "" {
-			startNode = reconciled
-		}
+	var reconcileErr error
+	state, reconcileErr = reconcileState(state)
+	if reconcileErr != nil {
+		var zero T
+		return "", zero, RunMetadata{}, nil, 0, reconcileErr
 	}
+
+	if snapshot.ExecutionPointer == "" {
+		var zero T
+		return "", zero, RunMetadata{}, nil, 0, ErrInvalidSnapshot
+	}
+	startNode := string(snapshot.ExecutionPointer)
 
 	if _, ok := r.graph.nodes[startNode]; !ok {
 		var zero T
@@ -428,7 +451,9 @@ func resetSegmentCounters(meta *RunMetadata) {
 	meta.Segment = newSegmentInfo()
 	meta.SegmentStartTime = time.Now().UTC()
 	meta.StepCount = 0
-	meta.BudgetCounts = map[string]int{}
+	if meta.BudgetCounts == nil {
+		meta.BudgetCounts = map[string]int{}
+	}
 }
 
 //nolint:gocognit,funlen // central run loop; splitting obscures lifecycle transitions
@@ -489,6 +514,11 @@ func (r *graphRunner[T, E]) execute(
 				), ErrLeaseLost
 			}
 			if errors.Is(stepErr, context.Canceled) && runCtx.Err() != nil {
+				if errors.Is(context.Cause(runCtx), ErrHandoffRequested) {
+					return r.handleHandoff(
+						runCtx, threadID, current, step.state, step.meta, step.effects, revision, sink, inv,
+					)
+				}
 				return r.handleContextCancellation(
 					runCtx, threadID, current, step.state, step.meta, step.effects, revision, sink, runCtx.Err(), inv,
 				)
@@ -496,6 +526,11 @@ func (r *graphRunner[T, E]) execute(
 			return failedResult(step.state, step.effects, step.meta, current), stepErr
 		}
 		if step.emitCanceled {
+			if errors.Is(context.Cause(runCtx), ErrHandoffRequested) {
+				return r.handleHandoff(
+					runCtx, threadID, current, step.state, step.meta, step.effects, revision, sink, inv,
+				)
+			}
 			return failedResult(step.state, step.effects, step.meta, current), context.Canceled
 		}
 		if errors.Is(context.Cause(runCtx), ErrHandoffRequested) {
@@ -523,7 +558,6 @@ func (r *graphRunner[T, E]) execute(
 		if meta.StepCount > limit {
 			markSegmentFailed(&meta)
 			emitTerminalEvent(runCtx, sink, newRunEventFailed[T, E](current, state, ErrMaxStepsExceeded))
-			_ = r.applyTerminalPolicies(runCtx, threadID, RunStatusFailed)
 			return failedResultWithReason(
 				state,
 				effects,
@@ -536,7 +570,6 @@ func (r *graphRunner[T, E]) execute(
 		if err := checkBudgetLimits(meta, r.graph.defaults.budgetLimits); err != nil {
 			markSegmentFailed(&meta)
 			emitTerminalEvent(runCtx, sink, newRunEventFailed[T, E](current, state, err))
-			_ = r.applyTerminalPolicies(runCtx, threadID, RunStatusFailed)
 			return failedResultWithReason(state, effects, meta, current, err.Error()), err
 		}
 
@@ -575,12 +608,12 @@ func (r *graphRunner[T, E]) handleContextCancellation(
 
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(runCtx), contextCancelSaveTimeout)
 	saveErr := r.saveSnapshot(saveCtx, Snapshot[T, E]{
-		ThreadID: threadID,
-		NodeID:   current,
-		Revision: revision,
-		State:    state,
-		RunMeta:  meta,
-		Effects:  append([]E(nil), effects...),
+		ThreadID:         threadID,
+		ExecutionPointer: ExecutionPointer(current),
+		Revision:         revision,
+		State:            state,
+		RunMeta:          meta,
+		Effects:          append([]E(nil), effects...),
 	}, inv)
 	cancelSave()
 	if saveErr != nil {
@@ -618,12 +651,12 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(runCtx), contextCancelSaveTimeout)
 	saveErr := r.saveSnapshot(saveCtx, Snapshot[T, E]{
-		ThreadID: threadID,
-		NodeID:   current,
-		Revision: revision,
-		State:    state,
-		RunMeta:  meta,
-		Effects:  append([]E(nil), effects...),
+		ThreadID:         threadID,
+		ExecutionPointer: ExecutionPointer(current),
+		Revision:         revision,
+		State:            state,
+		RunMeta:          meta,
+		Effects:          append([]E(nil), effects...),
 	}, inv)
 	cancelSave()
 	if saveErr != nil {
@@ -639,10 +672,19 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 	cancelPolicy()
 
 	if !emitTerminalEvent(runCtx, sink, newRunEventHandoff[T, E](current, state, reason)) {
-		if signalSession {
-			r.finishRunSession(threadID, context.Canceled)
+		r.logger.DebugContext(runCtx, "flowy: handoff persisted but terminal event not delivered",
+			"thread_id", threadID)
+		if policyErr != nil {
+			retentionErr := fmt.Errorf("flowy: handoff retention failed: %w", policyErr)
+			if signalSession {
+				r.finishRunSession(threadID, retentionErr)
+			}
+			return result, retentionErr
 		}
-		return result, context.Canceled
+		if signalSession {
+			r.finishRunSession(threadID, nil)
+		}
+		return result, nil
 	}
 	if policyErr != nil {
 		retentionErr := fmt.Errorf("flowy: handoff retention failed: %w", policyErr)
@@ -797,7 +839,8 @@ func (r *graphRunner[T, E]) applyDirective(
 
 func (r *graphRunner[T, E]) applyDirectiveFail(
 	runCtx context.Context,
-	threadID, current string,
+	_ string,
+	current string,
 	state T,
 	meta RunMetadata,
 	effects []E,
@@ -808,7 +851,6 @@ func (r *graphRunner[T, E]) applyDirectiveFail(
 	meta.Segment.EndReason = SegmentEndFail
 	result := newRunResultFailed(state, effects, meta, current, base.reason)
 	emitTerminalEvent(runCtx, sink, newRunEventFailed[T, E](current, state, errors.New(base.reason)))
-	_ = r.applyTerminalPolicies(runCtx, threadID, RunStatusFailed)
 	return terminalDirectiveStep(result, errors.New(base.reason))
 }
 
@@ -844,10 +886,8 @@ func (r *graphRunner[T, E]) finishCompleted(
 	meta.Segment.EndReason = endReason
 	result := newRunResultCompleted(state, effects, meta, current)
 	if !emitTerminalEvent(runCtx, sink, newRunEventCompleted[T, E](current, state)) {
-		return terminalDirectiveStep(result, context.Canceled)
-	}
-	if threadID != "" {
-		_ = r.applyTerminalPolicies(runCtx, threadID, RunStatusCompleted)
+		r.logger.DebugContext(runCtx, "flowy: completed but terminal event not delivered",
+			"thread_id", threadID)
 	}
 	return terminalDirectiveStep[T, E](result, nil)
 }
@@ -868,12 +908,12 @@ func (r *graphRunner[T, E]) applyDirectiveSuspend(
 	meta.Segment.EndTime = time.Now().UTC()
 	meta.Segment.EndReason = SegmentEndSuspend
 	snapshot := Snapshot[T, E]{
-		ThreadID: threadID,
-		NodeID:   current,
-		Revision: revision,
-		State:    state,
-		RunMeta:  meta,
-		Effects:  append([]E(nil), effects...),
+		ThreadID:         threadID,
+		ExecutionPointer: ExecutionPointer(current),
+		Revision:         revision,
+		State:            state,
+		RunMeta:          meta,
+		Effects:          append([]E(nil), effects...),
 	}
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(runCtx), contextCancelSaveTimeout)
 	saveErr := r.saveSnapshot(saveCtx, snapshot, inv)
@@ -893,7 +933,15 @@ func (r *graphRunner[T, E]) applyDirectiveSuspend(
 		suspendReason = "suspended"
 	}
 	if !emitTerminalEvent(runCtx, sink, newRunEventSuspendedNoError[T, E](current, state, suspendReason)) {
-		return terminalDirectiveStep(failedResult(state, effects, meta, current), context.Canceled)
+		r.logger.DebugContext(runCtx, "flowy: suspend persisted but terminal event not delivered",
+			"thread_id", threadID)
+		if policyErr != nil {
+			return terminalDirectiveStep(
+				newRunResultSuspended(state, effects, meta, current, suspendReason),
+				fmt.Errorf("flowy: suspend retention failed: %w", policyErr),
+			)
+		}
+		return terminalDirectiveStep(newRunResultSuspended(state, effects, meta, current, suspendReason), nil)
 	}
 	if policyErr != nil {
 		return terminalDirectiveStep(
@@ -957,18 +1005,18 @@ func (r *graphRunner[T, E]) applyDirectiveRetry(
 	return continueDirectiveStep[T, E](fallback)
 }
 
-func failedResult[T, E any](state T, effects []E, meta RunMetadata, nodeID string) *RunResult[T, E] {
-	return failedResultWithReason(state, effects, meta, nodeID, "")
+func failedResult[T, E any](state T, effects []E, meta RunMetadata, pointer string) *RunResult[T, E] {
+	return failedResultWithReason(state, effects, meta, pointer, "")
 }
 
-func failedResultWithReason[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+func failedResultWithReason[T, E any](state T, effects []E, meta RunMetadata, pointer, reason string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusFailed,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  reason,
+		State:            state,
+		Status:           RunStatusFailed,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
+		Reason:           reason,
 	}
 }
 
@@ -1050,17 +1098,53 @@ func (r *graphRunner[T, E]) applyRetentionPolicy(ctx context.Context, threadID s
 	return r.checkpointer.Prune(ctx, threadID, r.graph.defaults.retentionLimit)
 }
 
+func appliesTerminalPolicies(status RunStatus) bool {
+	return status == RunStatusCompleted || status == RunStatusFailed
+}
+
+func (r *graphRunner[T, E]) postRunCleanup(
+	ctx context.Context,
+	threadID string,
+	inv runInvocationOptions[T, E],
+	result *RunResult[T, E],
+) {
+	r.logReleaseLeaseError(ctx, threadID, r.releaseLease(ctx, threadID, inv))
+	if result != nil && threadID != "" && appliesTerminalPolicies(result.Status) {
+		r.tryApplyTerminalPolicies(ctx, threadID, result.Status)
+	}
+}
+
+func (r *graphRunner[T, E]) logReleaseLeaseError(ctx context.Context, threadID string, err error) {
+	if err != nil {
+		r.logger.WarnContext(ctx, "flowy: release lease failed",
+			"thread_id", threadID, "err", err)
+	}
+}
+
+func (r *graphRunner[T, E]) tryApplyTerminalPolicies(ctx context.Context, threadID string, status RunStatus) {
+	if err := r.applyTerminalPolicies(ctx, threadID, status); err != nil {
+		if errors.Is(err, ErrThreadBusy) {
+			r.logger.DebugContext(ctx, "flowy: terminal policy skipped, thread busy",
+				"thread_id", threadID, "status", status)
+			return
+		}
+		r.logger.WarnContext(ctx, "flowy: terminal policy failed",
+			"thread_id", threadID, "status", status, "err", err)
+	}
+}
+
 func (r *graphRunner[T, E]) applyTerminalPolicies(ctx context.Context, threadID string, status RunStatus) error {
 	if r.checkpointer == nil {
 		return nil
 	}
 	if status == RunStatusCompleted && r.graph.defaults.deleteOnSuccess {
-		return r.checkpointer.Delete(ctx, threadID)
+		return r.checkpointer.DeleteIfIdle(ctx, threadID)
 	}
 	return r.applyRetentionPolicy(ctx, threadID)
 }
 
 // AsNode composes a graph as a node.
+// The inline runner uses an ephemeral checkpointer and does not receive parent RunOptions.
 func (g *Graph[T, E]) AsNode() Node[T, E] {
 	return func(ctx context.Context, state T) (T, Directive, error) {
 		runner := g.NewRunner(newCaptureCheckpointer[T, E]())
@@ -1137,6 +1221,12 @@ func (n *captureCheckpointer[T, E]) Prune(_ context.Context, _ string, retainCou
 }
 
 func (n *captureCheckpointer[T, E]) Delete(_ context.Context, _ string) error {
+	n.history = nil
+	return nil
+}
+
+// DeleteIfIdle clears ephemeral history (same as Delete for inline/subgraph runners).
+func (n *captureCheckpointer[T, E]) DeleteIfIdle(_ context.Context, _ string) error {
 	n.history = nil
 	return nil
 }

@@ -131,7 +131,7 @@ func TestSubgraphNodeWithSlotContextCancelPropagates(t *testing.T) {
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
-			if s.Slot.NodeID == "" {
+			if s.Slot.ExecutionPointer == "" {
 				return SubgraphSlot[childState, NoEffect]{}, false
 			}
 			return s.Slot, true
@@ -202,7 +202,7 @@ func TestSubgraphHandoffResumeContinuity(t *testing.T) {
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
-			if s.Slot.NodeID == "" {
+			if s.Slot.ExecutionPointer == "" {
 				return SubgraphSlot[childState, NoEffect]{}, false
 			}
 			return s.Slot, true
@@ -237,7 +237,7 @@ func TestSubgraphHandoffResumeContinuity(t *testing.T) {
 	if first.Status != RunStatusHandoff {
 		t.Fatalf("expected handoff, got %s", first.Status)
 	}
-	if first.State.Slot.NodeID != "step1" || first.State.Child.Step != 1 {
+	if first.State.Slot.ExecutionPointer != "step1" || first.State.Child.Step != 1 {
 		t.Fatalf("expected subgraph slot at step1, got slot=%+v child=%+v", first.State.Slot, first.State.Child)
 	}
 
@@ -250,5 +250,143 @@ func TestSubgraphHandoffResumeContinuity(t *testing.T) {
 	}
 	if second.State.Child.Step != 2 {
 		t.Fatalf("expected subgraph to continue to step2, child=%+v", second.State.Child)
+	}
+}
+
+func TestSubgraphSuspendSlotResumeContinuity(t *testing.T) {
+	t.Parallel()
+
+	type childState struct {
+		Step int
+	}
+
+	type parentState struct {
+		Child childState
+		Slot  SubgraphSlot[childState, NoEffect]
+	}
+
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		s.Step++
+		if s.Step < 2 {
+			return s, Suspend("child-wait"), nil
+		}
+		return s, End(), nil
+	})
+	subBuilder.SetEntryPoint("work")
+	subBuilder.AllowNoOutgoingRoute("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(s parentState) childState { return s.Child },
+		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
+			if s.Slot.ExecutionPointer == "" {
+				return SubgraphSlot[childState, NoEffect]{}, false
+			}
+			return s.Slot, true
+		},
+		func(s parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			s.Slot = slot
+			return s
+		},
+		func(s parentState, child childState) parentState {
+			s.Child = child
+			return s
+		},
+	))
+	parentBuilder.AddNode("finalize", func(_ context.Context, s parentState) (parentState, Directive, error) {
+		return s, End(), nil
+	})
+	parentBuilder.AddEdge("sub", "finalize")
+	parentBuilder.AllowNoOutgoingRoute("finalize")
+	parentBuilder.SetEntryPoint("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	cp := newMemoryCP[parentState, NoEffect]()
+	runner := parentGraph.NewRunner(cp)
+
+	first, err := runner.Start(context.Background(), "sub-suspend-th", parentState{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if first.Status != RunStatusSuspended {
+		t.Fatalf("expected suspended, got %s", first.Status)
+	}
+	if first.State.Slot.ExecutionPointer != "work" || first.State.Child.Step != 1 {
+		t.Fatalf("unexpected slot after suspend: slot=%+v child=%+v", first.State.Slot, first.State.Child)
+	}
+
+	second, err := runner.Resume(context.Background(), "sub-suspend-th")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if second.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %s", second.Status)
+	}
+	if second.State.Child.Step != 2 {
+		t.Fatalf("expected child step 2 after slot resume, got %d", second.State.Child.Step)
+	}
+}
+
+func TestSubgraphDoesNotInheritParentRunMetadata(t *testing.T) {
+	t.Parallel()
+
+	type childState struct {
+		ParentTokens int
+	}
+	type parentState struct{}
+
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("read", func(ctx context.Context, s childState) (childState, Directive, error) {
+		if meta, ok := runMetadataFromContext(ctx); ok {
+			s.ParentTokens = meta.BudgetCounts["tokens"]
+		}
+		return s, End(), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("read")
+	subBuilder.SetEntryPoint("read")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	parentBuilder.AddNode("sub", SubgraphNode(
+		sub,
+		func(_ parentState) childState { return childState{} },
+		func(_ parentState, child childState) parentState {
+			if child.ParentTokens != 0 {
+				t.Fatalf("subgraph must not inherit parent WithRunMetadata, got tokens=%d", child.ParentTokens)
+			}
+			return parentState{}
+		},
+	))
+	parentBuilder.AddNode("finalize", func(_ context.Context, s parentState) (parentState, Directive, error) {
+		return s, End(), nil
+	})
+	parentBuilder.AddEdge("sub", "finalize")
+	parentBuilder.AllowNoOutgoingRoute("finalize")
+	parentBuilder.SetEntryPoint("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	_, err = parentGraph.NewRunner(newMemoryCP[parentState, NoEffect]()).
+		Start(context.Background(), "sub-meta-th", parentState{},
+			WithRunMetadata[parentState, NoEffect](RunMetadataInput{
+				BudgetCounts: map[string]int{"tokens": 99},
+			}),
+		)
+	if err != nil {
+		t.Fatalf("start: %v", err)
 	}
 }

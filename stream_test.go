@@ -257,6 +257,49 @@ func TestCompletedEventHasZeroOrCarryDurationPolicy(t *testing.T) {
 	}
 }
 
+func TestWithRunMetadataOnStream(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ Tokens int }
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
+		_ = UseBudget(ctx, "tokens", 3)
+		if meta, ok := runMetadataFromContext(ctx); ok {
+			s.Tokens = meta.BudgetCounts["tokens"]
+		}
+		return s, End(), nil
+	})
+	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	handle, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Stream(
+		context.Background(),
+		"stream-meta-th",
+		state{},
+		WithRunMetadata[state, NoEffect](RunMetadataInput{
+			BudgetCounts: map[string]int{"tokens": 2},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events := collectEvents(t, handle.Events(), 2*time.Second)
+	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
+		t.Fatalf("expected completed stream, got %+v", events)
+	}
+	if events[len(events)-1].State.Tokens != 5 {
+		t.Fatalf("expected budget 5 (2 seed + 3 use), got %d", events[len(events)-1].State.Tokens)
+	}
+	if err := handle.Done(); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+}
+
 func TestStreamResume(t *testing.T) {
 	type state struct{ Value int }
 	cp := newMemoryCP[state, NoEffect]()
@@ -265,29 +308,18 @@ func TestStreamResume(t *testing.T) {
 		s.Value++
 		return s, Suspend("hold"), nil
 	})
-	b.SetEntryPoint("save")
-	b.AllowNoOutgoingRoute("save")
-	g, _ := b.Compile()
-	_, _ = g.NewRunner(cp).Start(context.Background(), "resume-1", state{})
-
-	cp.reads["resume-1"] = Snapshot[state, NoEffect]{
-		ThreadID: "resume-1",
-		NodeID:   "done",
-		Revision: cp.last.Revision,
-		State:    cp.last.State,
-		RunMeta:  cp.last.RunMeta,
-	}
-
-	b2 := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b2.AddNode("done", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("done", func(_ context.Context, s state) (state, Directive, error) {
 		s.Value++
 		return s, End(), nil
 	})
-	b2.SetEntryPoint("done")
-	b2.AllowNoOutgoingRoute("done")
-	g2, _ := b2.Compile()
+	b.AddEdge("save", "done")
+	b.AllowNoOutgoingRoute("done")
+	b.SetEntryPoint("save")
+	g, _ := b.Compile()
+	runner := g.NewRunner(cp)
+	_, _ = runner.Start(context.Background(), "resume-1", state{})
 
-	handle, err := g2.NewRunner(cp).StreamResume(context.Background(), "resume-1")
+	handle, err := runner.StreamResume(context.Background(), "resume-1")
 	if err != nil {
 		t.Fatalf("stream resume: %v", err)
 	}
@@ -442,13 +474,113 @@ func TestStreamBufferFullThenContextCancelNoLeak(t *testing.T) {
 	}
 }
 
-func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
-	t.Parallel()
-
+func TestStreamHandoffPersistWhenStreamClosed(t *testing.T) {
 	type state struct{ N int }
+	ready := make(chan struct{})
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
 		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-handoff-closed-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	<-ready
+	handle.Close()
+
+	if err := runner.HandoffToBackground(context.Background(), "stream-handoff-closed-th"); err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if err := handle.Done(); err != nil {
+		t.Fatalf("done should succeed when snapshot persisted without terminal event: %v", err)
+	}
+
+	snap, loadErr := cp.Load(context.Background(), "stream-handoff-closed-th")
+	if loadErr != nil {
+		t.Fatalf("expected handoff checkpoint, got load error: %v", loadErr)
+	}
+	if snap.ExecutionPointer != "work" {
+		t.Fatalf("expected pointer work, got %q", snap.ExecutionPointer)
+	}
+}
+
+func TestWithRunMetadataOnStreamResume(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ Tokens int }
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("save", func(_ context.Context, s state) (state, Directive, error) {
+		if s.Tokens == 0 {
+			s.Tokens = 1
+			return s, Suspend("hold"), nil
+		}
+		return s, Completed(), nil
+	})
+	b.AddNode("done", func(ctx context.Context, s state) (state, Directive, error) {
+		_ = UseBudget(ctx, "tokens", 4)
+		if meta, ok := runMetadataFromContext(ctx); ok {
+			s.Tokens = meta.BudgetCounts["tokens"]
+		}
+		return s, End(), nil
+	})
+	b.AddEdge("save", "done")
+	b.AllowNoOutgoingRoute("done")
+	b.SetEntryPoint("save")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "stream-resume-meta-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	handle, err := runner.StreamResume(
+		context.Background(),
+		"stream-resume-meta-th",
+		WithRunMetadata[state, NoEffect](RunMetadataInput{
+			BudgetCounts: map[string]int{"tokens": 3},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("stream resume: %v", err)
+	}
+	events := collectEvents(t, handle.Events(), 2*time.Second)
+	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
+		t.Fatalf("expected completed stream, got %+v", events)
+	}
+	if events[len(events)-1].State.Tokens != 7 {
+		t.Fatalf("expected budget 7 (3 seed + 4 use), got %d", events[len(events)-1].State.Tokens)
+	}
+	if err := handle.Done(); err != nil {
+		t.Fatalf("done: %v", err)
+	}
+}
+
+func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
+	type state struct{ N int }
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
 		<-ctx.Done()
 		return s, Completed(), nil
 	})
@@ -466,12 +598,17 @@ func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 
-	time.Sleep(10 * time.Millisecond)
+	eventsDone := make(chan []RunEvent[state, NoEffect], 1)
+	go func() {
+		eventsDone <- collectEvents(t, handle.Events(), 5*time.Second)
+	}()
+
+	<-ready
 	if err := runner.HandoffToBackground(context.Background(), "stream-handoff-th"); err != nil {
 		t.Fatalf("handoff: %v", err)
 	}
 
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events := <-eventsDone
 	if len(events) == 0 {
 		t.Fatal("expected events")
 	}
@@ -576,5 +713,10 @@ func (c *cancelAwareCP[T, E]) Prune(context.Context, string, int) error {
 }
 
 func (c *cancelAwareCP[T, E]) Delete(context.Context, string) error {
+	return nil
+}
+
+// DeleteIfIdle is a stream test stub.
+func (c *cancelAwareCP[T, E]) DeleteIfIdle(context.Context, string) error {
 	return nil
 }

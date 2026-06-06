@@ -7,15 +7,17 @@ import (
 
 // SubgraphSlot embeds a subgraph execution cursor in parent persisted state.
 type SubgraphSlot[Sub, E any] struct {
-	NodeID   string
-	Revision int
-	State    Sub
-	RunMeta  RunMetadata
-	Effects  []E
+	ExecutionPointer ExecutionPointer
+	Revision         int
+	State            Sub
+	RunMeta          RunMetadata
+	Effects          []E
 }
 
 // SubgraphNode runs a subgraph with state mapped from parent to sub and back.
 // For suspend/handoff resume at the inner node, use SubgraphNodeWithSlot.
+// Nested subgraph runners do not inherit parent RunOptions (WithBindings, WithRunMetadata,
+// WithRunLease, WithStateOverlay). Parent ctx values and BindingFromContext still apply in subgraph nodes.
 func SubgraphNode[Parent, Sub, E any](
 	sub *Graph[Sub, E],
 	mapIn func(Parent) Sub,
@@ -44,14 +46,14 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 
 		var result *RunResult[Sub, E]
 		var err error
-		if slot, ok := loadSlot(parentState); ok && slot.NodeID != "" {
+		if slot, ok := loadSlot(parentState); ok && slot.ExecutionPointer != "" {
 			_ = cp.Save(ctx, Snapshot[Sub, E]{
-				ThreadID: threadID,
-				NodeID:   slot.NodeID,
-				Revision: slot.Revision,
-				State:    slot.State,
-				RunMeta:  slot.RunMeta,
-				Effects:  append([]E(nil), slot.Effects...),
+				ThreadID:         threadID,
+				ExecutionPointer: slot.ExecutionPointer,
+				Revision:         slot.Revision,
+				State:            slot.State,
+				RunMeta:          slot.RunMeta,
+				Effects:          append([]E(nil), slot.Effects...),
 			})
 			result, err = sub.NewRunner(cp).Resume(ctx, threadID)
 		} else {
@@ -66,11 +68,11 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		if result.Status == RunStatusSuspended || result.Status == RunStatusHandoff {
 			if snap, loadErr := cp.Load(ctx, threadID); loadErr == nil {
 				parentState = storeSlot(parentState, SubgraphSlot[Sub, E]{
-					NodeID:   snap.NodeID,
-					Revision: snap.Revision,
-					State:    snap.State,
-					RunMeta:  snap.RunMeta,
-					Effects:  append([]E(nil), snap.Effects...),
+					ExecutionPointer: snap.ExecutionPointer,
+					Revision:         snap.Revision,
+					State:            snap.State,
+					RunMeta:          snap.RunMeta,
+					Effects:          append([]E(nil), snap.Effects...),
 				})
 			}
 		}

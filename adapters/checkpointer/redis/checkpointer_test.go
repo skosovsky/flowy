@@ -9,6 +9,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	goredis "github.com/redis/go-redis/v9"
 
+	redislease "github.com/skosovsky/flowy/adapters/lease/redis"
+
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
 )
@@ -19,10 +21,10 @@ type state struct {
 
 func testSnapshot(revision int, value string) flowy.Snapshot[state, string] {
 	return flowy.Snapshot[state, string]{
-		ThreadID: "t1",
-		Revision: revision,
-		NodeID:   "n1",
-		State:    state{Value: value},
+		ThreadID:         "t1",
+		Revision:         revision,
+		ExecutionPointer: "n1",
+		State:            state{Value: value},
 	}
 }
 
@@ -34,10 +36,10 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
 	err := cp.Save(context.Background(), flowy.Snapshot[state, string]{
-		ThreadID: "t1",
-		Revision: 1,
-		NodeID:   "n1",
-		State:    state{Value: "ok"},
+		ThreadID:         "t1",
+		Revision:         1,
+		ExecutionPointer: "n1",
+		State:            state{Value: "ok"},
 		RunMeta: flowy.RunMetadata{
 			SegmentStartTime: time.Now().UTC(),
 			RetryCounts:      map[string]int{"n1": 1},
@@ -115,6 +117,75 @@ func TestPruneRetainsLatestN(t *testing.T) {
 	}
 	if len(history) != 2 || history[0].Revision != 3 || history[1].Revision != 2 {
 		t.Fatalf("unexpected history after prune: %+v", history)
+	}
+}
+
+func TestDeleteIfIdleBlockedByLeaseKey(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{Prefix: "flowy"}, checkpoint.JSONSerializer[state]{})
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := client.Set(context.Background(), "flowy:lease:t1", "worker-a", 0).Err(); err != nil {
+		t.Fatalf("set lease: %v", err)
+	}
+	err := cp.DeleteIfIdle(context.Background(), "t1")
+	if !errors.Is(err, flowy.ErrThreadBusy) {
+		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	}
+	_, loadErr := cp.Load(context.Background(), "t1")
+	if loadErr != nil {
+		t.Fatalf("snapshot should remain: %v", loadErr)
+	}
+}
+
+func TestDeleteIfIdleSucceedsWhenIdle(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
+		t.Fatalf("delete if idle: %v", err)
+	}
+	_, err := cp.Load(context.Background(), "t1")
+	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("expected ErrNoSnapshot, got %v", err)
+	}
+}
+
+func TestDeleteIfIdleLeasePrefixMismatch(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{
+		Prefix:      "app",
+		LeasePrefix: "leases",
+	}, checkpoint.JSONSerializer[state]{})
+	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: "app"})
+
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	if err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
+		t.Fatalf("delete if idle: %v", err)
+	}
+	if _, err := cp.Load(context.Background(), "t1"); !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("prefix mismatch should bypass lease check and delete snapshot, got %v", err)
 	}
 }
 

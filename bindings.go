@@ -4,31 +4,43 @@ import "context"
 
 type bindingsKey struct{}
 
+// BindingKey identifies a typed dependency slot in RunBindings.
+// Use package-level sentinels (var DBKey BindingKey[*sql.DB]). One zero-value key per type T.
+type BindingKey[T any] struct{}
+
 // RunBindings holds ephemeral runtime dependencies that are never persisted in snapshots.
 type RunBindings struct {
-	values map[string]any
+	m map[any]any
 }
 
 // NewRunBindings creates an empty binding container.
 func NewRunBindings() *RunBindings {
-	return &RunBindings{values: make(map[string]any)}
+	return &RunBindings{m: make(map[any]any)}
 }
 
-// Set stores a binding by name.
-func (b *RunBindings) Set(name string, value any) {
-	if b.values == nil {
-		b.values = make(map[string]any)
+// Bind stores a typed dependency under key.
+func Bind[T any](b *RunBindings, key BindingKey[T], val T) {
+	if b == nil {
+		return
 	}
-	b.values[name] = value
+	if b.m == nil {
+		b.m = make(map[any]any)
+	}
+	b.m[key] = val
 }
 
-// Get returns a binding value.
-func (b *RunBindings) Get(name string) (any, bool) {
-	if b == nil || b.values == nil {
-		return nil, false
+// Extract returns a typed dependency bound under key.
+func Extract[T any](b *RunBindings, key BindingKey[T]) (T, bool) {
+	var zero T
+	if b == nil || b.m == nil {
+		return zero, false
 	}
-	v, ok := b.values[name]
-	return v, ok
+	raw, ok := b.m[key]
+	if !ok {
+		return zero, false
+	}
+	typed, ok := raw.(T)
+	return typed, ok
 }
 
 // WithContext attaches bindings to ctx for node handlers.
@@ -46,16 +58,11 @@ func BindingsFromContext(ctx context.Context) (*RunBindings, bool) {
 }
 
 // BindingFromContext loads a typed binding from ctx.
-func BindingFromContext[T any](ctx context.Context, name string) (T, bool) {
-	var zero T
+func BindingFromContext[T any](ctx context.Context, key BindingKey[T]) (T, bool) {
 	bindings, ok := BindingsFromContext(ctx)
 	if !ok {
+		var zero T
 		return zero, false
 	}
-	raw, ok := bindings.Get(name)
-	if !ok {
-		return zero, false
-	}
-	typed, ok := raw.(T)
-	return typed, ok
+	return Extract(bindings, key)
 }

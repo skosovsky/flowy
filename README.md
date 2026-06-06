@@ -28,7 +28,9 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 | `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                         |
 | `Effect(base, any)`               | `Effect[E](base, payload E)`                                          |
 | `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                |
-| ad-hoc resume mutations           | `WithStateOverlay` + `WithResumeReconciler` + `WithBindings`          |
+| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                       |
+| `WithResumeReconciler`            | `ResumableState.Reconcile()` + conditional edges                      |
+| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`               |
 | Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`            |
 | Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget(ctx, name, n)`          |
 
@@ -51,10 +53,16 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 
 ### Resume pipeline (order)
 
-1. `Checkpointer.Load`
-2. `WithStateOverlay` (optional, deterministic merge)
-3. `WithResumeReconciler` (optional, remap start node)
-4. `execute`
+1. `Checkpointer.Load` → `ExecutionPointer` из snapshot (без внешнего start node)
+2. `StateInterceptor.AfterLoad` (optional)
+3. `WithStateOverlay` (optional, deterministic merge)
+4. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
+5. `WithRunMetadata` merge (optional)
+6. `ResumableState.Reconcile()` (optional, если state реализует интерфейс)
+7. `execute` с сохранённого `ExecutionPointer`
+
+`DeleteIfIdle` и delete-on-success применяются **после** `execute` и `releaseLease` (`postRunCleanup`). `Prune` (retention) — **in-loop** при suspend/handoff/cancel, до release.
+Prod: paired `adapters/checkpointer/*` + `adapters/lease/*` с одним store/prefix.
 
 ## Directives
 
@@ -75,8 +83,10 @@ g, err := b.Compile(flowy.WithNamedBudget("reflection", 5))
 ## Persistence, Bindings & Resume
 
 ```go
+var DBPoolKey flowy.BindingKey[*sql.DB]
+
 bindings := flowy.NewRunBindings()
-bindings.Set("db", dbPool)
+flowy.Bind(bindings, DBPoolKey, dbPool)
 
 runner := graph.NewRunnerWithOptions(cp, []flowy.RunnerOption[State, Effect]{
     flowy.WithLeaseManager[State, Effect](leaseMgr),
@@ -85,11 +95,15 @@ runner := graph.NewRunnerWithOptions(cp, []flowy.RunnerOption[State, Effect]{
 res, err := runner.Resume(ctx, threadID,
     flowy.WithBindings[State, Effect](bindings),
     flowy.WithStateOverlay[State, Effect](overlay, mergeFn),
-    flowy.WithResumeReconciler[State, Effect](reconcileFn),
+    flowy.WithRunMetadata[State, Effect](flowy.RunMetadataInput{
+        BudgetCounts: map[string]int{"tokens": 100},
+    }),
     flowy.WithInvariantValidator[State, Effect](validateFn),
     flowy.WithRunLease[State, Effect]("worker-1", 30*time.Second),
 )
 ```
+
+Для нескольких зависимостей одного типа используйте distinct wrapper types в `BindingKey[...]` (как в stdlib `context`).
 
 Ephemeral bindings **не** попадают в `Snapshot`.
 
@@ -102,10 +116,15 @@ type Checkpointer[T, E any] interface {
     GetHistory(...)
     Prune(...)
     Delete(...)
+    DeleteIfIdle(...) // ErrThreadBusy when lease held by another owner
 }
 ```
 
-Compile-time policies: `WithDeleteOnSuccess(true)`, `WithRetentionLimit(n)`.
+Compile-time policies: `WithDeleteOnSuccess(true)` (использует `DeleteIfIdle`), `WithRetentionLimit(n)`.
+
+Postgres/Redis adapters: атомарный `DeleteIfIdle` в storage. Prod: используйте пару `adapters/checkpointer/{postgres,redis}` + `adapters/lease/{postgres,redis}` с одним prefix/store. In-process dev — auto-wrap `NewLeaseGuardCheckpointer` (только для non-native checkpointer).
+
+Redis: `Options.LeasePrefix` checkpointer должен совпадать с `Options.Prefix` lease manager (иначе `DeleteIfIdle` обходит lease guard). Postgres использует общую таблицу `flowy_leases`.
 
 ## DX Recommendations
 
@@ -116,7 +135,16 @@ Compile-time policies: `WithDeleteOnSuccess(true)`, `WithRetentionLimit(n)`.
 
 ## Quality Gates
 
+Проект содержит несколько Go-модулей (корень + adapters). Корневой `go test ./...` не покрывает adapter submodules.
+
 ```bash
-go test ./...
+make test          # все go.mod modules (рекомендуется)
 golangci-lint run ./...
+```
+
+Опционально integration-тесты paired lease + checkpointer:
+
+```bash
+go test -tags=integration ./adapters/checkpointer/redis/...
+FLOWY_TEST_DATABASE_URL=postgres://... go test -tags=integration ./adapters/checkpointer/postgres/...
 ```

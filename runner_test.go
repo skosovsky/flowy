@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 )
 
 type memoryCP[T, E any] struct {
@@ -75,6 +74,11 @@ func (m *memoryCP[T, E]) Delete(_ context.Context, threadID string) error {
 	return nil
 }
 
+// DeleteIfIdle delegates to Delete (dev/test stub; no lease awareness).
+func (m *memoryCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	return m.Delete(ctx, threadID)
+}
+
 func TestRunnerSuspendSavesAndResumeWithPatch(t *testing.T) {
 	t.Parallel()
 	type state struct {
@@ -109,25 +113,7 @@ func TestRunnerSuspendSavesAndResumeWithPatch(t *testing.T) {
 		t.Fatalf("expected one effect, got %d", len(res.Effects))
 	}
 
-	cp.reads["th-1"] = Snapshot[state, string]{
-		ThreadID: "th-1",
-		NodeID:   "done",
-		State:    cp.last.State,
-		RunMeta:  cp.last.RunMeta,
-		Effects:  cp.last.Effects,
-	}
-	b2 := NewGraph[state, string](func(_ state, u state) state { return u })
-	b2.AddNode("done", func(_ context.Context, s state) (state, Directive, error) {
-		return s, End(), nil
-	})
-	b2.SetEntryPoint("done")
-	b2.AllowNoOutgoingRoute("done")
-	g2, err := b2.Compile()
-	if err != nil {
-		t.Fatalf("compile resumed graph: %v", err)
-	}
-	runner2 := g2.NewRunner(cp)
-	resumed, err := runner2.Resume(
+	resumed, err := runner.Resume(
 		context.Background(),
 		"th-1",
 		WithStateOverlay[state, string](state{Value: 10}, func(base, overlay state) state {
@@ -138,8 +124,8 @@ func TestRunnerSuspendSavesAndResumeWithPatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if resumed.State.Value != 12 {
-		t.Fatalf("unexpected resumed state: %+v", resumed.State)
+	if resumed.State.Value != 13 {
+		t.Fatalf("unexpected resumed state (overlay + re-entry): %+v", resumed.State)
 	}
 }
 
@@ -294,6 +280,9 @@ func TestInterceptorsAreApplied(t *testing.T) {
 	t.Parallel()
 	b := NewGraph[interceptState, NoEffect](func(_ interceptState, u interceptState) interceptState { return u })
 	b.AddNode("n", func(_ context.Context, s interceptState) (interceptState, Directive, error) {
+		if strings.HasPrefix(s.Value, "loaded:") {
+			return s, End(), nil
+		}
 		return s, Suspend("x"), nil
 	})
 	b.SetEntryPoint("n")
@@ -309,20 +298,10 @@ func TestInterceptorsAreApplied(t *testing.T) {
 		t.Fatalf("before save interceptor not applied: %+v", cp.last.State)
 	}
 
-	cp.reads["i"] = Snapshot[interceptState, NoEffect]{
-		ThreadID: "i",
-		NodeID:   "end",
-		State:    interceptState{Value: "v2"},
-		RunMeta:  RunMetadata{SegmentStartTime: time.Now().UTC(), RetryCounts: map[string]int{}},
-	}
-	b2 := NewGraph[interceptState, NoEffect](func(_ interceptState, u interceptState) interceptState { return u })
-	b2.AddNode("end", func(_ context.Context, s interceptState) (interceptState, Directive, error) {
-		return s, End(), nil
-	})
-	b2.SetEntryPoint("end")
-	b2.AllowNoOutgoingRoute("end")
-	g2, _ := b2.Compile()
-	res, err := g2.NewRunner(cp, testInterceptor{}).Resume(context.Background(), "i")
+	snap := cp.reads["i"]
+	snap.State = interceptState{Value: "v2"}
+	cp.reads["i"] = snap
+	res, err := g.NewRunner(cp, testInterceptor{}).Resume(context.Background(), "i")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -581,21 +560,12 @@ func TestNodeMiddlewareContextPropagationOnResume(t *testing.T) {
 	t.Parallel()
 	type state struct {
 		Seen string
+		Pass int
 	}
 	type ctxKey string
 	const key ctxKey = "resume-trace"
 
 	cp := newMemoryCP[state, NoEffect]()
-	cp.reads["resume-mw"] = Snapshot[state, NoEffect]{
-		ThreadID: "resume-mw",
-		NodeID:   "resume_node",
-		Revision: 3,
-		State:    state{},
-		RunMeta: RunMetadata{
-			SegmentStartTime: time.Now().UTC(),
-			RetryCounts:      map[string]int{},
-		},
-	}
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.Use(func(next Node[state, NoEffect]) Node[state, NoEffect] {
@@ -605,14 +575,23 @@ func TestNodeMiddlewareContextPropagationOnResume(t *testing.T) {
 		}
 	})
 	b.AddNode("resume_node", func(ctx context.Context, s state) (state, Directive, error) {
+		s.Pass++
 		s.Seen, _ = ctx.Value(key).(string)
+		if s.Pass == 1 {
+			return s, Suspend("hold"), nil
+		}
 		return s, End(), nil
 	})
 	b.SetEntryPoint("resume_node")
 	b.AllowNoOutgoingRoute("resume_node")
 	g, _ := b.Compile()
 
-	res, err := g.NewRunner(cp).Resume(context.Background(), "resume-mw")
+	runner := g.NewRunner(cp)
+	_, err := runner.Start(context.Background(), "resume-mw", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	res, err := runner.Resume(context.Background(), "resume-mw")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
@@ -624,6 +603,7 @@ func TestNodeMiddlewareContextPropagationOnResume(t *testing.T) {
 func TestResumeRestoresTelemetryContext(t *testing.T) {
 	type state struct {
 		Trace string
+		Round int
 	}
 	type ctxKey string
 	const key ctxKey = "trace"
@@ -647,16 +627,21 @@ func TestResumeRestoresTelemetryContext(t *testing.T) {
 	defer SetTelemetryBridge(nil)
 
 	cp := newMemoryCP[state, NoEffect]()
-	gStart, _ := NewGraph[state, NoEffect](func(_ state, u state) state { return u }).
-		AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-			return s, Suspend("hold"), nil
+	g, _ := NewGraph[state, NoEffect](func(_ state, u state) state { return u }).
+		AddNode("wait", func(ctx context.Context, s state) (state, Directive, error) {
+			s.Round++
+			s.Trace, _ = ctx.Value(key).(string)
+			if s.Round == 1 {
+				return s, Suspend("hold"), nil
+			}
+			return s, End(), nil
 		}).
 		AllowNoOutgoingRoute("wait").
 		SetEntryPoint("wait").
 		Compile()
 
-	_, err := gStart.NewRunner(cp).
-		Start(context.WithValue(context.Background(), key, "trace-42"), "trace-thread", state{})
+	runner := g.NewRunner(cp)
+	_, err := runner.Start(context.WithValue(context.Background(), key, "trace-42"), "trace-thread", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -664,24 +649,7 @@ func TestResumeRestoresTelemetryContext(t *testing.T) {
 		t.Fatalf("expected telemetry saved in run meta, got %+v", cp.last.RunMeta.TelemetryContext)
 	}
 
-	cp.reads["trace-thread"] = Snapshot[state, NoEffect]{
-		ThreadID: "trace-thread",
-		NodeID:   "end",
-		Revision: cp.last.Revision,
-		State:    state{},
-		RunMeta:  cp.last.RunMeta,
-	}
-
-	gResume, _ := NewGraph[state, NoEffect](func(_ state, u state) state { return u }).
-		AddNode("end", func(ctx context.Context, s state) (state, Directive, error) {
-			s.Trace, _ = ctx.Value(key).(string)
-			return s, End(), nil
-		}).
-		AllowNoOutgoingRoute("end").
-		SetEntryPoint("end").
-		Compile()
-
-	res, err := gResume.NewRunner(cp).Resume(context.Background(), "trace-thread")
+	res, err := runner.Resume(context.Background(), "trace-thread")
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}

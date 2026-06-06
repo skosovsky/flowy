@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -54,6 +56,8 @@ func (r fakeRow) Scan(dest ...any) error {
 			*d = append((*d)[:0], r.values[i].([]byte)...)
 		case *time.Time:
 			*d = r.values[i].(time.Time)
+		case *bool:
+			*d = r.values[i].(bool)
 		}
 	}
 	return nil
@@ -117,12 +121,12 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 	cp := NewCheckpointer[sampleState, string](db, checkpoint.JSONSerializer[sampleState]{})
 
 	err := cp.Save(context.Background(), flowy.Snapshot[sampleState, string]{
-		ThreadID: "thread-1",
-		Revision: 2,
-		NodeID:   "node-1",
-		State:    sampleState{Value: "ok"},
-		RunMeta:  flowy.RunMetadata{SegmentStartTime: now, RetryCounts: map[string]int{"n": 1}, StepCount: 2},
-		Effects:  []string{"fx"},
+		ThreadID:         "thread-1",
+		Revision:         2,
+		ExecutionPointer: "node-1",
+		State:            sampleState{Value: "ok"},
+		RunMeta:          flowy.RunMetadata{SegmentStartTime: now, RetryCounts: map[string]int{"n": 1}, StepCount: 2},
+		Effects:          []string{"fx"},
 	})
 	if err != nil {
 		t.Fatalf("save: %v", err)
@@ -214,5 +218,49 @@ func TestPruneNoopOnMissingThread(t *testing.T) {
 	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.Prune(context.Background(), "missing-thread", 5); err != nil {
 		t.Fatalf("prune missing: %v", err)
+	}
+}
+
+type deleteIfIdleDB struct {
+	fakeDB
+
+	deleteRows int64
+	leaseHeld  bool
+}
+
+func (d *deleteIfIdleDB) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {
+	d.execCalled = true
+	if strings.Contains(sql, "DELETE FROM flowy_checkpoints") {
+		return pgconn.NewCommandTag(fmt.Sprintf("DELETE %d", d.deleteRows)), nil
+	}
+	return pgconn.CommandTag{}, nil
+}
+
+func (d *deleteIfIdleDB) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	if strings.Contains(sql, "flowy_leases") {
+		return fakeRow{values: []any{d.leaseHeld}}
+	}
+	return fakeRow{err: pgx.ErrNoRows}
+}
+
+func TestDeleteIfIdleSucceedsWhenNoLease(t *testing.T) {
+	t.Parallel()
+	db := &deleteIfIdleDB{deleteRows: 1, leaseHeld: false}
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	if err := cp.DeleteIfIdle(context.Background(), "thread-1"); err != nil {
+		t.Fatalf("delete if idle: %v", err)
+	}
+	if !db.execCalled {
+		t.Fatal("expected delete exec")
+	}
+}
+
+func TestDeleteIfIdleBlockedByActiveLease(t *testing.T) {
+	t.Parallel()
+	db := &deleteIfIdleDB{deleteRows: 0, leaseHeld: true}
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	err := cp.DeleteIfIdle(context.Background(), "thread-1")
+	if !errors.Is(err, flowy.ErrThreadBusy) {
+		t.Fatalf("expected ErrThreadBusy, got %v", err)
 	}
 }

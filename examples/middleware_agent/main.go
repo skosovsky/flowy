@@ -54,7 +54,7 @@ func main() {
 		log.Fatal(err)
 	}
 	for event := range stream.Events() {
-		fmt.Printf("stream event=%s node=%s err=%v\n", event.Type, event.NodeID, event.Error)
+		fmt.Printf("stream event=%s node=%s err=%v\n", event.Type, event.ExecutionPointer, event.Error)
 	}
 	_ = stream.Done()
 }

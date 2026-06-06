@@ -79,6 +79,11 @@ func (m *MemoryCheckpointer[T, E]) Prune(_ context.Context, threadID string, ret
 	return nil
 }
 
+// DeleteIfIdle delegates to Delete (no lease store). Use NewLeaseGuardCheckpointer for in-process lease checks.
+func (m *MemoryCheckpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	return m.Delete(ctx, threadID)
+}
+
 func (m *MemoryCheckpointer[T, E]) Delete(_ context.Context, threadID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

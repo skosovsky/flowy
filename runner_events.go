@@ -32,136 +32,136 @@ func leaseHeartbeatInterval(ttl time.Duration) time.Duration {
 	return interval
 }
 
-func newRunEventNodeStarted[T, E any](nodeID string, state T) RunEvent[T, E] {
+func newRunEventNodeStarted[T, E any](pointer string, state T) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:      EventNodeStarted,
-		NodeID:    nodeID,
-		State:     state,
-		HasEffect: false,
+		Type:             EventNodeStarted,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		HasEffect:        false,
 	}
 }
 
-func newRunEventNodeCompleted[T, E any](nodeID string, state T, duration time.Duration) RunEvent[T, E] {
+func newRunEventNodeCompleted[T, E any](pointer string, state T, duration time.Duration) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:      EventNodeCompleted,
-		NodeID:    nodeID,
-		State:     state,
-		HasEffect: false,
-		Duration:  duration,
+		Type:             EventNodeCompleted,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		HasEffect:        false,
+		Duration:         duration,
 	}
 }
 
 func newRunEventNodeCompletedWithEffect[T, E any](
-	nodeID string,
+	pointer string,
 	state T,
 	effect E,
 	duration time.Duration,
 ) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:      EventNodeCompleted,
-		NodeID:    nodeID,
-		State:     state,
-		Effect:    effect,
-		HasEffect: true,
-		Duration:  duration,
+		Type:             EventNodeCompleted,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Effect:           effect,
+		HasEffect:        true,
+		Duration:         duration,
 	}
 }
 
-func newRunEventFailed[T, E any](nodeID string, state T, err error) RunEvent[T, E] {
+func newRunEventFailed[T, E any](pointer string, state T, err error) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:   EventFailed,
-		NodeID: nodeID,
-		State:  state,
-		Error:  err,
+		Type:             EventFailed,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Error:            err,
 	}
 }
 
-func newRunEventSuspendedNoError[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+func newRunEventSuspendedNoError[T, E any](pointer string, state T, reason string) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:   EventSuspended,
-		NodeID: nodeID,
-		State:  state,
-		Reason: reason,
+		Type:             EventSuspended,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Reason:           reason,
 	}
 }
 
-func newRunEventContextCanceled[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+func newRunEventContextCanceled[T, E any](pointer string, state T, reason string) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:   EventContextCanceled,
-		NodeID: nodeID,
-		State:  state,
-		Reason: reason,
+		Type:             EventContextCanceled,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Reason:           reason,
 	}
 }
 
-func newRunEventCompleted[T, E any](nodeID string, state T) RunEvent[T, E] {
+func newRunEventCompleted[T, E any](pointer string, state T) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:   EventCompleted,
-		NodeID: nodeID,
-		State:  state,
+		Type:             EventCompleted,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
 	}
 }
 
-func newRunEventHandoff[T, E any](nodeID string, state T, reason string) RunEvent[T, E] {
+func newRunEventHandoff[T, E any](pointer string, state T, reason string) RunEvent[T, E] {
 	return RunEvent[T, E]{
-		Type:   EventHandoff,
-		NodeID: nodeID,
-		State:  state,
-		Reason: reason,
+		Type:             EventHandoff,
+		ExecutionPointer: ExecutionPointer(pointer),
+		State:            state,
+		Reason:           reason,
 	}
 }
 
-func newRunResultHandoff[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+func newRunResultHandoff[T, E any](state T, effects []E, meta RunMetadata, pointer, reason string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusHandoff,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  reason,
+		State:            state,
+		Status:           RunStatusHandoff,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
+		Reason:           reason,
 	}
 }
 
-func newRunResultCompleted[T, E any](state T, effects []E, meta RunMetadata, nodeID string) *RunResult[T, E] {
+func newRunResultCompleted[T, E any](state T, effects []E, meta RunMetadata, pointer string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusCompleted,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
+		State:            state,
+		Status:           RunStatusCompleted,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
 	}
 }
 
-func newRunResultContextCanceled[T, E any](state T, effects []E, meta RunMetadata, nodeID string) *RunResult[T, E] {
+func newRunResultContextCanceled[T, E any](state T, effects []E, meta RunMetadata, pointer string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusContextCanceled,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  "context_canceled",
+		State:            state,
+		Status:           RunStatusContextCanceled,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
+		Reason:           "context_canceled",
 	}
 }
 
-func newRunResultSuspended[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+func newRunResultSuspended[T, E any](state T, effects []E, meta RunMetadata, pointer, reason string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusSuspended,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  reason,
+		State:            state,
+		Status:           RunStatusSuspended,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
+		Reason:           reason,
 	}
 }
 
-func newRunResultFailed[T, E any](state T, effects []E, meta RunMetadata, nodeID, reason string) *RunResult[T, E] {
+func newRunResultFailed[T, E any](state T, effects []E, meta RunMetadata, pointer, reason string) *RunResult[T, E] {
 	return &RunResult[T, E]{
-		State:   state,
-		Status:  RunStatusFailed,
-		Effects: append([]E(nil), effects...),
-		RunMeta: meta,
-		NodeID:  nodeID,
-		Reason:  reason,
+		State:            state,
+		Status:           RunStatusFailed,
+		Effects:          append([]E(nil), effects...),
+		RunMeta:          meta,
+		ExecutionPointer: ExecutionPointer(pointer),
+		Reason:           reason,
 	}
 }
 

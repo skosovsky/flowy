@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -38,20 +39,14 @@ func TestLegacyNextDirectiveFails(t *testing.T) {
 func TestResumeOverlayThenReconcileOrder(t *testing.T) {
 	t.Parallel()
 
-	type state struct {
-		Base    string
-		Overlay string
-	}
-
-	var reconcileSeen state
-	b := NewGraph[state, NoEffect](func(cur, upd state) state {
+	b := NewGraph[reconcileOverlayState, NoEffect](func(cur, upd reconcileOverlayState) reconcileOverlayState {
 		cur.Base = upd.Base
 		if upd.Overlay != "" {
 			cur.Overlay = upd.Overlay
 		}
 		return cur
 	})
-	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("wait", func(_ context.Context, s reconcileOverlayState) (reconcileOverlayState, Directive, error) {
 		return s, Suspend("input"), nil
 	})
 	b.AllowNoOutgoingRoute("wait")
@@ -61,39 +56,111 @@ func TestResumeOverlayThenReconcileOrder(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	cp := newMemoryCP[state, NoEffect]()
+	cp := newMemoryCP[reconcileOverlayState, NoEffect]()
 	runner := g.NewRunner(cp)
-	_, err = runner.Start(context.Background(), "th", state{Base: "from-checkpoint"})
+	_, err = runner.Start(context.Background(), "th", reconcileOverlayState{Base: "from-checkpoint"})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
 	_, err = runner.Resume(context.Background(), "th",
-		WithStateOverlay[state, NoEffect](state{Overlay: "user-input"}, func(base, overlay state) state {
-			base.Overlay = overlay.Overlay
-			return base
-		}),
-		WithResumeReconciler(func(snap Snapshot[state, NoEffect]) (string, error) {
-			reconcileSeen = snap.State
-			return snap.NodeID, nil
-		}),
+		WithStateOverlay[reconcileOverlayState, NoEffect](
+			reconcileOverlayState{Overlay: "user-input"},
+			func(base, overlay reconcileOverlayState) reconcileOverlayState {
+				base.Overlay = overlay.Overlay
+				return base
+			},
+		),
 	)
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	if reconcileSeen.Base != "from-checkpoint" || reconcileSeen.Overlay != "user-input" {
-		t.Fatalf("reconcile saw wrong state: %+v", reconcileSeen)
+	snap, loadErr := cp.Load(context.Background(), "th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.State.seenBase != "from-checkpoint" || snap.State.seenOver != "user-input" {
+		t.Fatalf("overlay before reconcile: %+v", snap.State)
+	}
+}
+
+type reconcileOverlayState struct {
+	Base     string
+	Overlay  string
+	Derived  string
+	seenBase string
+	seenOver string
+}
+
+func (s *reconcileOverlayState) Reconcile() error {
+	s.seenBase = s.Base
+	s.seenOver = s.Overlay
+	s.Derived = s.Base + ":" + s.Overlay
+	return nil
+}
+
+func TestResumableStateReconcileAfterOverlay(t *testing.T) {
+	t.Parallel()
+
+	b := NewGraph[reconcileOverlayState, NoEffect](func(cur, upd reconcileOverlayState) reconcileOverlayState {
+		cur.Base = upd.Base
+		if upd.Overlay != "" {
+			cur.Overlay = upd.Overlay
+		}
+		return cur
+	})
+	b.AddNode("wait", func(_ context.Context, s reconcileOverlayState) (reconcileOverlayState, Directive, error) {
+		return s, Suspend("input"), nil
+	})
+	b.AllowNoOutgoingRoute("wait")
+	b.SetEntryPoint("wait")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[reconcileOverlayState, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "reconcile-th", reconcileOverlayState{Base: "from-checkpoint"})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	_, err = runner.Resume(context.Background(), "reconcile-th",
+		WithStateOverlay[reconcileOverlayState, NoEffect](
+			reconcileOverlayState{Overlay: "user-input"},
+			func(base, overlay reconcileOverlayState) reconcileOverlayState {
+				base.Overlay = overlay.Overlay
+				return base
+			},
+		),
+	)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+
+	snap, err := cp.Load(context.Background(), "reconcile-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if snap.State.seenBase != "from-checkpoint" || snap.State.seenOver != "user-input" {
+		t.Fatalf("reconcile order wrong: %+v", snap.State)
+	}
+	if snap.State.Derived != "from-checkpoint:user-input" {
+		t.Fatalf("derived not reconciled: %+v", snap.State)
 	}
 }
 
 func TestBindingsNotPersisted(t *testing.T) {
 	t.Parallel()
 
+	testCounterKey := BindingKey[int]{}
+
 	type state struct{ V int }
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
-		v, ok := BindingFromContext[int](ctx, "counter")
+		v, ok := BindingFromContext(ctx, testCounterKey)
 		if !ok {
 			return s, Fail("no binding"), nil
 		}
@@ -109,7 +176,7 @@ func TestBindingsNotPersisted(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	bindings := NewRunBindings()
-	bindings.Set("counter", 42)
+	Bind(bindings, testCounterKey, 42)
 	runner := g.NewRunner(cp)
 	_, err = runner.Start(context.Background(), "th", state{}, WithBindings[state, NoEffect](bindings))
 	if err != nil {
@@ -125,7 +192,7 @@ func TestBindingsNotPersisted(t *testing.T) {
 	}
 
 	// Bindings map must not appear in serialized snapshot (only state fields).
-	if _, hasBinding := bindings.Get("counter"); !hasBinding {
+	if _, hasBinding := Extract(bindings, testCounterKey); !hasBinding {
 		t.Fatal("binding still in runtime container")
 	}
 }
@@ -418,8 +485,8 @@ func TestHandoffDirectiveAndBackgroundShareCheckpointSemantics(t *testing.T) {
 		t.Fatalf("background load: %v", err)
 	}
 	assertHandoffSnap(t, snapBg, "background")
-	if snapDir.NodeID != snapBg.NodeID {
-		t.Fatalf("node mismatch: dir=%q bg=%q", snapDir.NodeID, snapBg.NodeID)
+	if snapDir.ExecutionPointer != snapBg.ExecutionPointer {
+		t.Fatalf("pointer mismatch: dir=%q bg=%q", snapDir.ExecutionPointer, snapBg.ExecutionPointer)
 	}
 }
 
@@ -799,6 +866,14 @@ func (r *renewFailLease) Release(ctx context.Context, threadID, owner string) er
 	return r.inner.Release(ctx, threadID, owner)
 }
 
+func (r *renewFailLease) IsHeld(ctx context.Context, threadID string) (bool, error) {
+	return r.inner.IsHeld(ctx, threadID)
+}
+
+func (r *renewFailLease) Holder(ctx context.Context, threadID string) (string, bool, error) {
+	return r.inner.Holder(ctx, threadID)
+}
+
 func TestLeaseHeartbeatIntervalFitsTTL(t *testing.T) {
 	t.Parallel()
 
@@ -1166,6 +1241,68 @@ func TestLifecycleTerminalStreamEvents(t *testing.T) {
 	}
 }
 
+func TestWithRunMetadataSeedsBudget(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
+		_ = UseBudget(ctx, "tokens", 3)
+		return s, End(), nil
+	})
+	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Start(
+		context.Background(),
+		"meta-th",
+		state{},
+		WithRunMetadata[state, NoEffect](RunMetadataInput{
+			BudgetCounts: map[string]int{"tokens": 2},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.RunMeta.BudgetCounts["tokens"] != 5 {
+		t.Fatalf("expected budget 5 (2 seed + 3 use), got %d", res.RunMeta.BudgetCounts["tokens"])
+	}
+}
+
+func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	cp := newMemoryCP[state, NoEffect]()
+	if err := cp.Save(context.Background(), Snapshot[state, NoEffect]{
+		ThreadID:         "lease-del-th",
+		ExecutionPointer: "n",
+		State:            state{N: 1},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	lease := NewMemoryLeaseManager()
+	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	if err := lease.Acquire(context.Background(), "lease-del-th", "worker-a", time.Minute); err != nil {
+		t.Fatalf("acquire: %v", err)
+	}
+
+	err := guarded.DeleteIfIdle(context.Background(), "lease-del-th")
+	if !errors.Is(err, ErrThreadBusy) {
+		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	}
+	if _, loadErr := cp.Load(context.Background(), "lease-del-th"); loadErr != nil {
+		t.Fatalf("snapshot should remain: %v", loadErr)
+	}
+}
+
 func TestRuntimeRetryWithoutAddRetryRoute(t *testing.T) {
 	t.Parallel()
 
@@ -1185,5 +1322,482 @@ func TestRuntimeRetryWithoutAddRetryRoute(t *testing.T) {
 	_, err = g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "retry-th", state{})
 	if err == nil || !strings.Contains(err.Error(), "AddRetryRoute") {
 		t.Fatalf("expected AddRetryRoute runtime error, got %v", err)
+	}
+}
+
+func TestResumeUsesSnapshotExecutionPointer(t *testing.T) {
+	t.Parallel()
+
+	type state struct {
+		Trail []string
+		Pass  int
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("gate", func(_ context.Context, s state) (state, Directive, error) {
+		s.Pass++
+		s.Trail = append(s.Trail, "gate")
+		if s.Pass == 1 {
+			return s, Suspend("hold"), nil
+		}
+		return s, Completed(), nil
+	})
+	b.AddNode("after", func(_ context.Context, s state) (state, Directive, error) {
+		s.Trail = append(s.Trail, "after")
+		return s, End(), nil
+	})
+	b.AddEdge("gate", "after")
+	b.AllowNoOutgoingRoute("after")
+	b.SetEntryPoint("gate")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "ptr-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if cp.last.ExecutionPointer != "gate" {
+		t.Fatalf("expected pointer gate, got %q", cp.last.ExecutionPointer)
+	}
+
+	res, err := runner.Resume(context.Background(), "ptr-th")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if res.Status != RunStatusCompleted {
+		t.Fatalf("expected completed, got %s", res.Status)
+	}
+	if fmt.Sprint(res.State.Trail) != "[gate gate after]" {
+		t.Fatalf("expected resume re-entry at gate then after, got %v", res.State.Trail)
+	}
+}
+
+func TestWithRunMetadataOnResume(t *testing.T) {
+	t.Parallel()
+
+	type state struct {
+		Tokens int
+		Pass   int
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
+		s.Pass++
+		if s.Pass == 1 {
+			return s, Suspend("hold"), nil
+		}
+		return s, Completed(), nil
+	})
+	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
+		_ = UseBudget(ctx, "tokens", 3)
+		if meta, ok := runMetadataFromContext(ctx); ok {
+			s.Tokens = meta.BudgetCounts["tokens"]
+		}
+		return s, End(), nil
+	})
+	b.AddEdge("wait", "n")
+	b.AllowNoOutgoingRoute("n")
+	b.SetEntryPoint("wait")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "meta-resume-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	res, err := runner.Resume(context.Background(), "meta-resume-th",
+		WithRunMetadata[state, NoEffect](RunMetadataInput{
+			BudgetCounts: map[string]int{"tokens": 4},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if res.State.Tokens != 7 {
+		t.Fatalf("expected budget 7 (4 seed + 3 use), got %d", res.State.Tokens)
+	}
+}
+
+func TestResumePreservesBudgetUnlessOverridden(t *testing.T) {
+	t.Parallel()
+
+	type state struct {
+		Tokens int
+		Pass   int
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("wait", func(ctx context.Context, s state) (state, Directive, error) {
+		s.Pass++
+		if s.Pass == 1 {
+			_ = UseBudget(ctx, "tokens", 2)
+			return s, Suspend("hold"), nil
+		}
+		return s, Completed(), nil
+	})
+	b.AddNode("n", func(ctx context.Context, s state) (state, Directive, error) {
+		if meta, ok := runMetadataFromContext(ctx); ok {
+			s.Tokens = meta.BudgetCounts["tokens"]
+		}
+		return s, End(), nil
+	})
+	b.AddEdge("wait", "n")
+	b.AllowNoOutgoingRoute("n")
+	b.SetEntryPoint("wait")
+	g, err := b.Compile(WithNamedBudget("tokens", 10))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, err = runner.Start(context.Background(), "budget-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if cp.last.RunMeta.BudgetCounts["tokens"] != 2 {
+		t.Fatalf("expected persisted budget 2, got %d", cp.last.RunMeta.BudgetCounts["tokens"])
+	}
+
+	res, err := runner.Resume(context.Background(), "budget-th")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if res.State.Tokens != 2 {
+		t.Fatalf("expected preserved budget 2 on resume, got %d", res.State.Tokens)
+	}
+}
+
+type valueReconcileState struct {
+	Base    string
+	Derived string
+}
+
+func (s valueReconcileState) Reconcile() error {
+	s.Derived = "lost:" + s.Base //nolint:govet,staticcheck // value receiver: write intentionally discarded
+	return nil
+}
+
+func TestResumableStateValueReceiverDoesNotMutate(t *testing.T) {
+	t.Parallel()
+
+	b := NewGraph[valueReconcileState, NoEffect](
+		func(_ valueReconcileState, u valueReconcileState) valueReconcileState {
+			return u
+		},
+	)
+	b.AddNode("wait", func(_ context.Context, s valueReconcileState) (valueReconcileState, Directive, error) {
+		return s, Suspend("hold"), nil
+	})
+	b.SetEntryPoint("wait")
+	b.AllowNoOutgoingRoute("wait")
+	g, _ := b.Compile()
+	cp := newMemoryCP[valueReconcileState, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, _ = runner.Start(context.Background(), "val-th", valueReconcileState{Base: "x"})
+	_, err := runner.Resume(context.Background(), "val-th")
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if cp.last.State.Derived != "" {
+		t.Fatalf("value-receiver Reconcile must not mutate persisted state, got %q", cp.last.State.Derived)
+	}
+}
+
+type failReconcileState struct {
+	Base string
+}
+
+func (s *failReconcileState) Reconcile() error {
+	return errors.New("reconcile failed")
+}
+
+func TestResumableStateReconcileError(t *testing.T) {
+	t.Parallel()
+
+	b := NewGraph[failReconcileState, NoEffect](func(_ failReconcileState, u failReconcileState) failReconcileState {
+		return u
+	})
+	b.AddNode("wait", func(_ context.Context, s failReconcileState) (failReconcileState, Directive, error) {
+		return s, Suspend("hold"), nil
+	})
+	b.SetEntryPoint("wait")
+	b.AllowNoOutgoingRoute("wait")
+	g, _ := b.Compile()
+	cp := newMemoryCP[failReconcileState, NoEffect]()
+	runner := g.NewRunner(cp)
+	_, _ = runner.Start(context.Background(), "rec-err-th", failReconcileState{})
+	_, err := runner.Resume(context.Background(), "rec-err-th")
+	if err == nil || !strings.Contains(err.Error(), "reconcile failed") {
+		t.Fatalf("expected reconcile error, got %v", err)
+	}
+}
+
+func TestEmptyExecutionPointerReturnsErrInvalidSnapshot(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	_ = cp.Save(context.Background(), Snapshot[state, NoEffect]{
+		ThreadID:         "empty-ptr",
+		ExecutionPointer: "",
+		State:            state{},
+	})
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) { return s, End(), nil })
+	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
+	g, _ := b.Compile()
+
+	_, err := g.NewRunner(cp).Resume(context.Background(), "empty-ptr")
+	if !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
+	}
+}
+
+func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.SetEntryPoint("n")
+	b.AllowNoOutgoingRoute("n")
+	g, err := b.Compile(WithDeleteOnSuccess(true))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	if saveErr := cp.Save(context.Background(), Snapshot[state, NoEffect]{
+		ThreadID:         "del-busy-th",
+		ExecutionPointer: "n",
+		State:            state{},
+	}); saveErr != nil {
+		t.Fatalf("seed snapshot: %v", saveErr)
+	}
+	lease := NewMemoryLeaseManager()
+	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	if acquireErr := lease.Acquire(
+		context.Background(), "del-busy-th", "other-worker", time.Minute,
+	); acquireErr != nil {
+		t.Fatalf("acquire other: %v", acquireErr)
+	}
+	runner := g.NewRunner(guarded)
+
+	_, err = runner.Start(context.Background(), "del-busy-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	if _, loadErr := cp.Load(context.Background(), "del-busy-th"); loadErr != nil {
+		t.Fatalf("snapshot should remain when delete blocked: %v", loadErr)
+	}
+}
+
+type nativeStubCP[T, E any] struct {
+	memoryCP[T, E]
+}
+
+func (*nativeStubCP[T, E]) NativeDeleteIfIdle() {}
+
+type pairedStubLease struct {
+	MemoryLeaseManager
+}
+
+func (*pairedStubLease) NativeLeaseManager() {}
+
+func TestDeleteOnSuccessAfterReleaseLease(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("done", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("done")
+	b.SetEntryPoint("done")
+	g, err := b.Compile(WithDeleteOnSuccess(true))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := &nativeStubCP[state, NoEffect]{}
+	lease := &pairedStubLease{MemoryLeaseManager: *NewMemoryLeaseManager()}
+	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
+		WithLeaseManager[state, NoEffect](lease),
+	})
+	leaseOpts := []RunOption[state, NoEffect]{
+		WithRunLease[state, NoEffect]("worker-1", time.Minute),
+	}
+
+	_, err = runner.Start(context.Background(), "del-after-release", state{}, leaseOpts...)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if _, loadErr := cp.Load(context.Background(), "del-after-release"); !errors.Is(loadErr, ErrThreadNotFound) {
+		t.Fatalf("expected deleted snapshot after release+delete, got %v", loadErr)
+	}
+}
+
+func TestStreamResumeReleasesLeaseOnPrepareResumeError(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("n")
+	b.SetEntryPoint("n")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	lease := NewMemoryLeaseManager()
+	runner := g.NewRunnerWithOptions(newMemoryCP[state, NoEffect](), []RunnerOption[state, NoEffect]{
+		WithLeaseManager[state, NoEffect](lease),
+	})
+	leaseOpts := []RunOption[state, NoEffect]{
+		WithRunLease[state, NoEffect]("worker-1", time.Minute),
+	}
+
+	_, err = runner.StreamResume(context.Background(), "missing-stream-resume-th", leaseOpts...)
+	if !errors.Is(err, ErrThreadNotFound) {
+		t.Fatalf("expected ErrThreadNotFound, got %v", err)
+	}
+
+	if err := lease.Acquire(context.Background(), "missing-stream-resume-th", "worker-2", time.Minute); err != nil {
+		t.Fatalf("lease should be released after prepareResume error, acquire worker-2 failed: %v", err)
+	}
+}
+
+func TestRunnerRejectsMismatchedLeaseStore(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("n")
+	b.SetEntryPoint("n")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := &nativeStubCP[state, NoEffect]{}
+	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
+		WithLeaseManager[state, NoEffect](NewMemoryLeaseManager()),
+	})
+
+	_, err = runner.Start(context.Background(), "mismatch-th", state{},
+		WithRunLease[state, NoEffect]("worker-1", time.Minute),
+	)
+	if err == nil {
+		t.Fatal("expected mismatch lease store error")
+	}
+	if !strings.Contains(err.Error(), "paired adapters/lease") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHandoffWhenNodeReturnsContextErr(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		<-ctx.Done()
+		return s, Completed(), ctx.Err()
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+
+	done := make(chan *RunResult[state, NoEffect], 1)
+	go func() {
+		res, runErr := runner.Start(context.Background(), "handoff-ctx-err", state{})
+		if runErr != nil {
+			t.Errorf("start: %v", runErr)
+		}
+		done <- res
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	if handoffErr := runner.HandoffToBackground(context.Background(), "handoff-ctx-err"); handoffErr != nil {
+		t.Fatalf("handoff: %v", handoffErr)
+	}
+
+	res := <-done
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected handoff status, got %+v", res)
+	}
+}
+
+func TestRetryBudgetExceededAppliesTerminalPolicy(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("retry", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Retry(1), nil
+	})
+	b.AddRetryRoute("retry", "retry")
+	b.AllowNoOutgoingRoute("retry")
+	b.SetEntryPoint("retry")
+	g, err := b.Compile(WithRetentionLimit(2))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	for i := range 5 {
+		_ = cp.Save(context.Background(), Snapshot[state, NoEffect]{
+			ThreadID:         "retry-policy-th",
+			Revision:         i + 1,
+			ExecutionPointer: "retry",
+			State:            state{},
+		})
+	}
+
+	_, err = g.NewRunner(cp).Start(context.Background(), "retry-policy-th", state{})
+	if !errors.Is(err, ErrRetryBudgetExceeded) {
+		t.Fatalf("expected retry budget exceeded, got %v", err)
+	}
+
+	history, histErr := cp.GetHistory(context.Background(), "retry-policy-th", 10)
+	if histErr != nil {
+		t.Fatalf("history: %v", histErr)
+	}
+	if len(history) > 2 {
+		t.Fatalf("expected retention prune after failed run, got %d snapshots", len(history))
 	}
 }
