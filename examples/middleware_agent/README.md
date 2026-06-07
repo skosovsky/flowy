@@ -23,7 +23,7 @@ go run main.go
 
 ## Stream + panic
 
-Второй прогон использует `Stream`: при panic в `unstable` ожидайте терминальное событие `failed` в потоке.
+Второй прогон использует `Stream` + `CollectEventsAndWait` (безопасный drain + `Wait`): при panic в `unstable` ожидайте терминальное событие `failed` в потоке.
 
 ## Boxed OTel middleware
 

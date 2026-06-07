@@ -11,7 +11,7 @@ import (
 // ErrHandoffRequested is returned when execution ends for background handoff.
 var ErrHandoffRequested = errors.New("flowy: handoff to background requested")
 
-// ErrHandoffNotCompleted is returned when HandoffToBackground times out waiting for checkpoint save.
+// ErrHandoffNotCompleted is returned when RequestLocalHandoff times out waiting for checkpoint save.
 var ErrHandoffNotCompleted = errors.New("flowy: handoff did not complete before deadline")
 
 const handoffCompletionTimeout = 30 * time.Second
@@ -35,7 +35,8 @@ func newRunSession(cancel context.CancelCauseFunc) *runSession {
 func (s *runSession) finish(err error) {
 	s.once.Do(func() {
 		if err != nil {
-			s.err.Store(&err)
+			e := err
+			s.err.Store(&e)
 		}
 		close(s.done)
 	})

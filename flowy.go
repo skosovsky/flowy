@@ -166,6 +166,10 @@ const (
 	ReasonHandoffCheckpointSkipped         = "handoff_checkpoint_skipped"
 	ReasonContextCanceledCheckpointSkipped = "context_canceled_checkpoint_skipped"
 	ReasonContextCanceledSaveFailed        = "context_canceled_save_failed"
+	ReasonHandoffPointerResolveFailed      = "handoff_pointer_resolve_failed"
+	ReasonSuspendPointerResolveFailed      = "suspend_pointer_resolve_failed"
+	ReasonHandoffSaveFailed                = "handoff_save_failed"
+	ReasonSuspendSaveFailed                = "suspend_save_failed"
 )
 
 // SegmentEndReason describes why a compute segment ended.
@@ -234,7 +238,7 @@ type Checkpointer[T, E any] interface {
 	Prune(ctx context.Context, threadID string, retainCount int) error
 	// Delete unconditionally removes snapshots. Prefer DeleteIfIdle for runner retention policies.
 	Delete(ctx context.Context, threadID string) error
-	// DeleteIfIdle removes snapshots only when the thread has no active lease (see ErrThreadBusy).
+	// DeleteIfIdle removes snapshots only when the thread has no active lease (see ErrThreadLeaseBusy).
 	DeleteIfIdle(ctx context.Context, threadID string) error
 }
 
@@ -263,15 +267,15 @@ type StateInterceptor[T any] interface {
 }
 
 // ResumeToken identifies a persisted thread snapshot for optimistic-concurrency resume.
-// Generation maps to Snapshot.Revision after the terminal save that produced the token.
+// SnapshotRevision maps to Snapshot.Revision after the terminal save that produced the token.
 type ResumeToken struct {
-	ThreadID   string
-	Generation int
+	ThreadID         string
+	SnapshotRevision int
 }
 
 // ResumeTokenFromSnapshot builds a resume token from a loaded snapshot.
 func ResumeTokenFromSnapshot[T, E any](s Snapshot[T, E]) ResumeToken {
-	return ResumeToken{ThreadID: s.ThreadID, Generation: s.Revision}
+	return ResumeToken{ThreadID: s.ThreadID, SnapshotRevision: s.Revision}
 }
 
 // SuspendPointerResolver overrides the execution pointer stored on Suspend/Handoff saves.
@@ -286,8 +290,8 @@ type HandoffScheduler interface {
 type CheckpointFailurePolicy string
 
 const (
-	CheckpointPolicyHardFail CheckpointFailurePolicy = "hard_fail"
-	CheckpointPolicySoftWarn CheckpointFailurePolicy = "soft_warn"
+	CheckpointPolicyHardFail        CheckpointFailurePolicy = "hard_fail"
+	CheckpointPolicySkipOnSaveError CheckpointFailurePolicy = "soft_warn" // persisted config value unchanged
 )
 
 // RunResult is the final state returned to the application.
@@ -327,22 +331,43 @@ type RunEvent[T, E any] struct {
 }
 
 // StreamHandle controls the lifecycle of asynchronous graph streaming.
+//
+// Events: the channel closes only after the run goroutine fully terminates. Do not block on
+// for-range Events on the same goroutine if you plan to call RequestStop or RequestLocalHandoff
+// later — use CollectEventsAndWait, ConsumeEventsAndWait, or BeginStreamCollect instead.
+//
+// RequestStop: closes the event sink and cancels the in-flight run context (cancelSessionForConsumerStop).
+// Do not call RequestLocalHandoff after RequestStop; the run has already terminated and the API returns
+// [ErrNoActiveExecution]. A terminal event may be dropped after consumer stop; the checkpointer snapshot
+// is the source of truth for terminal state and reason (persist-vs-event semantics).
+//
+// Wait: call exactly once after Events is fully consumed (or use package helpers that do this safely).
+// RequestStop after persisted cancel save returns nil; RequestStop with skip-on-save-error policy returns
+// [ErrCheckpointSkipped]; parent context cancel returns [context.Canceled]; retention or schedule
+// failures return their respective errors.
 type StreamHandle[T, E any] interface {
 	Events() <-chan RunEvent[T, E]
-	Close()
-	Done() error
+	RequestStop()
+	Wait() error
 }
 
 // Runner controls lifecycle for start/resume executions.
+// Stream and ResumeStream open the event channel immediately; if the thread already has an active
+// in-process execution, the duplicate attempt is not rejected at open time — call Wait() on the
+// second handle to observe [ErrThreadAlreadyRunning]. Start and Resume reject duplicates synchronously.
 type Runner[T, E any] interface {
 	Start(ctx context.Context, threadID string, initialState T, opts ...RunOption[T, E]) (*RunResult[T, E], error)
 	Resume(ctx context.Context, token ResumeToken, opts ...RunOption[T, E]) (*RunResult[T, E], error)
 	Stream(ctx context.Context, threadID string, initialState T, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
-	StreamResume(ctx context.Context, token ResumeToken, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
-	// HandoffToBackground requests graceful termination of the active foreground execution on this runner instance only.
-	// It cancels the in-process run, waits until the handoff checkpoint is persisted, then returns.
+	ResumeStream(ctx context.Context, token ResumeToken, opts ...RunOption[T, E]) (StreamHandle[T, E], error)
+	// RequestLocalHandoff requests graceful termination of the active foreground execution on this runner instance only.
+	// It cancels the in-process run and waits until the handoff terminal path completes, then returns:
+	//   - nil when checkpoint was persisted and retention succeeded;
+	//   - ErrCheckpointSkipped when skip-on-save-error policy skips persist (no snapshot);
+	//   - ErrHandoffScheduleFailed (and optionally joined retention error) when schedule fails after persist (snapshot retained);
+	//   - wrapped retention or save errors on HardFail paths.
 	// A background worker on any instance must call Resume with a new lease; cross-process handoff uses checkpoint + lease, not this API alone.
-	HandoffToBackground(ctx context.Context, threadID string) error
+	RequestLocalHandoff(ctx context.Context, threadID string) error
 }
 
 // Sentinel errors for runner flow and validation.
@@ -353,6 +378,7 @@ var (
 	ErrLeaseOwnerRequired      = errors.New("flowy: WithRunLease owner is required when LeaseManager is configured")
 	ErrLeaseLost               = errors.New("flowy: thread lease lost or expired")
 	ErrNoActiveExecution       = errors.New("flowy: no active execution to hand off")
+	ErrThreadAlreadyRunning    = errors.New("flowy: thread already has an active in-process execution")
 	ErrRetryBudgetExceeded     = errors.New("flowy: per-node retry budget exceeded")
 	ErrInvalidSnapshot         = errors.New("flowy: snapshot has invalid or empty execution pointer")
 	ErrResumeReconcileFailed   = errors.New("flowy: resume reconcile failed")
@@ -360,6 +386,10 @@ var (
 	ErrStaleResumeToken        = errors.New("flowy: stale resume token")
 	ErrHandoffScheduleFailed   = errors.New("flowy: handoff schedule failed")
 	ErrInvalidResumeToken      = errors.New("flowy: invalid resume token")
+	ErrInvalidCheckpointPolicy = errors.New("flowy: invalid checkpoint failure policy")
+	// ErrCheckpointSkipped is returned from StreamHandle.Wait when consumer RequestStop stops execution
+	// with skip-on-save-error policy, and from RequestLocalHandoff when persist is skipped.
+	ErrCheckpointSkipped = errors.New("flowy: checkpoint skipped")
 )
 
 // EndNode is a terminal graph target for AddEdge/AddConditionalEdge.

@@ -68,12 +68,13 @@ func newRunEventNodeCompletedWithEffect[T, E any](
 	}
 }
 
-func newRunEventFailed[T, E any](pointer string, state T, err error) RunEvent[T, E] {
+func newRunEventFailed[T, E any](pointer string, state T, err error, reason string) RunEvent[T, E] {
 	return RunEvent[T, E]{
 		Type:             EventFailed,
 		ExecutionPointer: ExecutionPointer(pointer),
 		State:            state,
 		Error:            err,
+		Reason:           reason,
 	}
 }
 

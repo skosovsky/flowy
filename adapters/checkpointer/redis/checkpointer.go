@@ -140,7 +140,7 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 	if result == 0 {
 		held, existsErr := c.client.Exists(ctx, c.leaseKey(threadID)).Result()
 		if existsErr == nil && held > 0 {
-			return flowy.ErrThreadBusy
+			return flowy.ErrThreadLeaseBusy
 		}
 	}
 	return nil

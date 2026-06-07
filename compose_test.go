@@ -42,8 +42,12 @@ func TestSubgraphHandoffPropagates(t *testing.T) {
 		t.Fatalf("compile parent: %v", err)
 	}
 
-	res, err := parentGraph.NewRunner(newMemoryCP[parentState, NoEffect]()).
-		Start(context.Background(), "sub-handoff", parentState{})
+	scheduler := &stubHandoffScheduler{}
+	cp := newMemoryCP[parentState, NoEffect]()
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-handoff", parentState{},
+			WithHandoffScheduler[parentState, NoEffect](scheduler),
+		)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -52,6 +56,22 @@ func TestSubgraphHandoffPropagates(t *testing.T) {
 	}
 	if res.Reason != "child_to_background" {
 		t.Fatalf("expected child handoff reason, got %q", res.Reason)
+	}
+	if len(scheduler.calls) != 1 {
+		t.Fatalf("expected single parent-level scheduler call after inner handoff, got %d", len(scheduler.calls))
+	}
+	if scheduler.calls[0].ThreadID != "sub-handoff" {
+		t.Fatalf("expected parent thread in scheduler token, got %+v", scheduler.calls[0])
+	}
+	snap, loadErr := cp.Load(context.Background(), "sub-handoff")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if res.ResumeToken.SnapshotRevision != snap.Revision {
+		t.Fatalf("snapshot revision %d != revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
+	}
+	if scheduler.calls[0].SnapshotRevision != snap.Revision {
+		t.Fatalf("scheduler snapshot revision %d != revision %d", scheduler.calls[0].SnapshotRevision, snap.Revision)
 	}
 }
 
@@ -238,8 +258,15 @@ func TestSubgraphHandoffResumeContinuity(t *testing.T) {
 	if first.Status != RunStatusHandoff {
 		t.Fatalf("expected handoff, got %s", first.Status)
 	}
-	if first.ResumeToken.Generation <= 0 {
+	if first.ResumeToken.SnapshotRevision <= 0 {
 		t.Fatalf("expected parent ResumeToken on handoff, got %+v", first.ResumeToken)
+	}
+	snap, err := cp.Load(context.Background(), "sub-resume-th")
+	if err != nil {
+		t.Fatalf("load parent snapshot: %v", err)
+	}
+	if first.ResumeToken.SnapshotRevision != snap.Revision {
+		t.Fatalf("snapshot revision %d != snapshot revision %d", first.ResumeToken.SnapshotRevision, snap.Revision)
 	}
 	if first.State.Slot.ExecutionPointer != "step1" || first.State.Child.Step != 1 {
 		t.Fatalf("expected subgraph slot at step1, got slot=%+v child=%+v", first.State.Slot, first.State.Child)
@@ -324,7 +351,7 @@ func TestSubgraphSuspendSlotResumeContinuity(t *testing.T) {
 	if first.Status != RunStatusSuspended {
 		t.Fatalf("expected suspended, got %s", first.Status)
 	}
-	if first.ResumeToken.Generation <= 0 {
+	if first.ResumeToken.SnapshotRevision <= 0 {
 		t.Fatalf("expected parent ResumeToken on suspend, got %+v", first.ResumeToken)
 	}
 	if first.State.Slot.ExecutionPointer != "work" || first.State.Child.Step != 1 {
@@ -406,7 +433,7 @@ func TestComposeSubgraphResumeToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if first.ResumeToken.Generation <= 0 {
+	if first.ResumeToken.SnapshotRevision <= 0 {
 		t.Fatalf("expected parent OCC ResumeToken, got %+v", first.ResumeToken)
 	}
 	if first.State.Slot.Revision <= 0 {

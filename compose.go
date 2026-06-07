@@ -48,6 +48,7 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		var result *RunResult[Sub, E]
 		var err error
 		if slot, ok := loadSlot(parentState); ok && slot.ExecutionPointer != "" {
+			// Slot seed uses direct Save (not persistSnapshot); parent RunOptions do not apply.
 			if seedErr := cp.Save(ctx, Snapshot[Sub, E]{
 				ThreadID:         threadID,
 				ExecutionPointer: slot.ExecutionPointer,
@@ -59,8 +60,8 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 				return parentState, Fail("subgraph seed"), seedErr
 			}
 			result, err = sub.NewRunner(cp).Resume(ctx, ResumeToken{
-				ThreadID:   threadID,
-				Generation: slot.Revision,
+				ThreadID:         threadID,
+				SnapshotRevision: slot.Revision,
 			})
 		} else {
 			subState := mapIn(parentState)
@@ -89,6 +90,8 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		case RunStatusSuspended:
 			return parentState, Suspend(result.Reason), nil
 		case RunStatusContextCanceled:
+			// Inner context cancel maps to Completed on the parent subgraph node;
+			// the error return propagates context.Canceled to the parent runner.
 			return parentState, Completed(), context.Canceled
 		case RunStatusHandoff:
 			return parentState, Handoff(result.Reason), nil
@@ -112,6 +115,7 @@ const (
 	subgraphTestModeNone subgraphTestMode = iota
 	subgraphTestModeFailSeedSave
 	subgraphTestModeFailSlotLoad
+	subgraphTestModeStaleInnerRevision
 )
 
 type subgraphTestModeKey struct{}
@@ -138,6 +142,9 @@ func newSubgraphCheckpointer[Sub, E any](ctx context.Context) Checkpointer[Sub, 
 			failSave:            false,
 			failLoad:            true,
 		}
+	case subgraphTestModeStaleInnerRevision:
+		base := newCaptureCheckpointer[Sub, E]()
+		return &bumpRevisionOnLoadCP[Sub, E]{captureCheckpointer: *base}
 	default:
 		return newCaptureCheckpointer[Sub, E]()
 	}

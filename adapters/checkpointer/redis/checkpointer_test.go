@@ -63,6 +63,30 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	}
 }
 
+func TestExecutionPointerRoundtrip(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	if err := cp.Save(context.Background(), flowy.Snapshot[state, string]{
+		ThreadID:         "router-th",
+		Revision:         1,
+		ExecutionPointer: "router",
+		State:            state{Value: "ok"},
+	}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	got, err := cp.Load(context.Background(), "router-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.ExecutionPointer != "router" {
+		t.Fatalf("execution pointer roundtrip: want router, got %q", got.ExecutionPointer)
+	}
+}
+
 func TestLoadNoSnapshot(t *testing.T) {
 	t.Parallel()
 	mr := miniredis.RunT(t)
@@ -83,8 +107,12 @@ func TestGetHistory(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
-	_ = cp.Save(context.Background(), testSnapshot(2, "v2"))
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	if err := cp.Save(context.Background(), testSnapshot(2, "v2")); err != nil {
+		t.Fatalf("save v2: %v", err)
+	}
 	history, err := cp.GetHistory(context.Background(), "t1", 10)
 	if err != nil {
 		t.Fatalf("history: %v", err)
@@ -104,9 +132,15 @@ func TestPruneRetainsLatestN(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
-	_ = cp.Save(context.Background(), testSnapshot(2, "v2"))
-	_ = cp.Save(context.Background(), testSnapshot(3, "v3"))
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
+	if err := cp.Save(context.Background(), testSnapshot(2, "v2")); err != nil {
+		t.Fatalf("save v2: %v", err)
+	}
+	if err := cp.Save(context.Background(), testSnapshot(3, "v3")); err != nil {
+		t.Fatalf("save v3: %v", err)
+	}
 
 	if err := cp.Prune(context.Background(), "t1", 2); err != nil {
 		t.Fatalf("prune: %v", err)
@@ -134,8 +168,8 @@ func TestDeleteIfIdleBlockedByLeaseKey(t *testing.T) {
 		t.Fatalf("set lease: %v", err)
 	}
 	err := cp.DeleteIfIdle(context.Background(), "t1")
-	if !errors.Is(err, flowy.ErrThreadBusy) {
-		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	if !errors.Is(err, flowy.ErrThreadLeaseBusy) {
+		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
 	_, loadErr := cp.Load(context.Background(), "t1")
 	if loadErr != nil {
@@ -196,7 +230,9 @@ func TestPruneDeleteAllWhenRetainNonPositive(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	_ = cp.Save(context.Background(), testSnapshot(1, "v1"))
+	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("save v1: %v", err)
+	}
 	if err := cp.Prune(context.Background(), "t1", 0); err != nil {
 		t.Fatalf("prune: %v", err)
 	}

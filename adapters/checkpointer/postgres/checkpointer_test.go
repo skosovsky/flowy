@@ -147,6 +147,43 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestExecutionPointerRoundtrip(t *testing.T) {
+	t.Parallel()
+	now := time.Now().UTC()
+	row := fakeRow{
+		values: []any{
+			"router-th",
+			1,
+			"router",
+			[]byte(`{"value":"ok"}`),
+			mustRunMetaBytes(t, now, map[string]int{}, 0),
+			[]byte(`[]`),
+			now,
+		},
+	}
+	db := &fakeDB{row: row}
+	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+
+	err := cp.Save(context.Background(), flowy.Snapshot[sampleState, flowy.NoEffect]{
+		ThreadID:         "router-th",
+		Revision:         1,
+		ExecutionPointer: "router",
+		State:            sampleState{Value: "ok"},
+		RunMeta:          flowy.RunMetadata{SegmentStartTime: now},
+	})
+	if err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	got, err := cp.Load(context.Background(), "router-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if got.ExecutionPointer != "router" {
+		t.Fatalf("execution pointer roundtrip: want router, got %q", got.ExecutionPointer)
+	}
+}
+
 func TestLoadNoSnapshot(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{row: fakeRow{err: pgx.ErrNoRows}}
@@ -260,7 +297,7 @@ func TestDeleteIfIdleBlockedByActiveLease(t *testing.T) {
 	db := &deleteIfIdleDB{deleteRows: 0, leaseHeld: true}
 	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 	err := cp.DeleteIfIdle(context.Background(), "thread-1")
-	if !errors.Is(err, flowy.ErrThreadBusy) {
-		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	if !errors.Is(err, flowy.ErrThreadLeaseBusy) {
+		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
 }

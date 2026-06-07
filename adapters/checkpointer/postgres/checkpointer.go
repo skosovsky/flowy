@@ -153,7 +153,7 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 			pgx.NamedArgs{"thread_id": threadID},
 		)
 		if scanErr := row.Scan(&held); scanErr == nil && held {
-			return flowy.ErrThreadBusy
+			return flowy.ErrThreadLeaseBusy
 		}
 	}
 	return nil

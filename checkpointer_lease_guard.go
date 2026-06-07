@@ -54,7 +54,7 @@ func (c *leaseGuardCheckpointer[T, E]) DeleteIfIdle(ctx context.Context, threadI
 	if held {
 		caller := LeaseOwnerFromContext(ctx)
 		if caller == "" || holder != caller {
-			return ErrThreadBusy
+			return ErrThreadLeaseBusy
 		}
 	}
 	return c.inner.DeleteIfIdle(ctx, threadID)

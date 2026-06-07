@@ -94,7 +94,7 @@ func WithHandoffScheduler[T, E any](scheduler HandoffScheduler) RunOption[T, E] 
 }
 
 // WithCheckpointErrorPolicy sets behavior when Checkpointer.Save fails during terminal saves.
-// SoftWarn emits EventCheckpointFailed on Stream/StreamResume only; sync Start/Resume swallow
+// CheckpointPolicySkipOnSaveError emits EventCheckpointFailed on Stream/ResumeStream only; sync Start/Resume swallow
 // the save error without observable signal and do not populate ResumeToken. Terminal flow
 // continues with reason suffixes suspended_checkpoint_skipped, handoff_checkpoint_skipped, or
 // context_canceled_checkpoint_skipped when the checkpoint was not persisted.
@@ -119,14 +119,19 @@ func resolveSuspendPointer[T any](
 	return ptr, nil
 }
 
-func applyRunOptions[T, E any](opts ...RunOption[T, E]) runInvocationOptions[T, E] {
+func applyRunOptions[T, E any](opts ...RunOption[T, E]) (runInvocationOptions[T, E], error) {
 	var out runInvocationOptions[T, E]
 	for _, opt := range opts {
 		if opt != nil {
 			opt.apply(&out)
 		}
 	}
-	return out
+	if out.checkpointPolicy != "" &&
+		out.checkpointPolicy != CheckpointPolicyHardFail &&
+		out.checkpointPolicy != CheckpointPolicySkipOnSaveError {
+		return out, fmt.Errorf("%w: %q", ErrInvalidCheckpointPolicy, out.checkpointPolicy)
+	}
+	return out, nil
 }
 
 // UseBudget records consumption of a named budget in run metadata.

@@ -22,14 +22,16 @@ func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, int]{
+			if err := cp.Save(context.Background(), flowy.Snapshot[memoryState, int]{
 				ThreadID:         "thread-1",
 				Revision:         i,
 				ExecutionPointer: "node",
 				State:            memoryState{Value: i},
 				RunMeta:          flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
 				Effects:          []int{i},
-			})
+			}); err != nil {
+				t.Errorf("save %d: %v", i, err)
+			}
 		}(i)
 	}
 	wg.Wait()
@@ -55,12 +57,14 @@ func TestMemoryCheckpointerPruneRetainsLatestN(t *testing.T) {
 	t.Parallel()
 	cp := NewMemoryCheckpointer[memoryState, flowy.NoEffect]()
 	for i := 1; i <= 4; i++ {
-		_ = cp.Save(context.Background(), flowy.Snapshot[memoryState, flowy.NoEffect]{
+		if err := cp.Save(context.Background(), flowy.Snapshot[memoryState, flowy.NoEffect]{
 			ThreadID:         "thread-2",
 			Revision:         i,
 			ExecutionPointer: "node",
 			State:            memoryState{Value: i},
-		})
+		}); err != nil {
+			t.Fatalf("save %d: %v", i, err)
+		}
 	}
 
 	if err := cp.Prune(context.Background(), "thread-2", 2); err != nil {

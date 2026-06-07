@@ -1,62 +1,81 @@
 # Flowy Cookbook
 
-Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream`, декларативного роутинга (`Completed` + edges) и typed effects.
+Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/ResumeStream`, декларативного роутинга (`Completed` + edges) и typed effects.
+
+## Lifecycle API
+
+| Entry point    | Sync result              | Stream events | Terminal authority      |
+| -------------- | ------------------------ | ------------- | ----------------------- |
+| `Start`        | `RunResult` + error      | —             | returned error / result |
+| `Resume`       | `RunResult` + error      | —             | returned error / result |
+| `Stream`       | handle opens immediately | `Events()`    | `Wait()`                |
+| `ResumeStream` | handle opens immediately | `Events()`    | `Wait()`                |
+
+- `StreamHandle.RequestStop()` — consumer-initiated stop (cancels run context + closes event sink). Do not call `RequestLocalHandoff` after `RequestStop`.
+- `StreamHandle.Wait()` — authoritative terminal outcome (`nil`, `ErrCheckpointSkipped`, retention/save errors, `context.Canceled`).
+- **Stream helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect(ctx, handle, out)` — safe drain+Wait (see `stream_request_stop` example).
+- `RequestLocalHandoff` — in-process active-run handoff on **this** `Runner` instance only; cross-process continuation uses checkpoint + lease + `Resume`.
 
 ## Матрица сценариев
 
-| Сценарий                          | Каталог                | Команда                                              |
-| --------------------------------- | ---------------------- | ---------------------------------------------------- |
-| ReAct loop                        | `react_agent`          | `cd examples/react_agent && go run main.go`          |
-| Stream + typed Effect + Suspend   | `streaming_agent`      | `cd examples/streaming_agent && go run main.go`      |
-| Human-in-the-Loop                 | `hitl_agent`           | `cd examples/hitl_agent && go run main.go`           |
-| Middleware + panic recovery       | `middleware_agent`     | `cd examples/middleware_agent && go run main.go`     |
-| Supervisor / multi-agent          | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
-| Context deadline + emergency save | `context_deadline`     | `cd examples/context_deadline && go run main.go`     |
-| Cache routing + late binding      | `conditional_routing`  | `cd examples/conditional_routing && go run main.go`  |
-| Parent + subgraph suspend/resume  | `subgraph_agent`       | `cd examples/subgraph_agent && go run main.go`       |
-| Subgraph slot suspend/resume      | `subgraph_slot_agent`  | `cd examples/subgraph_slot_agent && go run main.go`  |
-| Lease + WithRunLease              | `lease_agent`          | `cd examples/lease_agent && go run main.go`          |
-| Typed BindingKey                  | `bindings_agent`       | `cd examples/bindings_agent && go run main.go`       |
-| Semantic cache routing            | `semantic_cache_agent` | `cd examples/semantic_cache_agent && go run main.go` |
-| Late prompt policy (compile-time) | `late_prompt_agent`    | `cd examples/late_prompt_agent && go run main.go`    |
+| Сценарий                           | Каталог                | Команда                                              |
+| ---------------------------------- | ---------------------- | ---------------------------------------------------- |
+| ReAct loop                         | `react_agent`          | `cd examples/react_agent && go run main.go`          |
+| Stream + typed Effect + Suspend    | `streaming_agent`      | `cd examples/streaming_agent && go run main.go`      |
+| Stream RequestStop (anti-deadlock) | `stream_request_stop`  | `cd examples/stream_request_stop && go run main.go`  |
+| Human-in-the-Loop                  | `hitl_agent`           | `cd examples/hitl_agent && go run main.go`           |
+| Middleware + panic recovery        | `middleware_agent`     | `cd examples/middleware_agent && go run main.go`     |
+| Supervisor / multi-agent           | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
+| Context deadline + emergency save  | `context_deadline`     | `cd examples/context_deadline && go run main.go`     |
+| Cache routing + late binding       | `conditional_routing`  | `cd examples/conditional_routing && go run main.go`  |
+| Parent + subgraph suspend/resume   | `subgraph_agent`       | `cd examples/subgraph_agent && go run main.go`       |
+| Subgraph slot suspend/resume       | `subgraph_slot_agent`  | `cd examples/subgraph_slot_agent && go run main.go`  |
+| Lease + WithRunLease               | `lease_agent`          | `cd examples/lease_agent && go run main.go`          |
+| Typed BindingKey                   | `bindings_agent`       | `cd examples/bindings_agent && go run main.go`       |
+| Semantic cache routing             | `semantic_cache_agent` | `cd examples/semantic_cache_agent && go run main.go` |
+| Late prompt policy (compile-time)  | `late_prompt_agent`    | `cd examples/late_prompt_agent && go run main.go`    |
 
 ## Покрытие API
 
-| Возможность                                    | Runnable example                                         | Unit tests                                                                                                         |
-| ---------------------------------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
-| Declarative routing (`Completed` + edges)      | все examples                                             | `builder_test.go`, `runner_test.go`                                                                                |
-| Resume overlay                                 | `hitl_agent`, `conditional_routing`, `subgraph_agent`    | `runner_lifecycle_test.go`                                                                                         |
-| Stream + typed effects                         | `streaming_agent`                                        | `stream_test.go`                                                                                                   |
-| Handoff lifecycle                              | — (unit tests)                                           | `runner_lifecycle_test.go`, `compose_test.go`, `stream_test.go` (`TestStreamHandoffToBackgroundEmitsHandoffEvent`) |
-| Lease / `WithRunLease` (in-memory happy path)  | `lease_agent`                                            | `runner_lifecycle_test.go` (`ErrLeaseLost`/TTL — unit tests)                                                       |
-| Policies (`DeleteOnSuccess`, `RetentionLimit`) | `lease_agent` (`WithDeleteOnSuccess(true)`)              | `runner_lifecycle_test.go`                                                                                         |
-| Typed `BindingKey` + `Bind`                    | `bindings_agent`                                         | `runner_lifecycle_test.go`                                                                                         |
-| `ResumeReconciler.ReconcileResume`             | `conditional_routing` (state normalize + pointer rewind) | `runner_lifecycle_test.go`, `runner_resume_overlay_test.go`                                                        |
-| `WithRunMetadata`                              | —                                                        | `runner_lifecycle_test.go`, `stream_test.go` (Stream + StreamResume)                                               |
-| `BudgetUsed` / `ContextWithRunMetadata`        | — (isolated node pattern)                                | `run_options_test.go`                                                                                              |
-| `DeleteIfIdle` / lease-aware delete            | `lease_agent` (`WithDeleteOnSuccess` demo)               | `runner_lifecycle_test.go`, adapter tests                                                                          |
-| Subgraph slot resume                           | `subgraph_slot_agent`                                    | `compose_test.go`                                                                                                  |
-| `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                      | `runner_lifecycle_contracts_test.go`                                                                               |
-| `WithSuspendPointerResolver`                   | —                                                        | `runner_lifecycle_contracts_test.go`                                                                               |
-| `WithHandoffScheduler` (Outbox)                | —                                                        | `runner_lifecycle_contracts_test.go`                                                                               |
-| `WithCheckpointErrorPolicy(SoftWarn)`          | — (use Stream)                                           | `runner_lifecycle_contracts_test.go`                                                                               |
-| Named budgets                                  | —                                                        | `runner_lifecycle_test.go`                                                                                         |
-| Lease + checkpoint handoff (in-memory, unit)   | —                                                        | `runner_lifecycle_test.go`, `lease.go`                                                                             |
+| Возможность                                    | Runnable example                                             | Unit tests                                                                                                                |
+| ---------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------- |
+| Declarative routing (`Completed` + edges)      | все examples                                                 | `builder_test.go`, `runner_test.go`                                                                                       |
+| Resume overlay                                 | `hitl_agent`, `conditional_routing`, `subgraph_agent`        | `runner_lifecycle_test.go`                                                                                                |
+| Stream + typed effects                         | `streaming_agent`                                            | `stream_test.go`                                                                                                          |
+| Stream consumer helpers                        | `streaming_agent`, `middleware_agent`, `stream_request_stop` | `stream_helpers_test.go`, `stream_test.go`                                                                                |
+| Handoff lifecycle                              | — (unit tests)                                               | `runner_handoff_contracts_test.go`, `compose_test.go`, `stream_test.go`                                                   |
+| Lease / `WithRunLease` (in-memory happy path)  | `lease_agent`                                                | `runner_lifecycle_test.go`, `runner_reason_parity_test.go`                                                                |
+| Policies (`DeleteOnSuccess`, `RetentionLimit`) | `lease_agent` (`WithDeleteOnSuccess(true)`)                  | `runner_lifecycle_test.go`                                                                                                |
+| Typed `BindingKey` + `Bind`                    | `bindings_agent`                                             | `runner_lifecycle_test.go`                                                                                                |
+| `ResumeReconciler.ReconcileResume`             | `conditional_routing` (state normalize + pointer rewind)     | `runner_lifecycle_test.go`, `runner_resume_overlay_test.go`                                                               |
+| `WithRunMetadata`                              | —                                                            | `runner_lifecycle_test.go`, `stream_test.go` (Stream + ResumeStream)                                                      |
+| `BudgetUsed` / `ContextWithRunMetadata`        | — (isolated node pattern)                                    | `run_options_test.go`                                                                                                     |
+| `DeleteIfIdle` / lease-aware delete            | `lease_agent` (`WithDeleteOnSuccess` demo)                   | `runner_lifecycle_test.go`, adapter tests                                                                                 |
+| Subgraph slot resume                           | `subgraph_slot_agent`                                        | `compose_test.go`                                                                                                         |
+| `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                          | `runner_lifecycle_contracts_test.go`                                                                                      |
+| `WithSuspendPointerResolver`                   | —                                                            | `runner_lifecycle_contracts_test.go`                                                                                      |
+| `WithHandoffScheduler` (Outbox)                | —                                                            | `runner_handoff_contracts_test.go`                                                                                        |
+| `WithCheckpointErrorPolicy(SkipOnSaveError)`   | — (use Stream)                                               | `runner_checkpoint_policy_test.go`, `stream_test.go` (`TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError`) |
+| Session guard / duplicate active run           | —                                                            | `runner_session_guard_test.go`                                                                                            |
+| Reason parity (RunResult vs RunEvent)          | —                                                            | `runner_reason_parity_test.go`                                                                                            |
+| Named budgets                                  | —                                                            | `runner_lifecycle_test.go`                                                                                                |
+| Lease + checkpoint handoff (in-memory, unit)   | —                                                            | `runner_lifecycle_test.go`, `lease.go`                                                                                    |
 
 Общие правила:
 
 - Роутинг только через `AddEdge` / `AddConditionalEdge` с обязательными `allowedTargets` (без `Next(nodeID)`).
-- Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.Generation == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
-- Task18 orchestration: `WithSuspendPointerResolver` (save-path pointer normalize), `WithHandoffScheduler` (Outbox after handoff save), `WithCheckpointErrorPolicy(SoftWarn)` (Stream-only `EventCheckpointFailed`). Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
-- Handoff: `Handoff(reason)` или `HandoffToBackground` (только активный run **в том же процессе** runner); другой воркер — `Resume` + новый lease по checkpoint.
-- Lease: `WithRunLease` обязателен при `WithLeaseManager`; повторный `Start` на занятый thread → `ErrThreadBusy`; после TTL другой owner может `Acquire`.
+- Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.SnapshotRevision == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
+- Task18 orchestration: `WithSuspendPointerResolver`, `WithHandoffScheduler`, `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)`. Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
+- Handoff: `Handoff(reason)` или `RequestLocalHandoff` (только активный run **в том же процессе** runner); другой воркер — `Resume` + новый lease по checkpoint. Directive `Handoff()` skip-on-save-error → `(result, nil)` + `*_checkpoint_skipped`; `RequestLocalHandoff` skip → `ErrCheckpointSkipped`.
+- Lease: `WithRunLease` обязателен при `WithLeaseManager`; повторный acquire → `ErrThreadLeaseBusy`. In-process duplicate → `ErrThreadAlreadyRunning`. Для `Stream`/`ResumeStream` дубликат виден на `Wait()` второго handle.
+- Stream: `RequestStop()` + `Wait()`. Strict terminal-event tests требуют доставку event; persist-vs-event тесты (`*PersistVsEvent*`) допускают drop terminal event — authoritative `Wait()` / snapshot.
+- `RequestLocalHandoff`: `nil` при persist, `ErrCheckpointSkipped` при skip-on-save-error, `ErrHandoffScheduleFailed` при schedule fail после persist.
 
 ## Smoke-валидация
 
-Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (13 каталогов, `go run .`).
+Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (14 каталогов, `go run .`).
 
 ```bash
-go test -run TestExamplesSmoke ./...
+go test ./... -run TestExamplesSmoke -count=1
 make test
-golangci-lint run ./...
 ```

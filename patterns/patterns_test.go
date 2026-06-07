@@ -39,9 +39,12 @@ func TestBuildReActMaxSteps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	_, err = g.NewRunner(memCP[state, flowy.NoEffect]{}).Start(context.Background(), "r1", state{})
+	res, err := g.NewRunner(memCP[state, flowy.NoEffect]{}).Start(context.Background(), "r1", state{})
 	if !errors.Is(err, flowy.ErrRetryBudgetExceeded) {
 		t.Fatalf("expected retry budget exceeded, got %v", err)
+	}
+	if res == nil || res.Reason != flowy.ErrRetryBudgetExceeded.Error() {
+		t.Fatalf("sync reason: want %q, got res=%+v", flowy.ErrRetryBudgetExceeded.Error(), res)
 	}
 }
 

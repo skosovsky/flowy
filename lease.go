@@ -11,8 +11,8 @@ import (
 // ErrLeaseHeld is returned when a thread lease is owned by another worker.
 var ErrLeaseHeld = errors.New("flowy: thread lease held by another owner")
 
-// ErrThreadBusy is returned when a thread already has an active lease (including same owner).
-var ErrThreadBusy = errors.New("flowy: thread already has an active lease")
+// ErrThreadLeaseBusy is returned when a thread already has an active lease (including same owner).
+var ErrThreadLeaseBusy = errors.New("flowy: thread already has an active lease")
 
 // LeaseManager provides exclusive ownership of a thread for safe handoff.
 type LeaseManager interface {
@@ -68,7 +68,7 @@ func (m *MemoryLeaseManager) Acquire(_ context.Context, threadID, owner string, 
 		if rec.owner != owner {
 			return fmt.Errorf("%w: %s", ErrLeaseHeld, rec.owner)
 		}
-		return fmt.Errorf("%w: %s", ErrThreadBusy, rec.owner)
+		return fmt.Errorf("%w: %s", ErrThreadLeaseBusy, rec.owner)
 	}
 	m.leases[threadID] = leaseRecord{owner: owner, expiresAt: now.Add(ttl)}
 	return nil

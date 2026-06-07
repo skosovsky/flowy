@@ -148,9 +148,15 @@ func TestRunnerContextCancelSavesSnapshot(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, err = runner.Start(ctx, "ctx-1", state{})
+	res, err := runner.Start(ctx, "ctx-1", state{})
 	if err == nil {
 		t.Fatal("expected context error")
+	}
+	if res == nil || res.Status != RunStatusContextCanceled {
+		t.Fatalf("expected context_canceled status, got res=%+v", res)
+	}
+	if res.ResumeToken.ThreadID != "" || res.ResumeToken.SnapshotRevision != 0 {
+		t.Fatalf("cancel path must not populate ResumeToken, got %+v", res.ResumeToken)
 	}
 	if cp.last.ThreadID != "ctx-1" {
 		t.Fatal("expected saved snapshot on context cancellation")
@@ -209,9 +215,13 @@ func TestRunnerRetryBudgetExceeded(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	_, err = g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "retry-budget", state{})
+	runner := g.NewRunner(newMemoryCP[state, NoEffect]())
+	res, err := runner.Start(context.Background(), "retry-budget", state{})
 	if !errors.Is(err, ErrRetryBudgetExceeded) {
 		t.Fatalf("expected ErrRetryBudgetExceeded, got %v", err)
+	}
+	if res == nil || res.Reason != ErrRetryBudgetExceeded.Error() {
+		t.Fatalf("sync reason: want %q, got res=%+v", ErrRetryBudgetExceeded.Error(), res)
 	}
 }
 
@@ -235,10 +245,62 @@ func TestRunnerRetryZeroAttemptsFails(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	_, err = g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "retry-zero", state{})
+	runner := g.NewRunner(newMemoryCP[state, NoEffect]())
+	res, err := runner.Start(context.Background(), "retry-zero", state{})
 	if err == nil || !strings.Contains(err.Error(), "maxAttempts > 0") {
 		t.Fatalf("expected retry validation error, got %v", err)
 	}
+	if res == nil || res.Reason == "" || !strings.Contains(res.Reason, "maxAttempts > 0") {
+		t.Fatalf("sync reason must contain maxAttempts > 0, got res=%+v", res)
+	}
+
+	handle, streamErr := runner.Stream(context.Background(), "retry-zero-stream", state{})
+	if streamErr != nil {
+		t.Fatalf("stream: %v", streamErr)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if waitErr == nil || !strings.Contains(waitErr.Error(), "maxAttempts > 0") {
+		t.Fatalf("stream Wait: expected retry validation error, got %v", waitErr)
+	}
+	assertEventFailedReasonMatchesSync(t, events, res.Reason)
+}
+
+func TestUnsupportedDirectiveFailsWithReasonParity(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	const unknownKind directiveKind = 42
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("bad", func(_ context.Context, s state) (state, Directive, error) {
+		return s, directiveWithKind(unknownKind), nil
+	})
+	b.AllowNoOutgoingRoute("bad")
+	b.SetEntryPoint("bad")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	wantReason := "flowy: node returned unsupported directive"
+	runner := g.NewRunner(newMemoryCP[state, NoEffect]())
+	syncRes, syncErr := runner.Start(context.Background(), "unsupported-sync", state{})
+	if syncErr == nil || syncErr.Error() != wantReason {
+		t.Fatalf("expected %q, got res=%+v err=%v", wantReason, syncRes, syncErr)
+	}
+	if syncRes == nil || syncRes.Reason != wantReason {
+		t.Fatalf("sync reason: want %q, got res=%+v", wantReason, syncRes)
+	}
+
+	handle, streamErr := runner.Stream(context.Background(), "unsupported-stream", state{})
+	if streamErr != nil {
+		t.Fatalf("stream: %v", streamErr)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if waitErr == nil || waitErr.Error() != wantReason {
+		t.Fatalf("stream Wait: want %q, got %v", wantReason, waitErr)
+	}
+	assertEventFailedReasonMatchesSync(t, events, wantReason)
 }
 
 func TestRunnerMaxStepsExceeded(t *testing.T) {
@@ -254,9 +316,12 @@ func TestRunnerMaxStepsExceeded(t *testing.T) {
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	_, err = g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "loop-1", state{})
+	res, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "loop-1", state{})
 	if !errors.Is(err, ErrMaxStepsExceeded) {
 		t.Fatalf("expected ErrMaxStepsExceeded, got %v", err)
+	}
+	if res == nil || res.Reason != ErrMaxStepsExceeded.Error() {
+		t.Fatalf("sync reason: want %q, got res=%+v", ErrMaxStepsExceeded.Error(), res)
 	}
 }
 

@@ -68,7 +68,7 @@ func (m *LeaseManager) Acquire(ctx context.Context, threadID, owner string, ttl 
 	case 1:
 		return nil
 	case 0:
-		return fmt.Errorf("%w: %s", flowy.ErrThreadBusy, owner)
+		return fmt.Errorf("%w: %s", flowy.ErrThreadLeaseBusy, owner)
 	default:
 		holder, held, holderErr := m.Holder(ctx, threadID)
 		if holderErr != nil {

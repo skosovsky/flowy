@@ -14,6 +14,7 @@ func TestExamplesSmoke(t *testing.T) {
 	dirs := []string{
 		"react_agent",
 		"streaming_agent",
+		"stream_request_stop",
 		"hitl_agent",
 		"middleware_agent",
 		"multi_agent",

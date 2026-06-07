@@ -112,8 +112,8 @@ func TestLeaseManagerAcquireConflict(t *testing.T) {
 	if err := lm.Acquire(ctx, "th-1", "b", time.Minute); !errors.Is(err, flowy.ErrLeaseHeld) {
 		t.Fatalf("expected ErrLeaseHeld, got %v", err)
 	}
-	if err := lm.Acquire(ctx, "th-1", "a", time.Minute); !errors.Is(err, flowy.ErrThreadBusy) {
-		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	if err := lm.Acquire(ctx, "th-1", "a", time.Minute); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
+		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
 	if err := lm.Release(ctx, "th-1", "a"); err != nil {
 		t.Fatalf("release: %v", err)

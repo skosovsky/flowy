@@ -37,7 +37,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for event := range stream.Events() {
+	printEvent := func(event flowy.RunEvent[streamState, streamEffect]) bool {
 		fmt.Printf(
 			"event=%s node=%s has_effect=%v effect=%v err=%v\n",
 			event.Type,
@@ -46,8 +46,9 @@ func main() {
 			event.Effect,
 			event.Error,
 		)
+		return true
 	}
-	if err := stream.Done(); err != nil {
+	if err := flowy.ConsumeEventsAndWait(context.Background(), stream, printEvent); err != nil {
 		log.Fatal(err)
 	}
 }

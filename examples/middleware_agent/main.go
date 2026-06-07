@@ -53,8 +53,11 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	for event := range stream.Events() {
+	events, waitErr := flowy.CollectEventsAndWait(context.Background(), stream)
+	for _, event := range events {
 		fmt.Printf("stream event=%s node=%s err=%v\n", event.Type, event.ExecutionPointer, event.Error)
 	}
-	_ = stream.Done()
+	if waitErr != nil {
+		fmt.Printf("stream wait error: %v\n", waitErr)
+	}
 }

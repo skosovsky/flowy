@@ -55,7 +55,7 @@ func (m *LeaseManager) Acquire(ctx context.Context, threadID, owner string, ttl 
 		if holder != owner {
 			return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, holder)
 		}
-		return fmt.Errorf("%w: %s", flowy.ErrThreadBusy, holder)
+		return fmt.Errorf("%w: %s", flowy.ErrThreadLeaseBusy, holder)
 	}
 
 	tag, err := m.db.Exec(ctx, upsertLeaseSQL, pgx.NamedArgs{
@@ -74,7 +74,7 @@ func (m *LeaseManager) Acquire(ctx context.Context, threadID, owner string, ttl 
 		if held && holder != owner {
 			return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, holder)
 		}
-		return fmt.Errorf("%w: %s", flowy.ErrThreadBusy, holder)
+		return fmt.Errorf("%w: %s", flowy.ErrThreadLeaseBusy, holder)
 	}
 	return nil
 }

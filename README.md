@@ -22,22 +22,22 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 
 ## Migration from v1
 
-| v1                                | Current API                                                              |
-| --------------------------------- | ------------------------------------------------------------------------ |
-| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`    |
-| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                            |
-| `Effect(base, any)`               | `Effect[E](base, payload E)`                                             |
-| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                   |
-| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                          |
-| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                    |
-| `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, Generation})`            |
-| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)         |
-| Manual handoff queue + rollback   | `WithHandoffScheduler` (Outbox: save → schedule; snapshot сохраняется)   |
-| context error collectors          | `WithCheckpointErrorPolicy(SoftWarn)` + `EventCheckpointFailed`          |
-| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                  |
-| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`               |
-| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)` |
-| —                                 | + `ContextWithRunMetadata` for isolated node execution outside Runner    |
+| v1                                | Current API                                                                            |
+| --------------------------------- | -------------------------------------------------------------------------------------- |
+| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`                  |
+| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                                          |
+| `Effect(base, any)`               | `Effect[E](base, payload E)`                                                           |
+| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                                 |
+| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                                        |
+| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                                  |
+| `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, SnapshotRevision})`                    |
+| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)                       |
+| Manual handoff queue + rollback   | `WithHandoffScheduler` (Outbox: save → schedule; snapshot сохраняется)                 |
+| context error collectors          | `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` + `EventCheckpointFailed` |
+| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                                |
+| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`                             |
+| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)`               |
+| —                                 | + `ContextWithRunMetadata` for isolated node execution outside Runner                  |
 
 ### Migration example (routing)
 
@@ -59,7 +59,7 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 ### Resume pipeline (order)
 
 1. `ResumeToken` validation (`ThreadID` non-empty)
-2. `Checkpointer.Load` → OCC: `token.Generation` must equal `snapshot.Revision`
+2. `Checkpointer.Load` → OCC: `token.SnapshotRevision` must equal `snapshot.Revision`
 3. `StateInterceptor.AfterLoad` (optional)
 4. `WithStateOverlay` (optional, deterministic merge)
 5. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
@@ -132,7 +132,33 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 
 - **Save-path pointer:** `WithSuspendPointerResolver` нормализует `ExecutionPointer` до `Save` на Suspend/Handoff (Checkpointer остаётся dumb CRUD).
 - **Handoff Outbox:** `WithHandoffScheduler` — save → `ScheduleContinuation(token)`; при ошибке schedule snapshot **сохраняется**, `RunResult.ResumeToken` доступен для retry публикации (`errors.Is(err, ErrHandoffScheduleFailed)`).
-- **Soft checkpoint errors:** `WithCheckpointErrorPolicy(CheckpointPolicySoftWarn)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow.
+- **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с resolved pointer в snapshot (после `WithSuspendPointerResolver`), как и terminal events.
+- **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
+- **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune (Completed/Failed) — log only.
+- **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.Wait()` не возвращает `RunResult` — только ошибку завершения goroutine (`nil` после RequestStop+persist, `ErrCheckpointSkipped` при SkipOnSaveError skip, `context.Canceled` при ctx cancel, wrapped error при retention/schedule fail).
+- **RequestLocalHandoff return matrix:** `nil` = persisted handoff; `ErrCheckpointSkipped` = SkipOnSaveError skip (no snapshot); `ErrHandoffScheduleFailed` = schedule fail after persist (snapshot + `ResumeToken` for Outbox retry); wrapped retention/save errors otherwise. Stream `RequestLocalHandoff` mirrors the same errors on `Wait()`.
+- **Persist-vs-event / consumer stop:** после `RequestStop` terminal event может не дойти до consumer; **snapshot/checkpointer — source of truth**. Не вызывайте `RequestLocalHandoff` после `RequestStop` (`ErrNoActiveExecution`).
+- **Stream consumer helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect` — безопасный drain+`Wait` без дедлока. Примеры:
+
+```go
+// run-to-completion
+events, err := flowy.CollectEventsAndWait(ctx, handle)
+
+// early stop из callback (false → RequestStop + silent drain)
+err := flowy.ConsumeEventsAndWait(ctx, handle, func(ev flowy.RunEvent[S, E]) bool {
+    return ev.Type != flowy.EventSuspended
+})
+
+// concurrent stop / handoff (BeginStreamCollect до RequestStop или cancel)
+out := flowy.BeginStreamCollect(handle)
+handle.RequestStop() // или RequestLocalHandoff / ctx cancel
+result, err := flowy.AwaitStreamCollect(ctx, handle, out)
+
+// Handoff/HITL: snapshot + ResumeToken после await
+result, err := flowy.AwaitStreamCollectWithSnapshot(ctx, handle, out, cp, threadID)
+```
+
+См. `examples/stream_request_stop` и `examples/streaming_agent`.
 
 Для нескольких зависимостей одного типа используйте distinct wrapper types в `BindingKey[...]` (как в stdlib `context`).
 
@@ -147,7 +173,7 @@ type Checkpointer[T, E any] interface {
     GetHistory(...)
     Prune(...)
     Delete(...)
-    DeleteIfIdle(...) // ErrThreadBusy when lease held by another owner
+    DeleteIfIdle(...) // ErrThreadLeaseBusy when lease held by another owner
 }
 ```
 
@@ -159,6 +185,7 @@ Redis: `Options.LeasePrefix` checkpointer должен совпадать с `Op
 
 ## DX Recommendations
 
+- **Node authoring:** respect `ctx` in all I/O and loops — see [docs/node_authoring.md](docs/node_authoring.md) and `examples/context_deadline`.
 - Локальные aliases: `type Node = flowy.Node[State, Effect]`
 - Type inference: `NewGraph[State](reducer)` → укажите `E` явно при неоднозначности: `NewGraph[State, Effect](...)`
 - Handoff: foreground run завершается с `RunStatusHandoff` + checkpoint + `ResumeToken`; background worker вызывает `Resume(token)` (без передачи горутин/каналов между воркерами).
@@ -170,7 +197,8 @@ Redis: `Options.LeasePrefix` checkpointer должен совпадать с `Op
 
 ```bash
 make test          # все go.mod modules (рекомендуется)
-golangci-lint run ./...
+make test-race && make test-goleak && make lint
+go test -count=20 -run 'Close|Stop|Wait|Handoff|Lease|Checkpoint|ResumeStream|StreamCollect|ConsumeEvents' .
 ```
 
 Опционально integration-тесты paired lease + checkpointer:

@@ -57,8 +57,8 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	if err := leaseMgr.Acquire(ctx, "t1", "worker", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	if err := cp.DeleteIfIdle(ctx, "t1"); !errors.Is(err, flowy.ErrThreadBusy) {
-		t.Fatalf("expected ErrThreadBusy, got %v", err)
+	if err := cp.DeleteIfIdle(ctx, "t1"); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
+		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
 	if err := leaseMgr.Release(ctx, "t1", "worker"); err != nil {
 		t.Fatalf("release: %v", err)

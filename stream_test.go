@@ -3,13 +3,14 @@ package flowy
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
-
-	"go.uber.org/goleak"
 )
 
-func TestStreamEmitsSuspendBeforeClose(t *testing.T) {
+func TestStreamEmitsSuspendBeforeRequestStop(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ N int }
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("start", func(_ context.Context, s state) (state, Directive, error) {
@@ -27,19 +28,21 @@ func TestStreamEmitsSuspendBeforeClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) < 3 {
 		t.Fatalf("expected at least 3 events, got %d", len(events))
 	}
 	if events[len(events)-1].Type != EventSuspended {
 		t.Fatalf("expected final suspended event, got %s", events[len(events)-1].Type)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
-func TestStreamEmitsCompletedBeforeClose(t *testing.T) {
+func TestStreamEmitsCompletedBeforeRequestStop(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ N int }
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("start", func(_ context.Context, s state) (state, Directive, error) {
@@ -57,16 +60,18 @@ func TestStreamEmitsCompletedBeforeClose(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
 		t.Fatalf("expected final completed event, got %+v", events)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
 func TestStreamEffectPayload(t *testing.T) {
+	t.Parallel()
+
 	type streamEffect struct {
 		Kind string
 	}
@@ -86,7 +91,7 @@ func TestStreamEffectPayload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) < 2 {
 		t.Fatalf("expected stream events, got %d", len(events))
 	}
@@ -100,12 +105,14 @@ func TestStreamEffectPayload(t *testing.T) {
 	if !found {
 		t.Fatal("expected node_completed event with effect payload")
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
 func TestNodeCompletedIncludesDuration(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
@@ -123,7 +130,7 @@ func TestNodeCompletedIncludesDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	var nodeCompleted *RunEvent[state, NoEffect]
 	for i := range events {
 		if events[i].Type == EventNodeCompleted {
@@ -137,12 +144,14 @@ func TestNodeCompletedIncludesDuration(t *testing.T) {
 	if nodeCompleted.Duration <= 0 {
 		t.Fatalf("expected positive duration, got %s", nodeCompleted.Duration)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
 func TestNodeCompletedIncludesMetrics(t *testing.T) {
+	t.Parallel()
+
 	type usage struct {
 		Tokens int
 		Model  string
@@ -163,7 +172,7 @@ func TestNodeCompletedIncludesMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	found := false
 	for _, event := range events {
 		if event.Type == EventNodeCompleted && event.HasEffect {
@@ -177,12 +186,14 @@ func TestNodeCompletedIncludesMetrics(t *testing.T) {
 	if !found {
 		t.Fatal("expected node_completed event with effect payload")
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
 func TestNodeCompletedIncludesStructMetrics(t *testing.T) {
+	t.Parallel()
+
 	type usage struct {
 		Tokens int    `json:"tokens"`
 		Model  string `json:"model"`
@@ -204,7 +215,7 @@ func TestNodeCompletedIncludesStructMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	found := false
 	for _, event := range events {
 		if event.Type == EventNodeCompleted && event.HasEffect {
@@ -218,12 +229,14 @@ func TestNodeCompletedIncludesStructMetrics(t *testing.T) {
 	if !found {
 		t.Fatal("expected node_completed event with struct effect payload")
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
 func TestCompletedEventHasZeroOrCarryDurationPolicy(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
@@ -241,7 +254,7 @@ func TestCompletedEventHasZeroOrCarryDurationPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 {
 		t.Fatal("expected stream events")
 	}
@@ -252,8 +265,8 @@ func TestCompletedEventHasZeroOrCarryDurationPolicy(t *testing.T) {
 	if terminal.Duration != 0 {
 		t.Fatalf("expected zero terminal duration, got %s", terminal.Duration)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
@@ -286,28 +299,32 @@ func TestWithRunMetadataOnStream(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
 		t.Fatalf("expected completed stream, got %+v", events)
 	}
 	if events[len(events)-1].State.Tokens != 5 {
 		t.Fatalf("expected budget 5 (2 seed + 3 use), got %d", events[len(events)-1].State.Tokens)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("done: %v", err)
+	if waitErr != nil {
+		t.Fatalf("Wait: %v", waitErr)
 	}
 }
 
-func TestStreamResume(t *testing.T) {
+func TestResumeStream(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ Value int }
 	cp := newMemoryCP[state, NoEffect]()
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("save", func(_ context.Context, s state) (state, Directive, error) {
 		s.Value++
-		return s, Suspend("hold"), nil
+		if s.Value < 2 {
+			return s, Suspend("hold"), nil
+		}
+		return s, Completed(), nil
 	})
 	b.AddNode("done", func(_ context.Context, s state) (state, Directive, error) {
-		s.Value++
 		return s, End(), nil
 	})
 	b.AddEdge("save", "done")
@@ -315,22 +332,36 @@ func TestStreamResume(t *testing.T) {
 	b.SetEntryPoint("save")
 	g, _ := b.Compile()
 	runner := g.NewRunner(cp)
-	startRes, _ := runner.Start(context.Background(), "resume-1", state{})
+	startRes, err := runner.Start(context.Background(), "resume-1", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	requireResumeTokenMatchesSnapshot(t, startRes.ResumeToken, cp.last)
 
-	handle, err := runner.StreamResume(context.Background(), startRes.ResumeToken)
+	handle, err := runner.ResumeStream(context.Background(), startRes.ResumeToken)
 	if err != nil {
 		t.Fatalf("stream resume: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 {
 		t.Fatal("expected stream resume events")
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	requireTerminalEventReason(t, events, EventCompleted, "")
+	term, _ := terminalEvent(events)
+	if term.State.Value != 2 {
+		t.Fatalf("expected final state value 2, got %+v", term.State)
+	}
+	if term.ExecutionPointer != "done" {
+		t.Fatalf("expected pointer done, got %q", term.ExecutionPointer)
+	}
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error: %v", waitErr)
 	}
 }
 
-func TestStreamResumeMissingThread(t *testing.T) {
+func TestResumeStreamMissingThread(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	g, _ := NewGraph[state, NoEffect](func(_ state, u state) state { return u }).
 		AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
@@ -339,7 +370,7 @@ func TestStreamResumeMissingThread(t *testing.T) {
 		SetEntryPoint("n").
 		AllowNoOutgoingRoute("n").
 		Compile()
-	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).StreamResume(
+	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).ResumeStream(
 		context.Background(),
 		ResumeToken{ThreadID: "missing"},
 	)
@@ -348,7 +379,9 @@ func TestStreamResumeMissingThread(t *testing.T) {
 	}
 }
 
-func TestStreamResumeRequiresCheckpointer(t *testing.T) {
+func TestResumeStreamRequiresCheckpointer(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	g, _ := NewGraph[state, NoEffect](func(_ state, u state) state { return u }).
 		AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
@@ -358,13 +391,15 @@ func TestStreamResumeRequiresCheckpointer(t *testing.T) {
 		AllowNoOutgoingRoute("n").
 		Compile()
 	var cp Checkpointer[state, NoEffect]
-	_, err := g.NewRunner(cp).StreamResume(context.Background(), ResumeToken{ThreadID: "missing"})
+	_, err := g.NewRunner(cp).ResumeStream(context.Background(), ResumeToken{ThreadID: "missing"})
 	if err == nil {
 		t.Fatal("expected checkpointer required error")
 	}
 }
 
 func TestStreamEmitsFailedEvent(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("n", func(_ context.Context, s state) (state, Directive, error) {
@@ -373,20 +408,32 @@ func TestStreamEmitsFailedEvent(t *testing.T) {
 	b.SetEntryPoint("n")
 	b.AllowNoOutgoingRoute("n")
 	g, _ := b.Compile()
-	handle, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Stream(context.Background(), "fail-1", state{})
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	syncRes, syncErr := runner.Start(context.Background(), "fail-sync", state{})
+	if syncErr == nil {
+		t.Fatalf("expected sync error, got %+v", syncRes)
+	}
+	if syncRes.Reason == "" {
+		t.Fatalf("expected non-empty sync reason, got %q", syncRes.Reason)
+	}
+	handle, err := runner.Stream(context.Background(), "fail-1", state{})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
-	if len(events) == 0 || events[len(events)-1].Type != EventFailed {
-		t.Fatalf("expected final failed event, got %+v", events)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	requireTerminalEventReason(t, events, EventFailed, syncRes.Reason)
+	if term, ok := terminalEvent(events); !ok || term.Error == nil {
+		t.Fatal("expected EventFailed error")
 	}
-	if err := handle.Done(); err == nil {
-		t.Fatal("expected failed done error")
+	if waitErr == nil {
+		t.Fatal("expected failed Wait error")
 	}
 }
 
 func TestStreamContextCancelSavesSnapshot(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ Value int }
 	cp := &cancelAwareCP[state, NoEffect]{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -404,7 +451,7 @@ func TestStreamContextCancelSavesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 || events[len(events)-1].Type != EventContextCanceled {
 		t.Fatalf("expected final context_canceled event, got %+v", events)
 	}
@@ -414,14 +461,14 @@ func TestStreamContextCancelSavesSnapshot(t *testing.T) {
 	if !cp.saved {
 		t.Fatal("expected snapshot to be saved on canceled context")
 	}
-	if err := handle.Done(); !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context canceled, got %v", err)
+	if !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", waitErr)
 	}
 }
 
+// TestStreamEarlyConsumerStopNoLeak exercises intentional partial-drain on the caller goroutine
+// (legacy consumer contract): read N events, RequestStop, then Wait without background drain.
 func TestStreamEarlyConsumerStopNoLeak(t *testing.T) {
-	defer goleak.VerifyNone(t)
-
 	type state struct{ N int }
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
@@ -441,16 +488,15 @@ func TestStreamEarlyConsumerStopNoLeak(t *testing.T) {
 	for range 3 {
 		<-events
 	}
-	handle.Close()
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	handle.RequestStop()
+	if err := handle.Wait(); err != nil {
+		t.Fatalf("unexpected wait error: %v", err)
 	}
 	_ = collectEvents(t, events, 2*time.Second)
 }
 
+// Intentional no-drain: goleak contract — cancel without consuming Events(); Wait() must not deadlock.
 func TestStreamBufferFullThenContextCancelNoLeak(t *testing.T) {
-	defer goleak.VerifyNone(t)
-
 	type state struct{ N int }
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
@@ -467,15 +513,17 @@ func TestStreamBufferFullThenContextCancelNoLeak(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 
-	time.Sleep(25 * time.Millisecond)
+	waitForStreamBufferBackpressure()
 	cancel()
 
-	if err := handle.Done(); !errors.Is(err, context.Canceled) {
+	if err := handle.Wait(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context canceled, got %v", err)
 	}
 }
 
-func TestStreamHandoffPersistWhenStreamClosed(t *testing.T) {
+func TestStreamHandoffPersistVsEventDroppedTerminalEventWhenRequestStop(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ N int }
 	ready := make(chan struct{})
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -499,26 +547,27 @@ func TestStreamHandoffPersistWhenStreamClosed(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 
+	outCh := BeginStreamCollect(handle)
 	<-ready
-	handle.Close()
-
-	if err := runner.HandoffToBackground(context.Background(), "stream-handoff-closed-th"); err != nil {
-		t.Fatalf("handoff: %v", err)
+	handle.RequestStop()
+	_, waitErr := awaitStreamCollect(t, handle, outCh, 5*time.Second)
+	if waitErr != nil {
+		t.Fatalf("Wait after RequestStop: %v", waitErr)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("done should succeed when snapshot persisted without terminal event: %v", err)
-	}
-
-	snap, loadErr := cp.Load(context.Background(), "stream-handoff-closed-th")
-	if loadErr != nil {
-		t.Fatalf("expected handoff checkpoint, got load error: %v", loadErr)
-	}
+	snap := requireSnapshotPresent(t, cp, "stream-handoff-closed-th")
 	if snap.ExecutionPointer != "work" {
 		t.Fatalf("expected pointer work, got %q", snap.ExecutionPointer)
 	}
+	if snap.RunMeta.Segment.EndReason != SegmentEndContextCanceled {
+		t.Fatalf("expected context_canceled segment, got %q", snap.RunMeta.Segment.EndReason)
+	}
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-handoff-closed-th")
+	if !errors.Is(handoffErr, ErrNoActiveExecution) {
+		t.Fatalf("expected ErrNoActiveExecution after RequestStop terminated run, got %v", handoffErr)
+	}
 }
 
-func TestWithRunMetadataOnStreamResume(t *testing.T) {
+func TestWithRunMetadataOnResumeStream(t *testing.T) {
 	t.Parallel()
 
 	type state struct{ Tokens int }
@@ -551,7 +600,7 @@ func TestWithRunMetadataOnStreamResume(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	handle, err := runner.StreamResume(
+	handle, err := runner.ResumeStream(
 		context.Background(),
 		startRes.ResumeToken,
 		WithRunMetadata[state, NoEffect](RunMetadataInput{
@@ -561,19 +610,21 @@ func TestWithRunMetadataOnStreamResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream resume: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
 		t.Fatalf("expected completed stream, got %+v", events)
 	}
 	if events[len(events)-1].State.Tokens != 7 {
 		t.Fatalf("expected budget 7 (3 seed + 4 use), got %d", events[len(events)-1].State.Tokens)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("done: %v", err)
+	if waitErr != nil {
+		t.Fatalf("Wait: %v", waitErr)
 	}
 }
 
-func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
+func TestStreamRequestLocalHandoffEmitsHandoffEvent(t *testing.T) {
+	t.Parallel()
+
 	type state struct{ N int }
 	ready := make(chan struct{})
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -597,17 +648,15 @@ func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
 		t.Fatalf("stream: %v", err)
 	}
 
-	eventsDone := make(chan []RunEvent[state, NoEffect], 1)
-	go func() {
-		eventsDone <- collectEvents(t, handle.Events(), 5*time.Second)
-	}()
-
+	outCh := BeginStreamCollect(handle)
 	<-ready
-	if err := runner.HandoffToBackground(context.Background(), "stream-handoff-th"); err != nil {
+	if err := runner.RequestLocalHandoff(context.Background(), "stream-handoff-th"); err != nil {
 		t.Fatalf("handoff: %v", err)
 	}
-
-	events := <-eventsDone
+	events, waitErr := awaitStreamCollect(t, handle, outCh, 5*time.Second)
+	if waitErr != nil {
+		t.Fatalf("Wait: %v", waitErr)
+	}
 	if len(events) == 0 {
 		t.Fatal("expected events")
 	}
@@ -615,14 +664,957 @@ func TestStreamHandoffToBackgroundEmitsHandoffEvent(t *testing.T) {
 	if last.Type != EventHandoff {
 		t.Fatalf("expected handoff event, got %s", last.Type)
 	}
-	if err := handle.Done(); err != nil {
-		t.Fatalf("done: %v", err)
+	snap, loadErr := cp.Load(context.Background(), "stream-handoff-th")
+	if loadErr != nil {
+		t.Fatalf("expected snapshot after stream handoff, got %v", loadErr)
+	}
+	if snap.Revision <= 0 {
+		t.Fatalf("expected positive snapshot revision, got %d", snap.Revision)
+	}
+	if last.Reason != "background_handoff" {
+		t.Fatalf("expected background_handoff reason on event, got %q", last.Reason)
+	}
+	if snap.RunMeta.Segment.EndReason != SegmentEndHandoff {
+		t.Fatalf("expected handoff segment, got %q", snap.RunMeta.Segment.EndReason)
 	}
 }
 
-func TestStreamCloseWithoutDrainNoDeadlock(t *testing.T) {
-	defer goleak.VerifyNone(t)
+func TestStreamRequestLocalHandoffAfterWaitReturnsNoActiveExecution(t *testing.T) {
+	t.Parallel()
 
+	type state struct{}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	runner := g.NewRunner(newMemoryCP[state, NoEffect]())
+	handle, err := runner.Stream(context.Background(), "stream-htb-after-done-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if waitErr != nil {
+		t.Fatalf("Wait: %v", waitErr)
+	}
+	if len(events) == 0 || events[len(events)-1].Type != EventCompleted {
+		t.Fatalf("expected completed stream, got %+v", events)
+	}
+	if err := runner.RequestLocalHandoff(
+		context.Background(),
+		"stream-htb-after-done-th",
+	); !errors.Is(
+		err,
+		ErrNoActiveExecution,
+	) {
+		t.Fatalf("expected ErrNoActiveExecution after Wait, got %v", err)
+	}
+}
+
+func TestStreamRequestLocalHandoffRetentionFailAfterPersist(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	cp := &failingMemoryCP[state, NoEffect]{
+		memoryCP:  *newMemoryCP[state, NoEffect](),
+		failPrune: true,
+	}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile(WithRetentionLimit(2))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-htb-retention-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	out := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-retention-th")
+	if handoffErr == nil {
+		t.Fatal("expected retention error on stream handoff")
+	}
+	if !strings.Contains(handoffErr.Error(), "retention") {
+		t.Fatalf("expected retention in error, got %v", handoffErr)
+	}
+	_, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if waitErr == nil {
+		t.Fatal("expected retention error from Wait")
+	}
+	if _, loadErr := cp.Load(context.Background(), "stream-htb-retention-th"); loadErr != nil {
+		t.Fatalf("snapshot must exist despite retention failure: %v", loadErr)
+	}
+}
+
+func TestStreamRequestLocalHandoffSaveHardFail(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-htb-savefail-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	out := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-savefail-th")
+	if handoffErr == nil {
+		t.Fatal("expected handoff save error")
+	}
+	if errors.Is(handoffErr, ErrCheckpointSkipped) {
+		t.Fatalf("hard fail must not return ErrCheckpointSkipped, got %v", handoffErr)
+	}
+	if !strings.Contains(handoffErr.Error(), "save failed") {
+		t.Fatalf("expected save failed in error, got %v", handoffErr)
+	}
+	events, doneErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if doneErr == nil {
+		t.Fatal("expected save error from Wait")
+	}
+	var failed *RunEvent[state, NoEffect]
+	for i := range events {
+		if events[i].Type == EventFailed {
+			failed = &events[i]
+			break
+		}
+	}
+	if failed == nil {
+		t.Fatalf("expected EventFailed on stream HTB save hard fail, got %+v", events)
+	}
+	if failed.Reason != ReasonHandoffSaveFailed {
+		t.Fatalf("EventFailed reason: want %q, got %q", ReasonHandoffSaveFailed, failed.Reason)
+	}
+
+	syncReady := make(chan struct{})
+	syncB := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	syncB.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(syncReady)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	syncB.AllowNoOutgoingRoute("work")
+	syncB.SetEntryPoint("work")
+	syncG, err := syncB.Compile()
+	if err != nil {
+		t.Fatalf("sync compile: %v", err)
+	}
+	syncRunner := syncG.NewRunner(cp)
+	syncDone := make(chan struct {
+		res *RunResult[state, NoEffect]
+		err error
+	}, 1)
+	go func() {
+		res, runErr := syncRunner.Start(context.Background(), "stream-htb-savefail-sync-th", state{})
+		syncDone <- struct {
+			res *RunResult[state, NoEffect]
+			err error
+		}{res, runErr}
+	}()
+	<-syncReady
+	syncHandoffErr := syncRunner.RequestLocalHandoff(context.Background(), "stream-htb-savefail-sync-th")
+	if syncHandoffErr == nil {
+		t.Fatal("expected sync handoff save error")
+	}
+	if !strings.Contains(syncHandoffErr.Error(), "save failed") {
+		t.Fatalf("expected save failed in sync handoff error, got %v", syncHandoffErr)
+	}
+	syncOutcome := <-syncDone
+	if syncOutcome.err == nil {
+		t.Fatalf("expected sync execute save failure, got %+v", syncOutcome.res)
+	}
+	if syncOutcome.res == nil || syncOutcome.res.Reason != ReasonHandoffSaveFailed {
+		t.Fatalf("sync reason: want %q, got res=%+v", ReasonHandoffSaveFailed, syncOutcome.res)
+	}
+	if failed.Reason != syncOutcome.res.Reason {
+		t.Fatalf("stream/sync reason mismatch: stream %q sync %q", failed.Reason, syncOutcome.res.Reason)
+	}
+}
+
+func assertStreamHandoffDuringLeaseLossRace[T, E any](
+	t *testing.T,
+	handoffErr, waitErr error,
+	events []RunEvent[T, E],
+) {
+	t.Helper()
+	if handoffErr == nil {
+		if waitErr != nil {
+			t.Fatalf("expected nil Wait after successful handoff, got %v", waitErr)
+		}
+		return
+	}
+	if errors.Is(handoffErr, ErrNoActiveExecution) {
+		t.Fatalf(
+			"handoff must not return ErrNoActiveExecution while session may still be active, got %v",
+			handoffErr,
+		)
+	}
+	if !errors.Is(handoffErr, ErrLeaseLost) {
+		t.Fatalf("expected nil or ErrLeaseLost on handoff, got %v", handoffErr)
+	}
+	if !errors.Is(waitErr, ErrLeaseLost) {
+		t.Fatalf("stream Wait: want ErrLeaseLost, got %v", waitErr)
+	}
+	requireTerminalEventReason(t, events, EventFailed, ErrLeaseLost.Error())
+}
+
+func TestStreamRequestLocalHandoffLeaseLost(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	leaseOpts := []RunOption[state, NoEffect]{
+		WithRunLease[state, NoEffect]("worker-a", 50*time.Millisecond),
+	}
+
+	t.Run("lease_lost_before_handoff", func(t *testing.T) {
+		t.Parallel()
+		// RequestLocalHandoff before forceLeaseTakeover is intentional: deterministic ordering vs concurrent race.
+
+		lease := NewMemoryLeaseManager()
+		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
+		runner := g.NewRunnerWithOptions(newMemoryCP[state, NoEffect](), []RunnerOption[state, NoEffect]{
+			WithLeaseManager[state, NoEffect](lease),
+		})
+
+		handle, err := runner.Stream(context.Background(), "stream-htb-lease-before-th", state{}, leaseOpts...)
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		out := BeginStreamCollect(handle)
+		<-ready
+		handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-lease-before-th")
+		if errors.Is(handoffErr, ErrNoActiveExecution) {
+			t.Fatalf(
+				"handoff must not return ErrNoActiveExecution while session is active, got %v",
+				handoffErr,
+			)
+		}
+		forceLeaseTakeover(t, lease, "stream-htb-lease-before-th")
+		waitForLeaseTTLExpiry()
+
+		events, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+		assertStreamHandoffDuringLeaseLossRace(t, handoffErr, waitErr, events)
+	})
+
+	t.Run("session_closed_after_lease_lost", func(t *testing.T) {
+		t.Parallel()
+		// Stream Wait may be context.Canceled when RequestStop/consumer teardown races lease loss.
+
+		lease := NewMemoryLeaseManager()
+		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
+		runner := g.NewRunnerWithOptions(newMemoryCP[state, NoEffect](), []RunnerOption[state, NoEffect]{
+			WithLeaseManager[state, NoEffect](lease),
+		})
+
+		handle, err := runner.Stream(context.Background(), "stream-htb-lease-after-th", state{}, leaseOpts...)
+		if err != nil {
+			t.Fatalf("stream: %v", err)
+		}
+		out := BeginStreamCollect(handle)
+		<-ready
+		forceLeaseTakeover(t, lease, "stream-htb-lease-after-th")
+		waitForLeaseTTLExpiry()
+
+		_, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+		if waitErr != nil && !errors.Is(waitErr, ErrLeaseLost) && !errors.Is(waitErr, context.Canceled) {
+			t.Fatalf("stream Wait: want ErrLeaseLost or context.Canceled after lease loss, got %v", waitErr)
+		}
+
+		handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-lease-after-th")
+		if !errors.Is(handoffErr, ErrNoActiveExecution) {
+			t.Fatalf("expected ErrNoActiveExecution after session closed, got %v", handoffErr)
+		}
+	})
+}
+
+func TestStreamRequestLocalHandoffResolveFailReason(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	resolver := WithSuspendPointerResolver[state, NoEffect](
+		func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
+			return "", errors.New("bad pointer")
+		},
+	)
+	handle, err := runner.Stream(context.Background(), "stream-htb-resolve-th", state{}, resolver)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	out := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-resolve-th")
+	if handoffErr == nil {
+		t.Fatal("expected resolve error on handoff")
+	}
+	events, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if waitErr == nil {
+		t.Fatal("expected stream error after resolve fail")
+	}
+	var failed *RunEvent[state, NoEffect]
+	for i := range events {
+		if events[i].Type == EventFailed {
+			failed = &events[i]
+			break
+		}
+	}
+	if failed == nil {
+		t.Fatalf("expected EventFailed in stream, got %+v", events)
+	}
+	if failed.Reason != ReasonHandoffPointerResolveFailed {
+		t.Fatalf("EventFailed reason: want %q, got %q", ReasonHandoffPointerResolveFailed, failed.Reason)
+	}
+}
+
+func TestStreamRequestLocalHandoffScheduleAndRetentionJoin(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	cp := &failingMemoryCP[state, NoEffect]{
+		memoryCP:  *newMemoryCP[state, NoEffect](),
+		failPrune: true,
+	}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile(WithRetentionLimit(2))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-htb-sched-retention-th", state{},
+		WithHandoffScheduler[state, NoEffect](scheduler),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	out := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-sched-retention-th")
+	if !errors.Is(handoffErr, ErrHandoffScheduleFailed) {
+		t.Fatalf("expected schedule failure, got %v", handoffErr)
+	}
+	if !strings.Contains(handoffErr.Error(), "retention") {
+		t.Fatalf("expected retention error in join chain, got %v", handoffErr)
+	}
+	_, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if !errors.Is(waitErr, ErrHandoffScheduleFailed) {
+		t.Fatalf("expected schedule failure from Wait, got %v", waitErr)
+	}
+	if _, loadErr := cp.Load(context.Background(), "stream-htb-sched-retention-th"); loadErr != nil {
+		t.Fatalf("snapshot must exist after schedule+retention fail: %v", loadErr)
+	}
+}
+
+func TestStreamRequestStopPersistsSnapshot(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := newMemoryCP[state, NoEffect]()
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	handle, err := g.NewRunner(cp).Stream(context.Background(), "close-persist-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	var count int
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		count++
+		return count < 2
+	})
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error after RequestStop persist: %v", waitErr)
+	}
+	snap, loadErr := cp.Load(context.Background(), "close-persist-th")
+	if loadErr != nil {
+		t.Fatalf("expected snapshot after RequestStop, got %v", loadErr)
+	}
+	for i := range pre {
+		if pre[i].Type != EventContextCanceled {
+			continue
+		}
+		if pre[i].ExecutionPointer != snap.ExecutionPointer {
+			t.Fatalf("event pointer %q != snapshot pointer %q", pre[i].ExecutionPointer, snap.ExecutionPointer)
+		}
+	}
+}
+
+func TestStreamRequestStopEmitsContextCanceled(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := newMemoryCP[state, NoEffect]()
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	handle, err := g.NewRunner(cp).Stream(context.Background(), "close-event-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	var count int
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		count++
+		return count < 2
+	})
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error after RequestStop: %v", waitErr)
+	}
+	if _, loadErr := cp.Load(context.Background(), "close-event-th"); loadErr != nil {
+		t.Fatalf("expected persisted snapshot on RequestStop, got %v", loadErr)
+	}
+	for i := range pre {
+		if pre[i].Type != EventContextCanceled {
+			continue
+		}
+		if pre[i].Reason != "context_canceled" {
+			t.Fatalf("expected context_canceled reason, got %q", pre[i].Reason)
+		}
+	}
+}
+
+func TestStreamBufferFullCancelPersistsSnapshot(t *testing.T) {
+	type state struct{ N int }
+	cp := newMemoryCP[state, NoEffect]()
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, _ := b.Compile(WithMaxSteps(100_000))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	handle, err := g.NewRunner(cp).Stream(ctx, "buffer-persist-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	out := BeginStreamCollect(handle)
+	waitForStreamBufferBackpressure()
+	cancel()
+	// Stream ctx is already canceled; use Background for await to avoid select race on done ctx.
+	events, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", waitErr)
+	}
+	if _, loadErr := cp.Load(context.Background(), "buffer-persist-th"); loadErr != nil {
+		t.Fatalf("expected snapshot on buffer-full cancel, got %v", loadErr)
+	}
+	var terminal *RunEvent[state, NoEffect]
+	for i := range events {
+		if events[i].Type == EventContextCanceled {
+			terminal = &events[i]
+		}
+	}
+	if terminal == nil {
+		t.Fatalf("expected EventContextCanceled, got %+v", events)
+	}
+	if terminal.Reason != "context_canceled" {
+		t.Fatalf("expected context_canceled reason, got %q", terminal.Reason)
+	}
+}
+
+func TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	handle, err := g.NewRunner(cp).Stream(ctx, "close-skip-on-save-th", state{},
+		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		return len(pre) < 2
+	})
+	if waitErr != nil && !errors.Is(waitErr, ErrCheckpointSkipped) {
+		t.Fatalf("Wait: got %v want nil or ErrCheckpointSkipped", waitErr)
+	}
+	requireSnapshotMissing(t, cp, "close-skip-on-save-th")
+	for _, ev := range pre {
+		if ev.Type == EventContextCanceled {
+			if ev.Reason != ReasonContextCanceledCheckpointSkipped {
+				t.Fatalf(
+					"expected reason %q on close soft warn, got %q",
+					ReasonContextCanceledCheckpointSkipped, ev.Reason,
+				)
+			}
+			return
+		}
+	}
+	if hasStreamEventType(pre, EventCheckpointFailed) {
+		return
+	}
+	t.Log("persist-vs-event: terminal stream event dropped; Wait and snapshot absence are authoritative")
+}
+
+func TestResumeStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := newMemoryCP[state, NoEffect]()
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("hold", func(_ context.Context, s state) (state, Directive, error) {
+		if s.N == 0 {
+			s.N = 1
+			return s, Suspend("wait"), nil
+		}
+		return s, Completed(), nil
+	})
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("hold", "loop")
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("hold")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	runner := g.NewRunner(cp)
+	startRes, err := runner.Start(context.Background(), "resume-close-skip-on-save-th", state{})
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	failCP := &saveFailOverlayCP[state, NoEffect]{inner: cp}
+	streamCtx, streamCancel := context.WithCancel(t.Context())
+	defer streamCancel()
+	handle, err := g.NewRunner(failCP).ResumeStream(streamCtx, startRes.ResumeToken,
+		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+	)
+	if err != nil {
+		t.Fatalf("stream resume: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		return len(pre) < 2
+	})
+	if waitErr != nil && !errors.Is(waitErr, ErrCheckpointSkipped) {
+		t.Fatalf("Wait: got %v want nil or ErrCheckpointSkipped", waitErr)
+	}
+	for _, ev := range pre {
+		if ev.Type == EventContextCanceled {
+			if ev.Reason != ReasonContextCanceledCheckpointSkipped {
+				t.Fatalf(
+					"expected reason %q on resume close soft warn, got %q",
+					ReasonContextCanceledCheckpointSkipped, ev.Reason,
+				)
+			}
+			return
+		}
+	}
+	if hasStreamEventType(pre, EventCheckpointFailed) {
+		return
+	}
+	t.Log("persist-vs-event: terminal stream event dropped; Wait is authoritative")
+}
+
+func TestStreamClosePersistVsEventDroppedTerminalEventRetentionFailed(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := &failingMemoryCP[state, NoEffect]{
+		memoryCP:  *newMemoryCP[state, NoEffect](),
+		failPrune: true,
+	}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100), WithRetentionLimit(2))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	handle, err := g.NewRunner(cp).Stream(ctx, "close-retention-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		return len(pre) < 2
+	})
+	if waitErr == nil {
+		t.Fatal("Wait: got nil want error containing \"retention\"")
+	}
+	if !strings.Contains(waitErr.Error(), "retention") {
+		t.Fatalf("Wait: got %v want error containing \"retention\"", waitErr)
+	}
+	requireSnapshotPresent(t, cp, "close-retention-th")
+	for _, ev := range pre {
+		if ev.Type == EventContextCanceled {
+			if !strings.Contains(ev.Reason, "retention_failed") {
+				t.Fatalf("expected retention_failed suffix in event reason, got %q", ev.Reason)
+			}
+			return
+		}
+	}
+	t.Log("persist-vs-event: terminal stream event dropped; Wait and snapshot are authoritative")
+}
+
+func TestStreamClosePersistVsEventDroppedTerminalEventHardFailSave(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		return s, Completed(), nil
+	})
+	b.AddEdge("loop", "loop")
+	b.SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	handle, err := g.NewRunner(cp).Stream(ctx, "close-savefail-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	var pre []RunEvent[state, NoEffect]
+	waitErr := ConsumeEventsAndWait(context.Background(), handle, func(ev RunEvent[state, NoEffect]) bool {
+		pre = append(pre, ev)
+		return len(pre) < 2
+	})
+	if waitErr == nil {
+		t.Fatal("Wait: got nil want error containing \"save failed\"")
+	}
+	if !strings.Contains(waitErr.Error(), "save failed") {
+		t.Fatalf("Wait: got %v want error containing \"save failed\"", waitErr)
+	}
+	for _, ev := range pre {
+		if ev.Type == EventContextCanceled {
+			if !strings.Contains(ev.Reason, "save_failed") {
+				t.Fatalf("expected save_failed suffix in event reason, got %q", ev.Reason)
+			}
+			return
+		}
+	}
+	t.Log("persist-vs-event: terminal stream event dropped; Wait is authoritative")
+}
+
+func TestStreamRequestStopBeforeHandoffTerminalPersists(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "close-handoff-bd-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	outCh := BeginStreamCollect(handle)
+	<-ready
+	handle.RequestStop()
+	_, waitErr := awaitStreamCollect(t, handle, outCh, 5*time.Second)
+	if waitErr != nil {
+		t.Fatalf("Wait after RequestStop: %v", waitErr)
+	}
+	snap := requireSnapshotPresent(t, cp, "close-handoff-bd-th")
+	if snap.State.N != 1 {
+		t.Fatalf("expected N=1 in snapshot, got %+v", snap.State)
+	}
+	if snap.RunMeta.Segment.EndReason != SegmentEndContextCanceled {
+		t.Fatalf("expected context_canceled segment, got %q", snap.RunMeta.Segment.EndReason)
+	}
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "close-handoff-bd-th")
+	if !errors.Is(handoffErr, ErrNoActiveExecution) {
+		t.Fatalf("expected ErrNoActiveExecution after RequestStop, got %v", handoffErr)
+	}
+}
+
+// Intentional no-drain: persist-vs-event — terminal event may be dropped after RequestStop without drain.
+func TestStreamRequestStopBeforeCompletedTerminal(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("once", func(_ context.Context, s state) (state, Directive, error) {
+		s.N = 1
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("once")
+	b.SetEntryPoint("once")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	handle, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Stream(
+		context.Background(), "close-completed-bd-th", state{},
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	handle.RequestStop()
+	if err := handle.Wait(); err != nil {
+		t.Fatalf("completed run must succeed when consumer close blocks event delivery: %v", err)
+	}
+}
+
+func TestStreamRequestLocalHandoffSkipOnSaveErrorSkip(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-htb-skip-on-save-th", state{},
+		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	out := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-skip-on-save-th")
+	if !errors.Is(handoffErr, ErrCheckpointSkipped) {
+		t.Fatalf("expected ErrCheckpointSkipped from RequestLocalHandoff, got %v", handoffErr)
+	}
+	_, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if !errors.Is(waitErr, ErrCheckpointSkipped) {
+		t.Fatalf("expected ErrCheckpointSkipped from Wait, got %v", waitErr)
+	}
+	if _, loadErr := cp.Load(context.Background(), "stream-htb-skip-on-save-th"); loadErr == nil {
+		t.Fatal("expected no snapshot on stream handoff soft warn skip")
+	}
+}
+
+func TestStreamRequestLocalHandoffScheduleFailAfterPersist(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-htb-sched-th", state{},
+		WithHandoffScheduler[state, NoEffect](scheduler),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+
+	outCh := BeginStreamCollect(handle)
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-sched-th")
+	if !errors.Is(handoffErr, ErrHandoffScheduleFailed) {
+		t.Fatalf("expected ErrHandoffScheduleFailed, got %v", handoffErr)
+	}
+	events, waitErr := awaitStreamCollect(t, handle, outCh, 5*time.Second)
+	if !errors.Is(waitErr, ErrHandoffScheduleFailed) {
+		t.Fatalf("expected ErrHandoffScheduleFailed from Wait, got %v", waitErr)
+	}
+	if _, loadErr := cp.Load(context.Background(), "stream-htb-sched-th"); loadErr != nil {
+		t.Fatalf("snapshot must exist after schedule fail: %v", loadErr)
+	}
+	foundHandoff := false
+	for _, ev := range events {
+		if ev.Type == EventHandoff {
+			foundHandoff = true
+		}
+	}
+	if !foundHandoff {
+		t.Fatalf("expected EventHandoff on schedule failure, got %+v", events)
+	}
+}
+
+type saveFailOverlayCP[T, E any] struct {
+	inner *memoryCP[T, E]
+}
+
+func (s *saveFailOverlayCP[T, E]) Save(_ context.Context, _ Snapshot[T, E]) error {
+	return errors.New("save failed")
+}
+
+func (s *saveFailOverlayCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], error) {
+	return s.inner.Load(ctx, threadID)
+}
+
+func (s *saveFailOverlayCP[T, E]) GetHistory(
+	ctx context.Context,
+	threadID string,
+	limit int,
+) ([]Snapshot[T, E], error) {
+	return s.inner.GetHistory(ctx, threadID, limit)
+}
+
+func (s *saveFailOverlayCP[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
+	return s.inner.Prune(ctx, threadID, retainCount)
+}
+
+func (s *saveFailOverlayCP[T, E]) Delete(ctx context.Context, threadID string) error {
+	return s.inner.Delete(ctx, threadID)
+}
+
+func (s *saveFailOverlayCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	return s.inner.DeleteIfIdle(ctx, threadID)
+}
+
+// Intentional no-drain: RequestStop + Wait without Events() drain must not deadlock.
+func TestStreamRequestStopWithoutDrainNoDeadlock(t *testing.T) {
 	type state struct{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("one", func(_ context.Context, s state) (state, Directive, error) {
@@ -636,13 +1628,59 @@ func TestStreamCloseWithoutDrainNoDeadlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	handle.Close()
-	if err := handle.Done(); err != nil {
-		t.Fatalf("unexpected done error: %v", err)
+	handle.RequestStop()
+	if err := handle.Wait(); err != nil {
+		t.Fatalf("unexpected wait error: %v", err)
+	}
+}
+
+func TestStreamRequestStopUnblocksBlockingNode(t *testing.T) {
+	type state struct{}
+	ready := make(chan struct{})
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		select {
+		case <-ready:
+		default:
+			close(ready)
+		}
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	handle, err := g.NewRunner(cp).Stream(context.Background(), "stop-blocking-th", state{})
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	outCh := BeginStreamCollect(handle)
+	<-ready
+	handle.RequestStop()
+	events, waitErr := awaitStreamCollect(t, handle, outCh, 5*time.Second)
+	if waitErr != nil {
+		t.Fatalf("unexpected wait error after RequestStop on blocking node: %v", waitErr)
+	}
+	snap := requireSnapshotPresent(t, cp, "stop-blocking-th")
+	if snap.RunMeta.Segment.EndReason != SegmentEndContextCanceled {
+		t.Fatalf("expected context_canceled segment, got %q", snap.RunMeta.Segment.EndReason)
+	}
+	if term, ok := terminalEvent(events); ok {
+		requireTerminalEventReason(t, events, EventContextCanceled, "context_canceled")
+		if term.ExecutionPointer != "work" {
+			t.Fatalf("expected pointer work, got %q", term.ExecutionPointer)
+		}
 	}
 }
 
 func TestStreamRecoverMiddlewareEmitsFailedEvent(t *testing.T) {
+	t.Parallel()
+
 	type state struct{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.Use(RecoverMiddleware[state, NoEffect]())
@@ -656,35 +1694,33 @@ func TestStreamRecoverMiddlewareEmitsFailedEvent(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	handle, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Stream(context.Background(), "panic-stream", state{})
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	syncRes, syncErr := runner.Start(context.Background(), "panic-sync", state{})
+	if syncErr == nil {
+		t.Fatalf("expected sync error, got %+v", syncRes)
+	}
+	if syncRes.Reason == "" {
+		t.Fatalf("expected sync reason, got empty")
+	}
+	handle, err := runner.Stream(context.Background(), "panic-stream", state{})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	events := collectEvents(t, handle.Events(), 2*time.Second)
-	if len(events) == 0 || events[len(events)-1].Type != EventFailed {
-		t.Fatalf("expected final failed event, got %+v", events)
-	}
-	if err := handle.Done(); err == nil {
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	requireTerminalEventReason(t, events, EventFailed, syncRes.Reason)
+	if waitErr == nil {
 		t.Fatal("expected stream failure error")
 	}
 }
 
-func collectEvents[T, E any](t *testing.T, stream <-chan RunEvent[T, E], timeout time.Duration) []RunEvent[T, E] {
-	t.Helper()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	out := make([]RunEvent[T, E], 0)
-	for {
-		select {
-		case event, ok := <-stream:
-			if !ok {
-				return out
-			}
-			out = append(out, event)
-		case <-timer.C:
-			t.Fatalf("stream timeout after %s", timeout)
+func hasStreamEventType[T, E any](events []RunEvent[T, E], eventType EventType) bool {
+	for _, ev := range events {
+		if ev.Type == eventType {
+			return true
 		}
 	}
+	return false
 }
 
 type cancelAwareCP[T, E any] struct {
@@ -718,4 +1754,62 @@ func (c *cancelAwareCP[T, E]) Delete(context.Context, string) error {
 // DeleteIfIdle is a stream test stub.
 func (c *cancelAwareCP[T, E]) DeleteIfIdle(context.Context, string) error {
 	return nil
+}
+
+func TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveErrorParentCancel(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+	ready := make(chan struct{})
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		s.N++
+		select {
+		case <-ready:
+		default:
+			close(ready)
+		}
+		<-ctx.Done()
+		return s, Completed(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	handle, err := g.NewRunner(cp).Stream(ctx, "close-cancel-race-th", state{},
+		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+	)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	out := BeginStreamCollect(handle)
+	<-ready
+	cancel()
+	handle.RequestStop()
+	pre, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
+	if waitErr != nil && !errors.Is(waitErr, ErrCheckpointSkipped) && !errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("Wait: got %v want nil, ErrCheckpointSkipped, or context.Canceled", waitErr)
+	}
+	requireSnapshotMissing(t, cp, "close-cancel-race-th")
+	for _, ev := range pre {
+		if ev.Type == EventContextCanceled {
+			if ev.Reason != ReasonContextCanceledCheckpointSkipped {
+				t.Fatalf(
+					"expected reason %q on RequestStop+parent cancel, got %q",
+					ReasonContextCanceledCheckpointSkipped, ev.Reason,
+				)
+			}
+			return
+		}
+	}
+	if hasStreamEventType(pre, EventCheckpointFailed) {
+		return
+	}
+	t.Log("persist-vs-event: terminal stream event dropped; Wait is authoritative")
 }
