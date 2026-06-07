@@ -1,4 +1,7 @@
 // Package redis provides Redis checkpointer adapter.
+//
+// Handoff transactional outbox (SaveWithOutbox) is not supported — use the 3-phase Handoff FSM
+// with RecoverStaleHandoff for stale pending. Postgres adapter implements TransactionalCheckpointer.
 package redis
 
 import (
@@ -14,6 +17,26 @@ import (
 )
 
 const defaultPrefix = "flowy"
+
+const saveOccScript = `
+local head = redis.call('LINDEX', KEYS[1], 0)
+local current = 0
+if head then
+  local ok, stored = pcall(cjson.decode, head)
+  if ok and stored.revision then
+    current = tonumber(stored.revision)
+  end
+end
+local expected = tonumber(ARGV[1])
+if current ~= expected then
+  return 0
+end
+redis.call('LPUSH', KEYS[1], ARGV[2])
+if tonumber(ARGV[3]) > 0 then
+  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+end
+return 1
+`
 
 // Options configures the Redis checkpointer.
 type Options struct {
@@ -56,34 +79,51 @@ func NewCheckpointer[T, E any](
 	}
 }
 
-func (c *Checkpointer[T, E]) Save(ctx context.Context, snapshot flowy.Snapshot[T, E]) error {
+func (c *Checkpointer[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot flowy.Snapshot[T, E],
+) (uint64, error) {
+	newRevision := expectedRevision + 1
+	snapshot.Revision = newRevision
 	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	payload, err := json.Marshal(stored)
 	if err != nil {
-		return fmt.Errorf("redis checkpoint marshal: %w", err)
+		return 0, fmt.Errorf("redis checkpoint marshal: %w", err)
 	}
 	key := c.historyKey(snapshot.ThreadID)
-	if err := c.client.LPush(ctx, key, payload).Err(); err != nil {
-		return err
-	}
+	ttlSec := int64(0)
 	if c.ttl > 0 {
-		return c.client.Expire(ctx, key, c.ttl).Err()
+		ttlSec = int64(c.ttl.Seconds())
 	}
-	return nil
+	result, err := c.client.Eval(ctx, saveOccScript, []string{key},
+		expectedRevision, string(payload), ttlSec,
+	).Int64()
+	if err != nil {
+		return 0, err
+	}
+	if result == 0 {
+		return 0, flowy.ErrConcurrencyConflict
+	}
+	return newRevision, nil
 }
 
-func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], error) {
+func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], uint64, error) {
 	values, err := c.client.LRange(ctx, c.historyKey(threadID), 0, 0).Result()
 	if err != nil {
-		return flowy.Snapshot[T, E]{}, err
+		return flowy.Snapshot[T, E]{}, 0, err
 	}
 	if len(values) == 0 {
-		return flowy.Snapshot[T, E]{}, checkpoint.ErrNoSnapshot
+		return flowy.Snapshot[T, E]{}, 0, fmt.Errorf("%w: %w", flowy.ErrThreadNotFound, checkpoint.ErrNoSnapshot)
 	}
-	return c.decode(values[0])
+	snapshot, err := c.decode(values[0])
+	if err != nil {
+		return flowy.Snapshot[T, E]{}, 0, err
+	}
+	return snapshot, snapshot.Revision, nil
 }
 
 func (c *Checkpointer[T, E]) GetHistory(

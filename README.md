@@ -22,22 +22,22 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 
 ## Migration from v1
 
-| v1                                | Current API                                                                            |
-| --------------------------------- | -------------------------------------------------------------------------------------- |
-| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`                  |
-| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                                          |
-| `Effect(base, any)`               | `Effect[E](base, payload E)`                                                           |
-| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                                 |
-| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                                        |
-| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                                  |
-| `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, SnapshotRevision})`                    |
-| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)                       |
-| Manual handoff queue + rollback   | `WithHandoffScheduler` (Outbox: save → schedule; snapshot сохраняется)                 |
-| context error collectors          | `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` + `EventCheckpointFailed` |
-| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                                |
-| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`                             |
-| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)`               |
-| —                                 | + `ContextWithRunMetadata` for isolated node execution outside Runner                  |
+| v1                                | Current API                                                                             |
+| --------------------------------- | --------------------------------------------------------------------------------------- |
+| `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`                   |
+| `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                                           |
+| `Effect(base, any)`               | `Effect[E](base, payload E)`                                                            |
+| `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                                  |
+| string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                                         |
+| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                                   |
+| `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, SnapshotRevision})`                     |
+| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)                        |
+| Manual handoff queue + rollback   | `WithHandoffOutbox` (save → `EnqueueIntent`; snapshot сохраняется, `HandoffStatus` FSM) |
+| context error collectors          | `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` + `EventCheckpointFailed`  |
+| ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                                 |
+| Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`                              |
+| Global `maxSteps` only            | + `WithNamedBudget(name, limit)` + `UseBudget` / `BudgetUsed(ctx, name)`                |
+| —                                 | + `ContextWithRunMetadata` for isolated node execution outside Runner                   |
 
 ### Migration example (routing)
 
@@ -128,15 +128,19 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 )
 ```
 
-### Lifecycle contracts (Task18)
+### Lifecycle contracts (Task18 + Task19)
 
 - **Save-path pointer:** `WithSuspendPointerResolver` нормализует `ExecutionPointer` до `Save` на Suspend/Handoff (Checkpointer остаётся dumb CRUD).
-- **Handoff Outbox:** `WithHandoffScheduler` — save → `ScheduleContinuation(token)`; при ошибке schedule snapshot **сохраняется**, `RunResult.ResumeToken` доступен для retry публикации (`errors.Is(err, ErrHandoffScheduleFailed)`).
+- **Strict OCC Checkpointer:** `Save(ctx, expectedRevision, snapshot) (newRevision, error)` и `Load(ctx, threadID) (snapshot, revision, error)`. Конфликт Save или несовпадение `ResumeToken.SnapshotRevision` при `Resume` → `ErrConcurrencyConflict` (воркер: Load → свежий `ResumeToken` → retry).
+- **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → `EnqueueIntent` (token rev = pending) → patch `enqueued` / `orphaned`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, БД может остаться `pending`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). **Phase B:** при `TransactionalCheckpointer` (postgres `SaveWithOutbox`) initial handoff сохраняет `enqueued` в одной TX с `EnqueueIntent` (без `pending`); tx через `ContextWithOutboxTx` / `postgres.PgxTxFromContext`. `WithRunLease` + memory/redis CP: lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе 3-phase FSM. At-least-once: consumer идемпотентен по `thread_id`.
+- **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM, даже с postgres TX adapter. `WithRecoverForceReenqueue(true)` — reconcile `enqueued` без сообщения в outbox. Cron recovery — **single-leader** или worker с `WithRunLease`. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` на legacy rows = stale сразу.
+- **Worst-case runbook:** enqueue OK + оба patch fail → БД `pending@N`, сообщение в outbox; consumer получает stale token → `Load` → `RecoverStaleHandoff` после TTL. Query: `handoff_status='pending' AND handoff_pending_at < now() - interval '5 min'` OR `handoff_status='orphaned'`.
+- **LifecycleObserver:** process-wide hook (`SetLifecycleObserver`); production bootstrap: `ext/otel.InstallLifecycleObserver()` (+ optional `InstallLifecycleObserverWithTracing()`). Метрики `handoff_enqueued_total{status}`: `success`, `enqueue_failed`, `patch_enqueued_failed`, `patch_orphan_failed`, `save_failed`, `commit_failed`.
 - **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с resolved pointer в snapshot (после `WithSuspendPointerResolver`), как и terminal events.
 - **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
 - **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune (Completed/Failed) — log only.
-- **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.Wait()` не возвращает `RunResult` — только ошибку завершения goroutine (`nil` после RequestStop+persist, `ErrCheckpointSkipped` при SkipOnSaveError skip, `context.Canceled` при ctx cancel, wrapped error при retention/schedule fail).
-- **RequestLocalHandoff return matrix:** `nil` = persisted handoff; `ErrCheckpointSkipped` = SkipOnSaveError skip (no snapshot); `ErrHandoffScheduleFailed` = schedule fail after persist (snapshot + `ResumeToken` for Outbox retry); wrapped retention/save errors otherwise. Stream `RequestLocalHandoff` mirrors the same errors on `Wait()`.
+- **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.Wait()` не возвращает `RunResult` — только ошибку завершения goroutine (`nil` после RequestStop+persist, `ErrCheckpointSkipped` при SkipOnSaveError skip, `context.Canceled` при ctx cancel, wrapped error при retention/enqueue fail).
+- **RequestLocalHandoff return matrix:** `nil` = persisted handoff; `ErrCheckpointSkipped` = SkipOnSaveError skip (no snapshot); `ErrHandoffEnqueueFailed` = enqueue fail after persist (snapshot + `ResumeToken` for Outbox retry); wrapped retention/save errors otherwise. Stream `RequestLocalHandoff` mirrors the same errors on `Wait()`.
 - **Persist-vs-event / consumer stop:** после `RequestStop` terminal event может не дойти до consumer; **snapshot/checkpointer — source of truth**. Не вызывайте `RequestLocalHandoff` после `RequestStop` (`ErrNoActiveExecution`).
 - **Stream consumer helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect` — безопасный drain+`Wait` без дедлока. Примеры:
 
@@ -168,12 +172,12 @@ Ephemeral bindings **не** попадают в `Snapshot`.
 
 ```go
 type Checkpointer[T, E any] interface {
-    Save(...)
-    Load(...)
-    GetHistory(...)
-    Prune(...)
-    Delete(...)
-    DeleteIfIdle(...) // ErrThreadLeaseBusy when lease held by another owner
+    Save(ctx context.Context, expectedRevision uint64, snapshot Snapshot[T, E]) (newRevision uint64, err error)
+    Load(ctx context.Context, threadID string) (snapshot Snapshot[T, E], revision uint64, err error)
+    GetHistory(ctx context.Context, threadID string, limit int) ([]Snapshot[T, E], error)
+    Prune(ctx context.Context, threadID string, retainCount int) error
+    Delete(ctx context.Context, threadID string) error
+    DeleteIfIdle(ctx context.Context, threadID string) error // ErrThreadLeaseBusy when lease held by another owner
 }
 ```
 
@@ -201,9 +205,17 @@ make test-race && make test-goleak && make lint
 go test -count=20 -run 'Close|Stop|Wait|Handoff|Lease|Checkpoint|ResumeStream|StreamCollect|ConsumeEvents' .
 ```
 
-Опционально integration-тесты paired lease + checkpointer:
+Опционально integration-тесты paired lease + checkpointer (включая runner handoff E2E на postgres adapter):
 
 ```bash
 go test -tags=integration ./adapters/checkpointer/redis/...
 FLOWY_TEST_DATABASE_URL=postgres://... go test -tags=integration ./adapters/checkpointer/postgres/...
+```
+
+Runner postgres E2E (`TestRunnerHandoffPostgresTransactional*`, `TestRecoverStaleHandoffPostgres*`) живут в `adapters/checkpointer/postgres/integration_test.go` — не добавляйте root `//go:build integration` с импортом `checkpoint`/adapter (import cycle).
+
+Stress gate для handoff/resume/orphan контрактов:
+
+```bash
+make verify-stress
 ```

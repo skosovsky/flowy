@@ -6,12 +6,17 @@ INSERT INTO flowy_checkpoints (
     run_meta,
     effects,
     updated_at
-) VALUES (
+)
+SELECT
     @thread_id,
-    @revision,
+    @expected_revision + 1,
     @node_id,
     @state_payload,
     @run_meta,
     @effects,
     @updated_at
-);
+WHERE COALESCE(
+    (SELECT MAX(revision) FROM flowy_checkpoints WHERE thread_id = @thread_id),
+    0
+) = @expected_revision
+RETURNING revision;

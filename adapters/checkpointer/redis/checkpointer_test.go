@@ -19,12 +19,39 @@ type state struct {
 	Value string `json:"value"`
 }
 
-func testSnapshot(revision int, value string) flowy.Snapshot[state, string] {
+func testSnapshot(revision uint64, value string) flowy.Snapshot[state, string] {
 	return flowy.Snapshot[state, string]{
 		ThreadID:         "t1",
 		Revision:         revision,
 		ExecutionPointer: "n1",
 		State:            state{Value: value},
+	}
+}
+
+func saveTestSnapshot(
+	t *testing.T,
+	cp *Checkpointer[state, string],
+	expectedRevision uint64,
+	revision uint64,
+	value string,
+) {
+	t.Helper()
+	if _, err := cp.Save(context.Background(), expectedRevision, testSnapshot(revision, value)); err != nil {
+		t.Fatalf("save rev %d: %v", revision, err)
+	}
+}
+
+func TestSaveOCCConflict(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	saveTestSnapshot(t, cp, 0, 1, "v1")
+	_, err := cp.Save(context.Background(), 0, testSnapshot(2, "stale"))
+	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict, got %v", err)
 	}
 }
 
@@ -35,9 +62,8 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	err := cp.Save(context.Background(), flowy.Snapshot[state, string]{
+	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[state, string]{
 		ThreadID:         "t1",
-		Revision:         1,
 		ExecutionPointer: "n1",
 		State:            state{Value: "ok"},
 		RunMeta: flowy.RunMetadata{
@@ -51,7 +77,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, err := cp.Load(context.Background(), "t1")
+	got, _, err := cp.Load(context.Background(), "t1")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -70,15 +96,14 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), flowy.Snapshot[state, string]{
+	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[state, string]{
 		ThreadID:         "router-th",
-		Revision:         1,
 		ExecutionPointer: "router",
 		State:            state{Value: "ok"},
 	}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	got, err := cp.Load(context.Background(), "router-th")
+	got, _, err := cp.Load(context.Background(), "router-th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -94,9 +119,9 @@ func TestLoadNoSnapshot(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	_, err := cp.Load(context.Background(), "missing")
-	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
-		t.Fatalf("expected ErrNoSnapshot, got %v", err)
+	_, _, err := cp.Load(context.Background(), "missing")
+	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
 	}
 }
 
@@ -107,12 +132,8 @@ func TestGetHistory(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save v1: %v", err)
-	}
-	if err := cp.Save(context.Background(), testSnapshot(2, "v2")); err != nil {
-		t.Fatalf("save v2: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
+	saveTestSnapshot(t, cp, 1, 2, "v2")
 	history, err := cp.GetHistory(context.Background(), "t1", 10)
 	if err != nil {
 		t.Fatalf("history: %v", err)
@@ -132,15 +153,9 @@ func TestPruneRetainsLatestN(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save v1: %v", err)
-	}
-	if err := cp.Save(context.Background(), testSnapshot(2, "v2")); err != nil {
-		t.Fatalf("save v2: %v", err)
-	}
-	if err := cp.Save(context.Background(), testSnapshot(3, "v3")); err != nil {
-		t.Fatalf("save v3: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
+	saveTestSnapshot(t, cp, 1, 2, "v2")
+	saveTestSnapshot(t, cp, 2, 3, "v3")
 
 	if err := cp.Prune(context.Background(), "t1", 2); err != nil {
 		t.Fatalf("prune: %v", err)
@@ -161,9 +176,7 @@ func TestDeleteIfIdleBlockedByLeaseKey(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{Prefix: "flowy"}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := client.Set(context.Background(), "flowy:lease:t1", "worker-a", 0).Err(); err != nil {
 		t.Fatalf("set lease: %v", err)
 	}
@@ -171,7 +184,7 @@ func TestDeleteIfIdleBlockedByLeaseKey(t *testing.T) {
 	if !errors.Is(err, flowy.ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
-	_, loadErr := cp.Load(context.Background(), "t1")
+	_, _, loadErr := cp.Load(context.Background(), "t1")
 	if loadErr != nil {
 		t.Fatalf("snapshot should remain: %v", loadErr)
 	}
@@ -184,15 +197,13 @@ func TestDeleteIfIdleSucceedsWhenIdle(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
 		t.Fatalf("delete if idle: %v", err)
 	}
-	_, err := cp.Load(context.Background(), "t1")
-	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
-		t.Fatalf("expected ErrNoSnapshot, got %v", err)
+	_, _, err := cp.Load(context.Background(), "t1")
+	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
 	}
 }
 
@@ -208,9 +219,7 @@ func TestDeleteIfIdleLeasePrefixMismatch(t *testing.T) {
 	}, checkpoint.JSONSerializer[state]{})
 	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: "app"})
 
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -218,7 +227,8 @@ func TestDeleteIfIdleLeasePrefixMismatch(t *testing.T) {
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
 		t.Fatalf("delete if idle: %v", err)
 	}
-	if _, err := cp.Load(context.Background(), "t1"); !errors.Is(err, checkpoint.ErrNoSnapshot) {
+	if _, _, err := cp.Load(context.Background(), "t1"); !errors.Is(err, flowy.ErrThreadNotFound) ||
+		!errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("prefix mismatch should bypass lease check and delete snapshot, got %v", err)
 	}
 }
@@ -230,14 +240,12 @@ func TestPruneDeleteAllWhenRetainNonPositive(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
-		t.Fatalf("save v1: %v", err)
-	}
+	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := cp.Prune(context.Background(), "t1", 0); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
-	_, err := cp.Load(context.Background(), "t1")
-	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
-		t.Fatalf("expected ErrNoSnapshot after prune-all, got %v", err)
+	_, _, err := cp.Load(context.Background(), "t1")
+	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot after prune-all, got %v", err)
 	}
 }

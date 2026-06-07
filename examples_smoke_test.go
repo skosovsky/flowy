@@ -26,6 +26,7 @@ func TestExamplesSmoke(t *testing.T) {
 		"bindings_agent",
 		"semantic_cache_agent",
 		"late_prompt_agent",
+		"handoff_outbox",
 	}
 	root, err := os.Getwd()
 	if err != nil {

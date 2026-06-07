@@ -17,9 +17,11 @@ import (
 )
 
 type fakeDB struct {
-	execCalled bool
-	row        pgx.Row
-	rows       pgx.Rows
+	execCalled     bool
+	queryRowCalled bool
+	row            pgx.Row
+	saveRow        pgx.Row
+	rows           pgx.Rows
 }
 
 func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
@@ -27,7 +29,14 @@ func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag,
 	return pgconn.CommandTag{}, nil
 }
 
-func (f *fakeDB) QueryRow(_ context.Context, _ string, _ ...any) pgx.Row {
+func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
+	f.queryRowCalled = true
+	if strings.Contains(sql, "RETURNING revision") {
+		if f.saveRow != nil {
+			return f.saveRow
+		}
+		return fakeRow{values: []any{uint64(1)}}
+	}
 	return f.row
 }
 
@@ -44,12 +53,20 @@ func (r fakeRow) Scan(dest ...any) error {
 	if r.err != nil {
 		return r.err
 	}
+	if len(dest) == 1 {
+		if d, ok := dest[0].(*uint64); ok {
+			*d = scanUint64Value(r.values[0])
+			return nil
+		}
+	}
 	for i := range dest {
 		switch d := dest[i].(type) {
 		case *string:
 			*d = r.values[i].(string)
 		case *int:
 			*d = r.values[i].(int)
+		case *uint64:
+			*d = scanUint64Value(r.values[i])
 		case *[]byte:
 			*d = r.values[i].([]byte)
 		case *json.RawMessage:
@@ -61,6 +78,19 @@ func (r fakeRow) Scan(dest ...any) error {
 		}
 	}
 	return nil
+}
+
+func scanUint64Value(v any) uint64 {
+	switch n := v.(type) {
+	case int:
+		return uint64(n)
+	case int64:
+		return uint64(n)
+	case uint64:
+		return n
+	default:
+		return 0
+	}
 }
 
 type fakeRows struct {
@@ -109,7 +139,7 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 	row := fakeRow{
 		values: []any{
 			"thread-1",
-			2,
+			1,
 			"node-1",
 			[]byte(`{"value":"ok"}`),
 			mustRunMetaBytes(t, now, map[string]int{"n": 1}, 2),
@@ -117,12 +147,11 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 			now,
 		},
 	}
-	db := &fakeDB{row: row}
+	db := &fakeDB{row: row, saveRow: fakeRow{values: []any{uint64(1)}}}
 	cp := NewCheckpointer[sampleState, string](db, checkpoint.JSONSerializer[sampleState]{})
 
-	err := cp.Save(context.Background(), flowy.Snapshot[sampleState, string]{
+	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[sampleState, string]{
 		ThreadID:         "thread-1",
-		Revision:         2,
 		ExecutionPointer: "node-1",
 		State:            sampleState{Value: "ok"},
 		RunMeta:          flowy.RunMetadata{SegmentStartTime: now, RetryCounts: map[string]int{"n": 1}, StepCount: 2},
@@ -131,19 +160,19 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if !db.execCalled {
-		t.Fatal("expected save exec call")
+	if !db.queryRowCalled {
+		t.Fatal("expected save query row call")
 	}
 
-	snapshot, err := cp.Load(context.Background(), "thread-1")
+	snapshot, _, err := cp.Load(context.Background(), "thread-1")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
 	if snapshot.State.Value != "ok" {
 		t.Fatalf("unexpected state: %+v", snapshot.State)
 	}
-	if snapshot.Revision != 2 {
-		t.Fatalf("expected revision=2, got %d", snapshot.Revision)
+	if snapshot.Revision != 1 {
+		t.Fatalf("expected revision=1, got %d", snapshot.Revision)
 	}
 }
 
@@ -161,12 +190,11 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 			now,
 		},
 	}
-	db := &fakeDB{row: row}
+	db := &fakeDB{row: row, saveRow: fakeRow{values: []any{uint64(1)}}}
 	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
 
-	err := cp.Save(context.Background(), flowy.Snapshot[sampleState, flowy.NoEffect]{
+	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[sampleState, flowy.NoEffect]{
 		ThreadID:         "router-th",
-		Revision:         1,
 		ExecutionPointer: "router",
 		State:            sampleState{Value: "ok"},
 		RunMeta:          flowy.RunMetadata{SegmentStartTime: now},
@@ -175,7 +203,7 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 		t.Fatalf("save: %v", err)
 	}
 
-	got, err := cp.Load(context.Background(), "router-th")
+	got, _, err := cp.Load(context.Background(), "router-th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -188,9 +216,9 @@ func TestLoadNoSnapshot(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{row: fakeRow{err: pgx.ErrNoRows}}
 	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
-	_, err := cp.Load(context.Background(), "missing")
-	if !errors.Is(err, checkpoint.ErrNoSnapshot) {
-		t.Fatalf("expected ErrNoSnapshot, got %v", err)
+	_, _, err := cp.Load(context.Background(), "missing")
+	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
+		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
 	}
 }
 

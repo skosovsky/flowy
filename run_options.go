@@ -28,7 +28,7 @@ type runInvocationOptions[T, E any] struct {
 	leaseOwner             string
 	leaseTTL               time.Duration
 	suspendPointerResolver SuspendPointerResolver[T]
-	handoffScheduler       HandoffScheduler
+	handoffOutbox          HandoffOutbox
 	checkpointPolicy       CheckpointFailurePolicy
 }
 
@@ -86,10 +86,10 @@ func WithSuspendPointerResolver[T, E any](resolver SuspendPointerResolver[T]) Ru
 	})
 }
 
-// WithHandoffScheduler schedules continuation after a successful handoff checkpoint save.
-func WithHandoffScheduler[T, E any](scheduler HandoffScheduler) RunOption[T, E] {
+// WithHandoffOutbox enqueues handoff continuation after a successful handoff checkpoint save.
+func WithHandoffOutbox[T, E any](outbox HandoffOutbox) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
-		opts.handoffScheduler = scheduler
+		opts.handoffOutbox = outbox
 	})
 }
 

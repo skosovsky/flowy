@@ -1,5 +1,7 @@
 package flowy
 
+import "time"
+
 const defaultMaxSteps = 1000
 
 // runConfig holds options for a run.
@@ -68,5 +70,19 @@ type RunnerOption[T, E any] func(*graphRunner[T, E])
 func WithLeaseManager[T, E any](manager LeaseManager) RunnerOption[T, E] {
 	return func(r *graphRunner[T, E]) {
 		r.leaseManager = manager
+	}
+}
+
+// WithRunnerHandoffOutbox sets the default outbox for handoff and RecoverStaleHandoff.
+func WithRunnerHandoffOutbox[T, E any](outbox HandoffOutbox) RunnerOption[T, E] {
+	return func(r *graphRunner[T, E]) {
+		r.handoffOutbox = outbox
+	}
+}
+
+// WithHandoffStaleAfter sets the TTL for stale-pending handoff recovery (default 5m).
+func WithHandoffStaleAfter[T, E any](d time.Duration) RunnerOption[T, E] {
+	return func(r *graphRunner[T, E]) {
+		r.handoffStaleAfter = d
 	}
 }

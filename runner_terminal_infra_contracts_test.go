@@ -6,35 +6,41 @@ import (
 	"testing"
 )
 
+type terminalInfraState struct{}
+
+type terminalInfraFailureCase struct {
+	name          string
+	setup         func() (*Graph[terminalInfraState, NoEffect], Checkpointer[terminalInfraState, NoEffect], []RunOption[terminalInfraState, NoEffect])
+	wantStatus    RunStatus
+	wantReason    string
+	wantResumeTok bool
+	wantErr       error
+}
+
 func TestTerminalStatusOnInfraFailure(t *testing.T) {
 	t.Parallel()
 
-	type state struct{}
-
-	tests := []struct {
-		name          string
-		setup         func() (*Graph[state, NoEffect], Checkpointer[state, NoEffect], []RunOption[state, NoEffect])
-		wantStatus    RunStatus
-		wantReason    string
-		wantResumeTok bool
-		wantErr       error
-	}{
+	tests := []terminalInfraFailureCase{
 		{
 			name: "handoff resolve invalid pointer",
-			setup: func() (*Graph[state, NoEffect], Checkpointer[state, NoEffect], []RunOption[state, NoEffect]) {
-				b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-				b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+			setup: func() (*Graph[terminalInfraState, NoEffect], Checkpointer[terminalInfraState, NoEffect], []RunOption[terminalInfraState, NoEffect]) {
+				b := NewGraph[terminalInfraState, NoEffect](
+					func(_ terminalInfraState, u terminalInfraState) terminalInfraState { return u },
+				)
+				b.AddNode("work", func(_ context.Context, s terminalInfraState) (terminalInfraState, Directive, error) {
 					return s, Handoff("bg"), nil
 				})
 				b.AllowNoOutgoingRoute("work")
 				b.SetEntryPoint("work")
 				g, _ := b.Compile()
-				resolver := WithSuspendPointerResolver[state, NoEffect](
-					func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
+				resolver := WithSuspendPointerResolver[terminalInfraState, NoEffect](
+					func(_ terminalInfraState, _ ExecutionPointer) (ExecutionPointer, error) {
 						return "ghost", nil
 					},
 				)
-				return g, newMemoryCP[state, NoEffect](), []RunOption[state, NoEffect]{resolver}
+				return g, newMemoryCP[terminalInfraState, NoEffect](), []RunOption[terminalInfraState, NoEffect]{
+					resolver,
+				}
 			},
 			wantStatus:    RunStatusFailed,
 			wantReason:    ReasonHandoffPointerResolveFailed,
@@ -42,72 +48,88 @@ func TestTerminalStatusOnInfraFailure(t *testing.T) {
 		},
 		{
 			name: "handoff save hard fail",
-			setup: func() (*Graph[state, NoEffect], Checkpointer[state, NoEffect], []RunOption[state, NoEffect]) {
-				b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-				b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+			setup: func() (*Graph[terminalInfraState, NoEffect], Checkpointer[terminalInfraState, NoEffect], []RunOption[terminalInfraState, NoEffect]) {
+				b := NewGraph[terminalInfraState, NoEffect](
+					func(_ terminalInfraState, u terminalInfraState) terminalInfraState { return u },
+				)
+				b.AddNode("work", func(_ context.Context, s terminalInfraState) (terminalInfraState, Directive, error) {
 					return s, Handoff("bg"), nil
 				})
 				b.AllowNoOutgoingRoute("work")
 				b.SetEntryPoint("work")
 				g, _ := b.Compile()
-				return g, &failingMemoryCP[state, NoEffect]{failSave: true}, nil
+				return g, &failingMemoryCP[terminalInfraState, NoEffect]{failSave: true}, nil
 			},
 			wantStatus:    RunStatusFailed,
 			wantReason:    ReasonHandoffSaveFailed,
 			wantResumeTok: false,
 		},
 		{
-			name: "handoff schedule fail",
-			setup: func() (*Graph[state, NoEffect], Checkpointer[state, NoEffect], []RunOption[state, NoEffect]) {
-				b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-				b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+			name: "handoff enqueue fail",
+			setup: func() (*Graph[terminalInfraState, NoEffect], Checkpointer[terminalInfraState, NoEffect], []RunOption[terminalInfraState, NoEffect]) {
+				b := NewGraph[terminalInfraState, NoEffect](
+					func(_ terminalInfraState, u terminalInfraState) terminalInfraState { return u },
+				)
+				b.AddNode("work", func(_ context.Context, s terminalInfraState) (terminalInfraState, Directive, error) {
 					return s, Handoff("bg"), nil
 				})
 				b.AllowNoOutgoingRoute("work")
 				b.SetEntryPoint("work")
 				g, _ := b.Compile()
-				return g, newMemoryCP[state, NoEffect](), []RunOption[state, NoEffect]{
-					WithHandoffScheduler[state, NoEffect](&stubHandoffScheduler{err: errors.New("broker down")}),
+				return g, newMemoryCP[terminalInfraState, NoEffect](), []RunOption[terminalInfraState, NoEffect]{
+					WithHandoffOutbox[terminalInfraState, NoEffect](&stubHandoffOutbox{err: errors.New("broker down")}),
 				}
 			},
 			wantStatus:    RunStatusHandoff,
 			wantResumeTok: true,
-			wantErr:       ErrHandoffScheduleFailed,
+			wantErr:       ErrHandoffEnqueueFailed,
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			g, cp, opts := tc.setup()
-			res, err := g.NewRunner(cp).Start(context.Background(), "infra-th", state{}, opts...)
-			if tc.wantErr != nil {
-				if !errors.Is(err, tc.wantErr) {
-					t.Fatalf("expected %v, got %v res=%+v", tc.wantErr, err, res)
-				}
-			} else if err == nil {
-				t.Fatalf("expected error, got res=%+v", res)
-			}
-			if res.Status != tc.wantStatus {
-				t.Fatalf("expected status %s, got %s", tc.wantStatus, res.Status)
-			}
-			if tc.wantReason != "" && res.Reason != tc.wantReason {
-				t.Fatalf("expected reason %q, got %q", tc.wantReason, res.Reason)
-			}
-			hasToken := res.ResumeToken.ThreadID != "" && res.ResumeToken.SnapshotRevision > 0
-			if hasToken != tc.wantResumeTok {
-				t.Fatalf("ResumeToken presence=%v want=%v token=%+v", hasToken, tc.wantResumeTok, res.ResumeToken)
-			}
+			runTerminalInfraFailureCase(t, tc)
 		})
 	}
 }
 
-func TestStreamHandoffScheduleFailureEmitsHandoffEvent(t *testing.T) {
+func runTerminalInfraFailureCase(t *testing.T, tc terminalInfraFailureCase) {
+	t.Helper()
+	g, cp, opts := tc.setup()
+	res, err := g.NewRunner(cp).Start(context.Background(), "infra-th", terminalInfraState{}, opts...)
+	if tc.wantErr != nil {
+		if !errors.Is(err, tc.wantErr) {
+			t.Fatalf("expected %v, got %v res=%+v", tc.wantErr, err, res)
+		}
+	} else if err == nil {
+		t.Fatalf("expected error, got res=%+v", res)
+	}
+	if res.Status != tc.wantStatus {
+		t.Fatalf("expected status %s, got %s", tc.wantStatus, res.Status)
+	}
+	if tc.wantReason != "" && res.Reason != tc.wantReason {
+		t.Fatalf("expected reason %q, got %q", tc.wantReason, res.Reason)
+	}
+	hasToken := res.ResumeToken.ThreadID != "" && res.ResumeToken.SnapshotRevision > 0
+	if hasToken != tc.wantResumeTok {
+		t.Fatalf("ResumeToken presence=%v want=%v token=%+v", hasToken, tc.wantResumeTok, res.ResumeToken)
+	}
+	if errors.Is(tc.wantErr, ErrHandoffEnqueueFailed) {
+		assertOrphanedHandoffSnapshot(t, cp, "infra-th", res, "bg")
+		assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "infra-th")
+		if res.Reason != ReasonHandoffOrphaned {
+			t.Fatalf("expected reason %q, got %q", ReasonHandoffOrphaned, res.Reason)
+		}
+	}
+}
+
+func TestStreamHandoffEnqueueFailureEmitsHandoffEvent(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -119,16 +141,17 @@ func TestStreamHandoffScheduleFailureEmitsHandoffEvent(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	runner := g.NewRunner(newMemoryCP[state, NoEffect]())
-	handle, err := runner.Stream(context.Background(), "stream-sched-fail-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	handle, err := runner.Stream(context.Background(), "stream-enqueue-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	events, waitErr := CollectEventsAndWait(context.Background(), handle)
-	if !errors.Is(waitErr, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected schedule failure, got %v", waitErr)
+	if !errors.Is(waitErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected enqueue failure, got %v", waitErr)
 	}
 
 	foundHandoff := false
@@ -138,21 +161,27 @@ func TestStreamHandoffScheduleFailureEmitsHandoffEvent(t *testing.T) {
 		}
 	}
 	if !foundHandoff {
-		t.Fatalf("expected EventHandoff on schedule failure, got %+v", events)
+		t.Fatalf("expected EventHandoff on enqueue failure, got %+v", events)
 	}
 	for _, ev := range events {
-		if ev.Type == EventHandoff && ev.Reason != "bg" {
-			t.Fatalf("expected handoff reason bg on schedule fail, got %q", ev.Reason)
+		if ev.Type == EventHandoff && ev.Reason != ReasonHandoffOrphaned {
+			t.Fatalf("expected handoff reason %q on enqueue fail, got %q", ReasonHandoffOrphaned, ev.Reason)
 		}
 	}
 
-	syncRes, syncErr := runner.Start(context.Background(), "stream-sched-fail-sync-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	syncRes, syncErr := runner.Start(context.Background(), "stream-enqueue-fail-sync-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
-	if !errors.Is(syncErr, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected sync schedule failure, got %v res=%+v", syncErr, syncRes)
+	if !errors.Is(syncErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected sync enqueue failure, got %v res=%+v", syncErr, syncRes)
 	}
 	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+
+	assertOrphanedHandoffSnapshot(t, cp, "stream-enqueue-fail-th", syncRes, "bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "stream-enqueue-fail-sync-th")
+	if syncRes.Reason != ReasonHandoffOrphaned {
+		t.Fatalf("expected sync reason %q, got %q", ReasonHandoffOrphaned, syncRes.Reason)
+	}
 }
 
 func TestContextCancelSaveHardFailEventConsistency(t *testing.T) {
@@ -280,7 +309,7 @@ func TestTerminalRetentionFailure(t *testing.T) {
 			t.Parallel()
 
 			cp := &failingMemoryCP[state, NoEffect]{
-				memoryCP:  *newMemoryCP[state, NoEffect](),
+				memoryCP:  newMemoryCP[state, NoEffect](),
 				failPrune: true,
 			}
 			b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -304,7 +333,7 @@ func TestTerminalRetentionFailure(t *testing.T) {
 			if res.Reason != tc.wantReason {
 				t.Fatalf("expected reason %q, got %q", tc.wantReason, res.Reason)
 			}
-			if _, loadErr := cp.Load(context.Background(), "retention-fail-th"); loadErr != nil {
+			if _, _, loadErr := cp.Load(context.Background(), "retention-fail-th"); loadErr != nil {
 				t.Fatalf("checkpoint must be persisted despite retention failure: %v", loadErr)
 			}
 		})
@@ -317,7 +346,7 @@ func TestTerminalRetentionFailureContextCancel(t *testing.T) {
 	type state struct{ Ticks int }
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -404,7 +433,7 @@ func TestPostRunCleanupRetentionFailureDoesNotFailCompleted(t *testing.T) {
 	type state struct{}
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })

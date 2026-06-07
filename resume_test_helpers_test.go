@@ -9,7 +9,7 @@ func resumeLoaded[T, E any](
 	threadID string,
 	opts ...RunOption[T, E],
 ) (*RunResult[T, E], error) {
-	snap, err := cp.Load(ctx, threadID)
+	snap, _, err := cp.Load(ctx, threadID)
 	if err != nil {
 		return nil, err
 	}

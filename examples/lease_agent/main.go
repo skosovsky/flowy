@@ -54,7 +54,7 @@ func main() {
 	}
 	fmt.Printf("second status=%s step=%d\n", second.Status, second.State.Step)
 
-	if _, loadErr := cp.Load(context.Background(), "lease-thread"); loadErr == nil {
+	if _, _, loadErr := cp.Load(context.Background(), "lease-thread"); loadErr == nil {
 		log.Fatal("expected checkpoint deleted after successful completion with DeleteOnSuccess")
 	}
 	fmt.Println("checkpoint deleted after success (DeleteIfIdle after lease release)")

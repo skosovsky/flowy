@@ -12,7 +12,7 @@ import (
 
 func resumeTokenFromCP[T, E any](t *testing.T, cp Checkpointer[T, E], threadID string) ResumeToken {
 	t.Helper()
-	snap, err := cp.Load(context.Background(), threadID)
+	snap, _, err := cp.Load(context.Background(), threadID)
 	if err != nil {
 		t.Fatalf("load snapshot %q: %v", threadID, err)
 	}
@@ -98,7 +98,7 @@ func TestResumeOverlayThenReconcileOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	snap, loadErr := cp.Load(context.Background(), "th")
+	snap, _, loadErr := cp.Load(context.Background(), "th")
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
@@ -162,7 +162,7 @@ func TestResumableStateReconcileAfterOverlay(t *testing.T) {
 		t.Fatalf("resume: %v", err)
 	}
 
-	snap, err := cp.Load(context.Background(), "reconcile-th")
+	snap, _, err := cp.Load(context.Background(), "reconcile-th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestBindingsNotPersisted(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	snap, err := cp.Load(context.Background(), "th")
+	snap, _, err := cp.Load(context.Background(), "th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestInvariantValidatorBlocksSave(t *testing.T) {
 	if err == nil || err.Error() != "invariant violated" {
 		t.Fatalf("expected invariant error, got %v", err)
 	}
-	if _, loadErr := cp.Load(context.Background(), "th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved on invariant violation, load err=%v", loadErr)
 	}
 }
@@ -343,7 +343,7 @@ func TestRequestLocalHandoffDuringActiveRun(t *testing.T) {
 	if res.Status != RunStatusHandoff {
 		t.Fatalf("expected handoff status, got %s", res.Status)
 	}
-	snap, err := cp.Load(context.Background(), "th")
+	snap, _, err := cp.Load(context.Background(), "th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -478,16 +478,6 @@ func TestHandoffDirectiveAndBackgroundShareCheckpointSemantics(t *testing.T) {
 		return g, newMemoryCP[state, NoEffect]()
 	}
 
-	assertHandoffSnap := func(t *testing.T, snap Snapshot[state, NoEffect], label string) {
-		t.Helper()
-		if snap.RunMeta.Segment.EndReason != SegmentEndHandoff {
-			t.Fatalf("%s: segment end=%q want %q", label, snap.RunMeta.Segment.EndReason, SegmentEndHandoff)
-		}
-		if snap.State.N != 7 {
-			t.Fatalf("%s: state.N=%d want 7", label, snap.State.N)
-		}
-	}
-
 	gDir, cpDir := build(false)
 	res, err := gDir.NewRunner(cpDir).Start(context.Background(), "dir-th", state{})
 	if err != nil {
@@ -496,11 +486,14 @@ func TestHandoffDirectiveAndBackgroundShareCheckpointSemantics(t *testing.T) {
 	if res.Status != RunStatusHandoff || res.Reason != "job" {
 		t.Fatalf("directive: status=%s reason=%q", res.Status, res.Reason)
 	}
-	snapDir, err := cpDir.Load(context.Background(), "dir-th")
+	snapDir, _, err := cpDir.Load(context.Background(), "dir-th")
 	if err != nil {
 		t.Fatalf("directive load: %v", err)
 	}
-	assertHandoffSnap(t, snapDir, "directive")
+	assertSegmentEndReason(t, snapDir, "directive", SegmentEndHandoff)
+	if snapDir.State.N != 7 {
+		t.Fatalf("directive: state.N=%d want 7", snapDir.State.N)
+	}
 
 	gBg, cpBg := build(true)
 	runner := gBg.NewRunner(cpBg)
@@ -527,11 +520,14 @@ func TestHandoffDirectiveAndBackgroundShareCheckpointSemantics(t *testing.T) {
 	if bgRes == nil || bgRes.Status != RunStatusHandoff {
 		t.Fatalf("background result: %+v", bgRes)
 	}
-	snapBg, err := cpBg.Load(context.Background(), "bg-th")
+	snapBg, _, err := cpBg.Load(context.Background(), "bg-th")
 	if err != nil {
 		t.Fatalf("background load: %v", err)
 	}
-	assertHandoffSnap(t, snapBg, "background")
+	assertSegmentEndReason(t, snapBg, "background", SegmentEndHandoff)
+	if snapBg.State.N != 7 {
+		t.Fatalf("background: state.N=%d want 7", snapBg.State.N)
+	}
 	if snapDir.ExecutionPointer != snapBg.ExecutionPointer {
 		t.Fatalf("pointer mismatch: dir=%q bg=%q", snapDir.ExecutionPointer, snapBg.ExecutionPointer)
 	}
@@ -639,7 +635,7 @@ func TestResumeResetsStepCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	snap, err := cp.Load(context.Background(), "th")
+	snap, _, err := cp.Load(context.Background(), "th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -651,7 +647,7 @@ func TestResumeResetsStepCount(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	snap, err = cp.Load(context.Background(), "th")
+	snap, _, err = cp.Load(context.Background(), "th")
 	if err != nil {
 		t.Fatalf("load after resume: %v", err)
 	}
@@ -695,7 +691,7 @@ func TestInvariantBlocksContextCancelSave(t *testing.T) {
 	cancel()
 	<-done
 
-	if _, loadErr := cp.Load(context.Background(), "th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("invalid state must not be checkpointed on cancel, err=%v", loadErr)
 	}
 }
@@ -792,7 +788,7 @@ func TestDeleteOnSuccessViaCompletedEndNodeEdge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := cp.Load(context.Background(), "th"); !errors.Is(err, ErrThreadNotFound) {
+	if _, _, err := cp.Load(context.Background(), "th"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected deleted snapshot after EndNode completion, load err=%v", err)
 	}
 }
@@ -818,7 +814,7 @@ func TestDeleteOnSuccessPolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, err := cp.Load(context.Background(), "th"); !errors.Is(err, ErrThreadNotFound) {
+	if _, _, err := cp.Load(context.Background(), "th"); !errors.Is(err, ErrThreadNotFound) {
 		t.Fatalf("expected deleted snapshot, load err=%v", err)
 	}
 }
@@ -1348,7 +1344,7 @@ func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 	type state struct{ N int }
 
 	cp := newMemoryCP[state, NoEffect]()
-	if err := cp.Save(context.Background(), Snapshot[state, NoEffect]{
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
 		ThreadID:         "lease-del-th",
 		ExecutionPointer: "n",
 		State:            state{N: 1},
@@ -1366,7 +1362,7 @@ func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 	if !errors.Is(err, ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
-	if _, loadErr := cp.Load(context.Background(), "lease-del-th"); loadErr != nil {
+	if _, _, loadErr := cp.Load(context.Background(), "lease-del-th"); loadErr != nil {
 		t.Fatalf("snapshot should remain: %v", loadErr)
 	}
 }
@@ -1615,7 +1611,7 @@ func TestEmptyExecutionPointerReturnsErrInvalidSnapshot(t *testing.T) {
 
 	type state struct{}
 	cp := newMemoryCP[state, NoEffect]()
-	_ = cp.Save(context.Background(), Snapshot[state, NoEffect]{
+	_, _ = cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
 		ThreadID:         "empty-ptr",
 		ExecutionPointer: "",
 		State:            state{},
@@ -1650,7 +1646,7 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 	}
 
 	cp := newMemoryCP[state, NoEffect]()
-	if saveErr := cp.Save(context.Background(), Snapshot[state, NoEffect]{
+	if _, saveErr := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
 		ThreadID:         "del-busy-th",
 		ExecutionPointer: "n",
 		State:            state{},
@@ -1671,7 +1667,7 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	if _, loadErr := cp.Load(context.Background(), "del-busy-th"); loadErr != nil {
+	if _, _, loadErr := cp.Load(context.Background(), "del-busy-th"); loadErr != nil {
 		t.Fatalf("snapshot should remain when delete blocked: %v", loadErr)
 	}
 }
@@ -1717,7 +1713,7 @@ func TestDeleteOnSuccessAfterReleaseLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	if _, loadErr := cp.Load(context.Background(), "del-after-release"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "del-after-release"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("expected deleted snapshot after release+delete, got %v", loadErr)
 	}
 }
@@ -1855,9 +1851,8 @@ func TestRetryBudgetExceededAppliesTerminalPolicy(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	for i := range 5 {
-		_ = cp.Save(context.Background(), Snapshot[state, NoEffect]{
+		_, _ = cp.Save(context.Background(), uint64(i), Snapshot[state, NoEffect]{
 			ThreadID:         "retry-policy-th",
-			Revision:         i + 1,
 			ExecutionPointer: "retry",
 			State:            state{},
 		})

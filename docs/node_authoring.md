@@ -39,3 +39,7 @@ Node context is separate from stream consumer patterns. When consuming `StreamHa
 Persist-vs-event: when the consumer stops mid-run, the terminal `RunEvent` may be dropped; **`Wait()`** and **checkpoint snapshot** are authoritative for terminal reason/state.
 
 See [`examples/stream_request_stop`](../examples/stream_request_stop) and [`examples/streaming_agent`](../examples/streaming_agent).
+
+## Handoff recovery (Task19)
+
+Handoff checkpoints persist `RunMetadata.HandoffStatus`: `pending` → `enqueued` (outbox OK) or `orphaned` (enqueue failed and orphan patch succeeded). Terminal `EventHandoff` uses `ReasonHandoffOrphaned` only when persisted status is `orphaned`; if orphan patch fails, status stays `pending` and reason remains the directive (e.g. `bg`). Postgres `TransactionalCheckpointer` skips `pending` for initial handoff (atomic save+enqueue); `RecoverStaleHandoff` always uses the 3-phase FSM (re-enqueue + patch). Legacy rows with `pending` but empty `HandoffPendingAt` are treated as stale immediately. Do not call `Resume`/`ResumeStream` while status is `pending` or `orphaned` — use `Runner.RecoverStaleHandoff` for orphaned or stale pending (default TTL 5m via `WithHandoffStaleAfter`). `WithRecoverForceReenqueue(true)` reconciles false `enqueued`. Recovery workers should be single-leader or use `WithRunLease`. On `ErrConcurrencyConflict` from `Resume`, reload snapshot and rebuild `ResumeToken` before retry. Do not manually `Save` with `HandoffStatus` in application code — use the runner FSM.

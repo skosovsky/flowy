@@ -1,7 +1,7 @@
 GO      := go
 MODULES := $(shell find . -type d \( -name ".*" -not -name "." -o -name "vendor" \) -prune -o -type f -name "go.mod" -exec dirname {} \;)
 
-.PHONY: lint fix test test-race test-goleak bench bench-hotpath fuzz cover release-patch release-break
+.PHONY: lint fix test test-race test-goleak verify-stress bench bench-hotpath fuzz cover release-patch release-break
 
 lint:
 	@for dir in $(MODULES); do \
@@ -38,6 +38,10 @@ test-goleak:
 		case "$$dir" in ./adapters/*) timeout=3m ;; esac; \
 		(cd "$$dir" && $(GO) test -v -count=1 -timeout $$timeout ./...) || exit 1; \
 	done
+
+verify-stress:
+	@echo "verify-stress - root handoff/resume/orphan contracts"
+	@(cd . && $(GO) test -count=20 -timeout 10m -run 'Handoff|Resume|Orphan' .)
 
 bench:
 	@for dir in $(MODULES); do \

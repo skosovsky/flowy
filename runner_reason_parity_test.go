@@ -32,6 +32,7 @@ func TestInfraFailureStreamEventReasonMatchesSync(t *testing.T) {
 	})
 }
 
+//nolint:gocognit // table-driven sync/stream parity across suspend, handoff, context cancel
 func TestSkipOnSaveErrorStreamEventReasonMatchesSyncResult(t *testing.T) {
 	t.Parallel()
 
@@ -75,7 +76,7 @@ func TestSkipOnSaveErrorStreamEventReasonMatchesSyncResult(t *testing.T) {
 				g, _ := b.Compile()
 				opts := make([]RunOption[state, NoEffect], len(skipOnSaveOpts), len(skipOnSaveOpts)+1)
 				copy(opts, skipOnSaveOpts)
-				opts = append(opts, WithHandoffScheduler[state, NoEffect](&stubHandoffScheduler{}))
+				opts = append(opts, WithHandoffOutbox[state, NoEffect](&stubHandoffOutbox{}))
 				return g, cp, opts
 			},
 			terminalEvent: EventHandoff,
@@ -132,6 +133,9 @@ func TestSkipOnSaveErrorStreamEventReasonMatchesSyncResult(t *testing.T) {
 			events, _ := CollectEventsAndWait(context.Background(), handle)
 
 			assertTerminalEventReasonMatchesSync(t, events, tc.terminalEvent, syncRes.Reason)
+			if tc.name == "handoff" {
+				assertHandoffRunMetaNoneOnSkip(t, syncRes)
+			}
 		})
 	}
 }

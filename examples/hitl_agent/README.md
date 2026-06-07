@@ -21,6 +21,8 @@ cd examples/hitl_agent
 go run main.go
 ```
 
+Handoff в stream-режиме (`Stream` + `RequestLocalHandoff`) и семантика terminal events — см. `runner_lifecycle_test.go` и `stream_test.go` (`EventHandoff`, `ErrHandoffEnqueueFailed`).
+
 ## Lifecycle
 
 ```mermaid

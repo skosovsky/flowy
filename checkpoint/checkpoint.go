@@ -63,7 +63,7 @@ func (s *sanitizingSerializer[T]) Unmarshal(data []byte) (T, error) {
 // StoredSnapshot is persistence payload used by adapters.
 type StoredSnapshot struct {
 	ThreadID     string          `json:"thread_id"`
-	Revision     int             `json:"revision"`
+	Revision     uint64          `json:"revision"`
 	NodeID       string          `json:"node_id"`
 	StatePayload json.RawMessage `json:"state_payload"`
 	RunMeta      json.RawMessage `json:"run_meta"`

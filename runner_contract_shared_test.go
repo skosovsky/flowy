@@ -12,20 +12,26 @@ import (
 	"time"
 )
 
-type stubHandoffScheduler struct {
-	mu    sync.Mutex
-	calls []ResumeToken
-	err   error
+type stubHandoffOutbox struct {
+	mu        sync.Mutex
+	calls     []ResumeToken
+	err       error
+	onEnqueue func(token ResumeToken) error
 }
 
-func (s *stubHandoffScheduler) ScheduleContinuation(_ context.Context, token ResumeToken) error {
+func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, token ResumeToken) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.calls = append(s.calls, token)
+	if s.onEnqueue != nil {
+		if err := s.onEnqueue(token); err != nil {
+			return err
+		}
+	}
 	return s.err
 }
 
-func (s *stubHandoffScheduler) lastToken() ResumeToken {
+func (s *stubHandoffOutbox) lastToken() ResumeToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if len(s.calls) == 0 {
@@ -35,15 +41,20 @@ func (s *stubHandoffScheduler) lastToken() ResumeToken {
 }
 
 type deleteSpyCP[T, E any] struct {
-	memoryCP[T, E]
+	*memoryCP[T, E]
 
 	deleteCalls int
+}
+
+func (c *deleteSpyCP[T, E]) Delete(ctx context.Context, threadID string) error {
+	c.deleteCalls++
+	return c.memoryCP.Delete(ctx, threadID)
 }
 
 func retentionFailureGraph[T any, E any](t *testing.T, directive Directive) (*Graph[T, E], *failingMemoryCP[T, E]) {
 	t.Helper()
 	cp := &failingMemoryCP[T, E]{
-		memoryCP:  *newMemoryCP[T, E](),
+		memoryCP:  newMemoryCP[T, E](),
 		failPrune: true,
 	}
 	b := NewGraph[T, E](func(_ T, u T) T { return u })
@@ -279,26 +290,34 @@ func assertNoCheckpointCollectorNeedles(t *testing.T, files, forbidden []string)
 }
 
 type pointerSpyCP[T, E any] struct {
-	memoryCP[T, E]
+	*memoryCP[T, E]
 
 	savedPointers []ExecutionPointer
 }
 
-func (p *pointerSpyCP[T, E]) Save(_ context.Context, snapshot Snapshot[T, E]) error {
+func (p *pointerSpyCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
 	p.savedPointers = append(p.savedPointers, snapshot.ExecutionPointer)
-	return p.memoryCP.Save(context.Background(), snapshot)
+	return p.memoryCP.Save(context.Background(), expectedRevision, snapshot)
 }
 
 type countingFailingMemoryCP[T, E any] struct {
-	memoryCP[T, E]
+	*memoryCP[T, E]
 
 	saveCount int
 }
 
-func (c *countingFailingMemoryCP[T, E]) Save(_ context.Context, snapshot Snapshot[T, E]) error {
+func (c *countingFailingMemoryCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
 	c.saveCount++
 	if c.saveCount > 1 {
-		return errors.New("save failed")
+		return 0, errors.New("save failed")
 	}
-	return c.memoryCP.Save(context.Background(), snapshot)
+	return c.memoryCP.Save(context.Background(), expectedRevision, snapshot)
 }

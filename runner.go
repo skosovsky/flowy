@@ -23,12 +23,14 @@ type Graph[T, E any] struct {
 }
 
 type graphRunner[T, E any] struct {
-	graph        *Graph[T, E]
-	checkpointer Checkpointer[T, E]
-	interceptors []StateInterceptor[T]
-	leaseManager LeaseManager
-	logger       *slog.Logger
-	sessions     sync.Map // threadID -> *runSession
+	graph             *Graph[T, E]
+	checkpointer      Checkpointer[T, E]
+	interceptors      []StateInterceptor[T]
+	leaseManager      LeaseManager
+	handoffOutbox     HandoffOutbox
+	handoffStaleAfter time.Duration
+	logger            *slog.Logger
+	sessions          sync.Map // threadID -> *runSession
 }
 
 type eventSink[T, E any] func(ctx context.Context, event RunEvent[T, E]) bool
@@ -93,13 +95,14 @@ func (g *Graph[T, E]) NewRunnerWithOptions(
 	runnerOpts []RunnerOption[T, E],
 	interceptors ...StateInterceptor[T],
 ) Runner[T, E] {
-	r := &graphRunner[T, E]{
-		graph:        g,
-		checkpointer: checkpointer,
-		interceptors: append([]StateInterceptor[T](nil), interceptors...),
-		leaseManager: nil,
-		logger:       slog.Default(),
-		sessions:     sync.Map{},
+	r := &graphRunner[T, E]{ //nolint:exhaustruct // handoffOutbox defaults nil until WithRunnerHandoffOutbox
+		graph:             g,
+		checkpointer:      checkpointer,
+		interceptors:      append([]StateInterceptor[T](nil), interceptors...),
+		leaseManager:      nil,
+		handoffStaleAfter: DefaultHandoffStaleAfter,
+		logger:            slog.Default(),
+		sessions:          sync.Map{},
 	}
 	for _, opt := range runnerOpts {
 		if opt != nil {
@@ -158,6 +161,7 @@ func (r *graphRunner[T, E]) Resume(
 		return nil, errors.New("flowy: checkpointer is required for Resume")
 	}
 	if token.ThreadID == "" {
+		emitResumeRejected(ctx, token.ThreadID, "", "empty_token")
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
 	inv, optErr := applyRunOptions(opts...)
@@ -235,6 +239,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 		return nil, errors.New("flowy: checkpointer is required for ResumeStream")
 	}
 	if token.ThreadID == "" {
+		emitResumeRejected(ctx, token.ThreadID, "", "empty_token")
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
 	inv, optErr := applyRunOptions(opts...)
@@ -273,7 +278,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 
 func (r *graphRunner[T, E]) RequestLocalHandoff(ctx context.Context, threadID string) error {
 	if threadID == "" {
-		return errors.New("flowy: handoff requires threadID")
+		return fmt.Errorf("%w: handoff requires threadID", ErrInvalidResumeToken)
 	}
 	value, ok := r.sessions.Load(threadID)
 	if !ok {
@@ -336,6 +341,8 @@ func newRunMetadata() RunMetadata {
 		BudgetCounts:     map[string]int{},
 		StepCount:        0,
 		TelemetryContext: nil,
+		HandoffStatus:    HandoffStatusNone,
+		HandoffPendingAt: time.Time{},
 	}
 }
 
@@ -496,23 +503,52 @@ func (r *graphRunner[T, E]) startStream(
 	return stream
 }
 
+//nolint:funlen // resume validation pipeline is intentionally linear
 func (r *graphRunner[T, E]) prepareResume(
 	ctx context.Context,
 	token ResumeToken,
 	inv runInvocationOptions[T, E],
-) (string, T, RunMetadata, []E, int, error) {
+) (string, T, RunMetadata, []E, uint64, error) {
 	// 1) Load base snapshot
-	snapshot, err := r.checkpointer.Load(ctx, token.ThreadID)
+	snapshot, revision, err := r.checkpointer.Load(ctx, token.ThreadID)
 	if err != nil {
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, fmt.Errorf("%w: %w", ErrThreadNotFound, err)
 	}
-	if token.SnapshotRevision != snapshot.Revision {
+	if token.SnapshotRevision == 0 {
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "zero_revision")
+		var zero T
+		return "", zero, RunMetadata{}, nil, 0, ErrConcurrencyConflict
+	}
+	if token.SnapshotRevision != revision {
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "stale_token")
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, fmt.Errorf(
 			"%w: resume token snapshot revision %d, snapshot revision %d",
-			ErrStaleResumeToken, token.SnapshotRevision, snapshot.Revision,
+			ErrConcurrencyConflict, token.SnapshotRevision, revision,
 		)
+	}
+	switch snapshot.RunMeta.HandoffStatus {
+	case HandoffStatusNone, HandoffStatusEnqueued:
+		// Resume allowed after handoff enqueue completed or for non-handoff snapshots.
+	case HandoffStatusPending:
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "handoff_pending")
+		var zero T
+		return "", zero, RunMetadata{}, nil, 0, ErrHandoffPending
+	case HandoffStatusOrphaned:
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "handoff_orphaned")
+		var zero T
+		return "", zero, RunMetadata{}, nil, 0, ErrHandoffOrphaned
+	default:
+		if snapshot.RunMeta.HandoffStatus != HandoffStatusNone {
+			emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "invalid_handoff_status")
+			var zero T
+			return "", zero, RunMetadata{}, nil, 0, fmt.Errorf(
+				"%w: handoff status %q",
+				ErrInvalidSnapshot,
+				snapshot.RunMeta.HandoffStatus,
+			)
+		}
 	}
 	state := snapshot.State
 	for _, interceptor := range r.interceptors {
@@ -534,6 +570,10 @@ func (r *graphRunner[T, E]) prepareResume(
 		state = inv.overlayMerger(state, *inv.overlay)
 	}
 	meta := snapshot.RunMeta
+	if meta.HandoffStatus == HandoffStatusEnqueued {
+		meta.HandoffStatus = HandoffStatusNone
+		meta.HandoffPendingAt = time.Time{}
+	}
 	if meta.RetryCounts == nil {
 		meta.RetryCounts = map[string]int{}
 	}
@@ -549,12 +589,14 @@ func (r *graphRunner[T, E]) prepareResume(
 	}
 
 	if activePointer == "" {
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "invalid_snapshot")
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, ErrInvalidSnapshot
 	}
 	startNode := string(activePointer)
 
 	if _, ok := r.graph.nodes[startNode]; !ok {
+		emitResumeRejected(ctx, token.ThreadID, activePointer, "invalid_pointer")
 		var zero T
 		return "", zero, RunMetadata{}, nil, 0, fmt.Errorf(
 			"%w: %q",
@@ -563,7 +605,7 @@ func (r *graphRunner[T, E]) prepareResume(
 		)
 	}
 
-	return startNode, state, meta, append([]E(nil), snapshot.Effects...), snapshot.Revision, nil
+	return startNode, state, meta, append([]E(nil), snapshot.Effects...), revision, nil
 }
 
 func resetSegmentCounters(meta *RunMetadata) {
@@ -583,7 +625,7 @@ func (r *graphRunner[T, E]) execute(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 ) (result *RunResult[T, E], retErr error) {
@@ -843,22 +885,21 @@ func (r *graphRunner[T, E]) handleContextCancellation(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	sink eventSink[T, E],
 	ctxErr error,
 	inv runInvocationOptions[T, E],
 	consumerClose bool,
 ) (*RunResult[T, E], error) {
-	revision++
 	meta.TelemetryContext = extractTelemetryContext(runCtx)
 	meta.Segment.EndTime = time.Now().UTC()
 	meta.Segment.EndReason = SegmentEndContextCanceled
 	result := newRunResultContextCanceled(state, effects, meta, current)
 
-	persisted, saveErr := r.persistSnapshot(runCtx, Snapshot[T, E]{
+	_, persisted, saveErr := r.persistSnapshot(runCtx, revision, Snapshot[T, E]{
 		ThreadID:         threadID,
 		ExecutionPointer: ExecutionPointer(current),
-		Revision:         revision,
+		Revision:         0,
 		State:            state,
 		RunMeta:          meta,
 		Effects:          append([]E(nil), effects...),
@@ -900,19 +941,19 @@ func (r *graphRunner[T, E]) handleContextCancellation(
 	return result, fmt.Errorf("flowy: %w", ctxErr)
 }
 
+//nolint:funlen,gocognit // handoff FSM: save, patch status, enqueue, retention
 func (r *graphRunner[T, E]) completeHandoffTerminal(
 	runCtx context.Context,
 	threadID, current string,
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	reason string,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 	signalSession bool,
 ) (*RunResult[T, E], error) {
-	revision++
 	meta.TelemetryContext = extractTelemetryContext(runCtx)
 	meta.Segment.EndTime = time.Now().UTC()
 	meta.Segment.EndReason = SegmentEndHandoff
@@ -948,16 +989,59 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 		), handoffErr
 	}
 	savedPointer := string(resumePtr)
+	outbox := r.resolveHandoffOutbox(inv)
+	if outbox != nil {
+		meta.HandoffStatus = HandoffStatusPending
+		meta.HandoffPendingAt = time.Now().UTC()
+	} else {
+		meta.HandoffStatus = HandoffStatusNone
+		meta.HandoffPendingAt = time.Time{}
+	}
 	result := newRunResultHandoff(state, effects, meta, savedPointer, reason)
-
-	persisted, saveErr := r.persistSnapshot(runCtx, Snapshot[T, E]{
+	snapshot := Snapshot[T, E]{
 		ThreadID:         threadID,
 		ExecutionPointer: resumePtr,
-		Revision:         revision,
+		Revision:         0,
 		State:            state,
 		RunMeta:          meta,
 		Effects:          append([]E(nil), effects...),
-	}, sink, current, state, inv)
+	}
+	if outbox != nil {
+		if txRev, done, txErr := r.tryTransactionalHandoffSave(
+			runCtx, threadID, revision, snapshot, meta, inv, outbox, result,
+		); done {
+			if txErr != nil {
+				handoffErr := fmt.Errorf("flowy: transactional handoff failed: %w", txErr)
+				emitTerminalEvent(
+					runCtx,
+					sink,
+					newRunEventFailed[T, E](savedPointer, state, txErr, ReasonHandoffSaveFailed),
+				)
+				failed := newRunResultFailed(
+					state,
+					effects,
+					meta,
+					savedPointer,
+					ReasonHandoffSaveFailed,
+				)
+				clearHandoffRunMeta(&failed.RunMeta)
+				return failed, handoffErr
+			}
+			result.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: txRev}
+			return r.finalizeHandoffTerminal(
+				runCtx,
+				threadID,
+				savedPointer,
+				state,
+				result.Reason,
+				result,
+				sink,
+				signalSession,
+				true,
+			)
+		}
+	}
+	newRev, persisted, saveErr := r.persistSnapshot(runCtx, revision, snapshot, sink, current, state, inv)
 	if saveErr != nil {
 		handoffErr := fmt.Errorf("flowy: handoff save failed: %w", saveErr)
 		emitTerminalEvent(
@@ -965,23 +1049,31 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 			sink,
 			newRunEventFailed[T, E](savedPointer, state, saveErr, ReasonHandoffSaveFailed),
 		)
-		return newRunResultFailed(
+		failed := newRunResultFailed(
 			state,
 			effects,
 			meta,
 			savedPointer,
 			ReasonHandoffSaveFailed,
-		), handoffErr
+		)
+		clearHandoffRunMeta(&failed.RunMeta)
+		return failed, handoffErr
 	}
 	if !persisted && inv.checkpointPolicy == CheckpointPolicySkipOnSaveError {
 		result.Reason = ReasonHandoffCheckpointSkipped
+		if outbox != nil {
+			clearHandoffRunMeta(&result.RunMeta)
+		}
 	}
 	if persisted {
-		result.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: revision}
-		if scheduleErr := r.scheduleHandoffContinuation(runCtx, inv, result.ResumeToken); scheduleErr != nil {
-			return r.handoffAfterScheduleFailure(
-				runCtx, threadID, savedPointer, state, result, sink, scheduleErr,
-			)
+		result.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: newRev}
+		if outbox != nil {
+			if earlyRes, done, earlyErr := r.dispatchPersistedHandoffOutbox(
+				runCtx, threadID, newRev, snapshot, meta, inv, outbox, resumePtr,
+				savedPointer, state, effects, result, sink,
+			); done {
+				return earlyRes, earlyErr
+			}
 		}
 	}
 	return r.finalizeHandoffTerminal(
@@ -997,13 +1089,13 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 	)
 }
 
-func (r *graphRunner[T, E]) handoffAfterScheduleFailure(
+func (r *graphRunner[T, E]) handoffAfterEnqueueFailure(
 	runCtx context.Context,
 	threadID, savedPointer string,
 	state T,
 	result *RunResult[T, E],
 	sink eventSink[T, E],
-	scheduleErr error,
+	enqueueErr error,
 ) (*RunResult[T, E], error) {
 	policyCtx, cancelPolicy := context.WithTimeout(
 		context.WithoutCancel(runCtx),
@@ -1019,10 +1111,10 @@ func (r *graphRunner[T, E]) handoffAfterScheduleFailure(
 	}
 	r.emitHandoffTerminalEvent(runCtx, sink, threadID, savedPointer, state, finalReason, true)
 
-	retErr := scheduleErr
+	retErr := enqueueErr
 	if policyErr != nil {
 		retentionErr := fmt.Errorf("flowy: handoff retention failed: %w", policyErr)
-		retErr = errors.Join(scheduleErr, retentionErr)
+		retErr = errors.Join(enqueueErr, retentionErr)
 	}
 	return result, retErr
 }
@@ -1093,7 +1185,7 @@ func (r *graphRunner[T, E]) handleHandoff(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 ) (*RunResult[T, E], error) {
@@ -1203,7 +1295,7 @@ func (r *graphRunner[T, E]) applyDirective(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	base Directive,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
@@ -1351,12 +1443,11 @@ func (r *graphRunner[T, E]) applyDirectiveSuspend(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	base Directive,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 ) directiveStep[T, E] {
-	revision++
 	meta.TelemetryContext = extractTelemetryContext(runCtx)
 	meta.Segment.EndTime = time.Now().UTC()
 	meta.Segment.EndReason = SegmentEndSuspend
@@ -1399,12 +1490,12 @@ func (r *graphRunner[T, E]) applyDirectiveSuspend(
 	snapshot := Snapshot[T, E]{
 		ThreadID:         threadID,
 		ExecutionPointer: resumePtr,
-		Revision:         revision,
+		Revision:         0,
 		State:            state,
 		RunMeta:          meta,
 		Effects:          append([]E(nil), effects...),
 	}
-	persisted, saveErr := r.persistSnapshot(runCtx, snapshot, sink, current, state, inv)
+	newRev, persisted, saveErr := r.persistSnapshot(runCtx, revision, snapshot, sink, current, state, inv)
 	if saveErr != nil {
 		emitTerminalEvent(
 			runCtx,
@@ -1437,7 +1528,7 @@ func (r *graphRunner[T, E]) applyDirectiveSuspend(
 	}
 	suspendedResult := newRunResultSuspended(state, effects, meta, savedPointer, suspendReason)
 	if persisted {
-		suspendedResult.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: revision}
+		suspendedResult.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: newRev}
 	}
 	if !emitTerminalEvent(
 		runCtx,
@@ -1479,14 +1570,14 @@ func (r *graphRunner[T, E]) applyDirectiveHandoff(
 	state T,
 	meta RunMetadata,
 	effects []E,
-	revision int,
+	revision uint64,
 	base Directive,
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 ) directiveStep[T, E] {
 	reason := base.reason
 	if reason == "" {
-		reason = "handoff"
+		reason = string(RunStatusHandoff)
 	}
 	result, err := r.completeHandoffTerminal(
 		runCtx, threadID, current, state, meta, effects, revision, reason, sink, inv, false,
@@ -1624,46 +1715,6 @@ func (r *graphRunner[T, E]) resolveEdge(
 	return next, nil
 }
 
-func (r *graphRunner[T, E]) saveSnapshot(
-	ctx context.Context,
-	snapshot Snapshot[T, E],
-	inv runInvocationOptions[T, E],
-) error {
-	if r.checkpointer == nil {
-		return errors.New("flowy: checkpointer is required")
-	}
-	if err := validateInvariant(snapshot.State, inv); err != nil {
-		return err
-	}
-	state := snapshot.State
-	for _, interceptor := range r.interceptors {
-		if err := interceptor.BeforeSave(ctx, &state); err != nil {
-			return fmt.Errorf("flowy: before_save interceptor: %w", err)
-		}
-	}
-	snapshot.State = state
-	return r.checkpointer.Save(ctx, snapshot)
-}
-
-func (r *graphRunner[T, E]) scheduleHandoffContinuation(
-	runCtx context.Context,
-	inv runInvocationOptions[T, E],
-	token ResumeToken,
-) error {
-	if inv.handoffScheduler == nil {
-		return nil
-	}
-	scheduleCtx, cancelSchedule := context.WithTimeout(
-		context.WithoutCancel(runCtx),
-		handoffScheduleTimeout,
-	)
-	defer cancelSchedule()
-	if err := inv.handoffScheduler.ScheduleContinuation(scheduleCtx, token); err != nil {
-		return fmt.Errorf("%w: %w", ErrHandoffScheduleFailed, err)
-	}
-	return nil
-}
-
 func (r *graphRunner[T, E]) validateExecutionPointer(ptr ExecutionPointer) error {
 	if ptr == "" {
 		return ErrInvalidSnapshot
@@ -1682,6 +1733,7 @@ func (r *graphRunner[T, E]) emitCheckpointFailed(
 	state T,
 	saveErr error,
 ) {
+	emitCheckpointSoftError(ctx, threadID, ExecutionPointer(current))
 	if sink == nil {
 		r.logger.DebugContext(ctx, "flowy: checkpoint soft warn without event sink",
 			"thread_id", threadID, "err", saveErr)
@@ -1691,31 +1743,6 @@ func (r *graphRunner[T, E]) emitCheckpointFailed(
 		r.logger.DebugContext(ctx, "flowy: checkpoint failed event not delivered",
 			"thread_id", threadID)
 	}
-}
-
-func (r *graphRunner[T, E]) persistSnapshot(
-	ctx context.Context,
-	snapshot Snapshot[T, E],
-	sink eventSink[T, E],
-	current string,
-	state T,
-	inv runInvocationOptions[T, E],
-) (bool, error) {
-	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
-	defer cancelSave()
-	saveErr := r.saveSnapshot(saveCtx, snapshot, inv)
-	if saveErr == nil {
-		return true, nil
-	}
-	if inv.checkpointPolicy != CheckpointPolicySkipOnSaveError {
-		return false, saveErr
-	}
-	eventPointer := string(snapshot.ExecutionPointer)
-	if eventPointer == "" {
-		eventPointer = current
-	}
-	r.emitCheckpointFailed(ctx, sink, snapshot.ThreadID, eventPointer, state, saveErr)
-	return false, nil
 }
 
 func validateInvariant[T, E any](state T, inv runInvocationOptions[T, E]) error {
@@ -1790,7 +1817,7 @@ func (r *graphRunner[T, E]) applyTerminalPolicies(
 
 // AsNode composes a graph as a node.
 // The inline runner uses an ephemeral checkpointer and does not receive parent RunOptions
-// (WithSuspendPointerResolver, WithHandoffScheduler, WithCheckpointErrorPolicy).
+// (WithSuspendPointerResolver, WithHandoffOutbox, WithCheckpointErrorPolicy).
 // Suspend/Handoff inside AsNode are not resumable: inner ResumeToken is not propagated.
 // For suspend/handoff continuity use SubgraphNodeWithSlot.
 func (g *Graph[T, E]) AsNode() Node[T, E] {
@@ -1845,44 +1872,62 @@ type bumpRevisionOnLoadCP[T, E any] struct {
 func (b *bumpRevisionOnLoadCP[T, E]) Load(
 	ctx context.Context,
 	threadID string,
-) (Snapshot[T, E], error) {
-	snap, err := b.captureCheckpointer.Load(ctx, threadID)
+) (Snapshot[T, E], uint64, error) {
+	snap, rev, err := b.captureCheckpointer.Load(ctx, threadID)
 	if err != nil {
-		return snap, err
+		return snap, 0, err
 	}
-	snap.Revision++
-	return snap, nil
+	snap.Revision = rev + 1
+	return snap, snap.Revision, nil
 }
 
-func (f *failingCaptureCheckpointer[T, E]) Save(ctx context.Context, s Snapshot[T, E]) error {
+func (f *failingCaptureCheckpointer[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	s Snapshot[T, E],
+) (uint64, error) {
 	if f.failSave {
-		return errors.New("subgraph seed save failed")
+		return 0, errors.New("subgraph seed save failed")
 	}
-	return f.captureCheckpointer.Save(ctx, s)
+	return f.captureCheckpointer.Save(ctx, expectedRevision, s)
 }
 
 func (f *failingCaptureCheckpointer[T, E]) Load(
 	ctx context.Context,
 	threadID string,
-) (Snapshot[T, E], error) {
+) (Snapshot[T, E], uint64, error) {
 	if f.failLoad {
 		var zero Snapshot[T, E]
-		return zero, errors.New("subgraph slot load failed")
+		return zero, 0, errors.New("subgraph slot load failed")
 	}
 	return f.captureCheckpointer.Load(ctx, threadID)
 }
 
-func (n *captureCheckpointer[T, E]) Save(_ context.Context, s Snapshot[T, E]) error {
+func (n *captureCheckpointer[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	s Snapshot[T, E],
+) (uint64, error) {
+	var current uint64
+	if len(n.history) > 0 {
+		current = n.history[len(n.history)-1].Revision
+	}
+	if current != expectedRevision {
+		return 0, ErrConcurrencyConflict
+	}
+	newRev := expectedRevision + 1
+	s.Revision = newRev
 	n.history = append(n.history, s)
-	return nil
+	return newRev, nil
 }
 
-func (n *captureCheckpointer[T, E]) Load(_ context.Context, _ string) (Snapshot[T, E], error) {
+func (n *captureCheckpointer[T, E]) Load(_ context.Context, _ string) (Snapshot[T, E], uint64, error) {
 	if len(n.history) == 0 {
 		var zero Snapshot[T, E]
-		return zero, ErrThreadNotFound
+		return zero, 0, ErrThreadNotFound
 	}
-	return n.history[len(n.history)-1], nil
+	s := n.history[len(n.history)-1]
+	return s, s.Revision, nil
 }
 
 func (n *captureCheckpointer[T, E]) GetHistory(

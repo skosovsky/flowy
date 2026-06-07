@@ -17,8 +17,8 @@ import (
 //go:embed sql/schema.sql
 var schemaSQL string
 
-//go:embed sql/save.sql
-var saveSQL string
+//go:embed sql/save_occ.sql
+var saveOccSQL string
 
 //go:embed sql/load_latest.sql
 var loadLatestSQL string
@@ -31,6 +31,9 @@ var pruneSQL string
 
 //go:embed sql/delete_if_idle.sql
 var deleteIfIdleSQL string
+
+//go:embed sql/outbox_schema.sql
+var outboxSchemaSQL string
 
 // DB captures the pgx methods used by the adapter.
 type DB interface {
@@ -55,36 +58,54 @@ func SchemaSQL() string {
 	return schemaSQL
 }
 
-func (c *Checkpointer[T, E]) Save(ctx context.Context, snapshot flowy.Snapshot[T, E]) error {
-	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
-	if err != nil {
-		return err
-	}
-	_, err = c.db.Exec(ctx, saveSQL, pgx.NamedArgs{
-		"thread_id":     stored.ThreadID,
-		"revision":      stored.Revision,
-		"node_id":       stored.NodeID,
-		"state_payload": stored.StatePayload,
-		"run_meta":      stored.RunMeta,
-		"effects":       stored.Effects,
-		"updated_at":    stored.UpdatedAt,
-	})
-	return err
+// OutboxSchemaSQL returns the optional handoff outbox table for transactional SaveWithOutbox tests.
+func OutboxSchemaSQL() string {
+	return outboxSchemaSQL
 }
 
-func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], error) {
+func (c *Checkpointer[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot flowy.Snapshot[T, E],
+) (uint64, error) {
+	newRevision := expectedRevision + 1
+	snapshot.Revision = newRevision
+	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
+	if err != nil {
+		return 0, err
+	}
+	row := c.db.QueryRow(ctx, saveOccSQL, pgx.NamedArgs{
+		"thread_id":         stored.ThreadID,
+		"expected_revision": expectedRevision,
+		"node_id":           stored.NodeID,
+		"state_payload":     stored.StatePayload,
+		"run_meta":          stored.RunMeta,
+		"effects":           stored.Effects,
+		"updated_at":        stored.UpdatedAt,
+	})
+	var inserted uint64
+	if err := row.Scan(&inserted); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return 0, flowy.ErrConcurrencyConflict
+		}
+		return 0, err
+	}
+	return inserted, nil
+}
+
+func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], uint64, error) {
 	stored, err := scanStoredSnapshot(c.db.QueryRow(ctx, loadLatestSQL, pgx.NamedArgs{"thread_id": threadID}))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return flowy.Snapshot[T, E]{}, checkpoint.ErrNoSnapshot
+			return flowy.Snapshot[T, E]{}, 0, fmt.Errorf("%w: %w", flowy.ErrThreadNotFound, checkpoint.ErrNoSnapshot)
 		}
-		return flowy.Snapshot[T, E]{}, err
+		return flowy.Snapshot[T, E]{}, 0, err
 	}
 	snapshot, err := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
 	if err != nil {
-		return flowy.Snapshot[T, E]{}, err
+		return flowy.Snapshot[T, E]{}, 0, err
 	}
-	return snapshot, nil
+	return snapshot, snapshot.Revision, nil
 }
 
 func (c *Checkpointer[T, E]) GetHistory(

@@ -54,7 +54,7 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 | Subgraph slot resume                           | `subgraph_slot_agent`                                        | `compose_test.go`                                                                                                         |
 | `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                          | `runner_lifecycle_contracts_test.go`                                                                                      |
 | `WithSuspendPointerResolver`                   | —                                                            | `runner_lifecycle_contracts_test.go`                                                                                      |
-| `WithHandoffScheduler` (Outbox)                | —                                                            | `runner_handoff_contracts_test.go`                                                                                        |
+| `WithHandoffOutbox` (Outbox + HandoffStatus)   | —                                                            | `runner_handoff_contracts_test.go`, `runner_handoff_recovery_test.go`                                                     |
 | `WithCheckpointErrorPolicy(SkipOnSaveError)`   | — (use Stream)                                               | `runner_checkpoint_policy_test.go`, `stream_test.go` (`TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError`) |
 | Session guard / duplicate active run           | —                                                            | `runner_session_guard_test.go`                                                                                            |
 | Reason parity (RunResult vs RunEvent)          | —                                                            | `runner_reason_parity_test.go`                                                                                            |
@@ -65,15 +65,16 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 
 - Роутинг только через `AddEdge` / `AddConditionalEdge` с обязательными `allowedTargets` (без `Next(nodeID)`).
 - Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.SnapshotRevision == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
-- Task18 orchestration: `WithSuspendPointerResolver`, `WithHandoffScheduler`, `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)`. Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
+- Task18/19 orchestration: `WithSuspendPointerResolver`, `WithHandoffOutbox`, `RecoverStaleHandoff`, `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)`. Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
 - Handoff: `Handoff(reason)` или `RequestLocalHandoff` (только активный run **в том же процессе** runner); другой воркер — `Resume` + новый lease по checkpoint. Directive `Handoff()` skip-on-save-error → `(result, nil)` + `*_checkpoint_skipped`; `RequestLocalHandoff` skip → `ErrCheckpointSkipped`.
 - Lease: `WithRunLease` обязателен при `WithLeaseManager`; повторный acquire → `ErrThreadLeaseBusy`. In-process duplicate → `ErrThreadAlreadyRunning`. Для `Stream`/`ResumeStream` дубликат виден на `Wait()` второго handle.
 - Stream: `RequestStop()` + `Wait()`. Strict terminal-event tests требуют доставку event; persist-vs-event тесты (`*PersistVsEvent*`) допускают drop terminal event — authoritative `Wait()` / snapshot.
-- `RequestLocalHandoff`: `nil` при persist, `ErrCheckpointSkipped` при skip-on-save-error, `ErrHandoffScheduleFailed` при schedule fail после persist.
+- `RequestLocalHandoff`: `nil` при persist, `ErrCheckpointSkipped` при skip-on-save-error, `ErrHandoffEnqueueFailed` при enqueue fail после persist.
+- `handoff_outbox`: `WithHandoffOutbox` + `RecoverStaleHandoff` для фонового resume.
 
 ## Smoke-валидация
 
-Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (14 каталогов, `go run .`).
+Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (15 каталогов, `go run .`).
 
 ```bash
 go test ./... -run TestExamplesSmoke -count=1

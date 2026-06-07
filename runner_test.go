@@ -5,10 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 )
 
 type memoryCP[T, E any] struct {
+	mu    sync.Mutex
 	last  Snapshot[T, E]
 	reads map[string]Snapshot[T, E]
 	hist  map[string][]Snapshot[T, E]
@@ -18,23 +20,43 @@ func newMemoryCP[T, E any]() *memoryCP[T, E] {
 	return &memoryCP[T, E]{reads: map[string]Snapshot[T, E]{}, hist: map[string][]Snapshot[T, E]{}}
 }
 
-func (m *memoryCP[T, E]) Save(_ context.Context, snapshot Snapshot[T, E]) error {
+func (m *memoryCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	items := m.hist[snapshot.ThreadID]
+	var current uint64
+	if len(items) > 0 {
+		current = items[len(items)-1].Revision
+	}
+	if current != expectedRevision {
+		return 0, ErrConcurrencyConflict
+	}
+	newRevision := expectedRevision + 1
+	snapshot.Revision = newRevision
 	m.last = snapshot
 	m.reads[snapshot.ThreadID] = snapshot
-	m.hist[snapshot.ThreadID] = append(m.hist[snapshot.ThreadID], snapshot)
-	return nil
+	m.hist[snapshot.ThreadID] = append(items, snapshot)
+	return newRevision, nil
 }
 
-func (m *memoryCP[T, E]) Load(_ context.Context, threadID string) (Snapshot[T, E], error) {
+func (m *memoryCP[T, E]) Load(_ context.Context, threadID string) (Snapshot[T, E], uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	s, ok := m.reads[threadID]
 	if !ok {
 		var zero Snapshot[T, E]
-		return zero, ErrThreadNotFound
+		return zero, 0, ErrThreadNotFound
 	}
-	return s, nil
+	return s, s.Revision, nil
 }
 
 func (m *memoryCP[T, E]) GetHistory(_ context.Context, threadID string, limit int) ([]Snapshot[T, E], error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	items := m.hist[threadID]
 	if limit <= 0 || limit > len(items) {
 		limit = len(items)
@@ -47,6 +69,8 @@ func (m *memoryCP[T, E]) GetHistory(_ context.Context, threadID string, limit in
 }
 
 func (m *memoryCP[T, E]) Prune(_ context.Context, threadID string, retainCount int) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	items := m.hist[threadID]
 	if len(items) == 0 {
 		return nil
@@ -69,6 +93,8 @@ func (m *memoryCP[T, E]) Prune(_ context.Context, threadID string, retainCount i
 }
 
 func (m *memoryCP[T, E]) Delete(_ context.Context, threadID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	delete(m.reads, threadID)
 	delete(m.hist, threadID)
 	return nil

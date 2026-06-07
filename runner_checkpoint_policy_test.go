@@ -69,24 +69,33 @@ func TestCheckpointSkipOnSaveErrorTerminalSave(t *testing.T) {
 }
 
 type failingMemoryCP[T, E any] struct {
-	memoryCP[T, E]
+	*memoryCP[T, E]
 
 	failSave  bool
 	failPrune bool
 }
 
 func (f *failingMemoryCP[T, E]) ensureMemoryCP() {
-	if f.reads == nil {
-		f.memoryCP = *newMemoryCP[T, E]()
+	if f.memoryCP == nil {
+		f.memoryCP = newMemoryCP[T, E]()
 	}
 }
 
-func (f *failingMemoryCP[T, E]) Save(_ context.Context, snapshot Snapshot[T, E]) error {
+func (f *failingMemoryCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
 	if f.failSave {
-		return errors.New("save failed")
+		return 0, errors.New("save failed")
 	}
 	f.ensureMemoryCP()
-	return f.memoryCP.Save(context.Background(), snapshot)
+	return f.memoryCP.Save(context.Background(), expectedRevision, snapshot)
+}
+
+func (f *failingMemoryCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], uint64, error) {
+	f.ensureMemoryCP()
+	return f.memoryCP.Load(ctx, threadID)
 }
 
 func (f *failingMemoryCP[T, E]) Prune(_ context.Context, threadID string, retainCount int) error {
@@ -143,10 +152,10 @@ func TestSkipOnSaveErrorDoesNotEmitResumeToken(t *testing.T) {
 		t.Fatalf("compile handoff graph: %v", err)
 	}
 
-	scheduler := &stubHandoffScheduler{}
+	outbox := &stubHandoffOutbox{}
 	handoffRes, err := handoffG.NewRunner(cp).Start(context.Background(), "soft-no-token-handoff", state{},
 		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
-		WithHandoffScheduler[state, NoEffect](scheduler),
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if err != nil {
 		t.Fatalf("handoff start: %v", err)
@@ -157,8 +166,14 @@ func TestSkipOnSaveErrorDoesNotEmitResumeToken(t *testing.T) {
 	if handoffRes.Reason != "handoff_checkpoint_skipped" {
 		t.Fatalf("expected handoff_checkpoint_skipped reason, got %q", handoffRes.Reason)
 	}
-	if len(scheduler.calls) != 0 {
-		t.Fatalf("scheduler must not run without persisted handoff save, calls=%d", len(scheduler.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not run without persisted handoff save, calls=%d", len(outbox.calls))
+	}
+	if handoffRes.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status on skip-on-save, got %q", handoffRes.RunMeta.HandoffStatus)
+	}
+	if !handoffRes.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected zero HandoffPendingAt on skip-on-save, got %v", handoffRes.RunMeta.HandoffPendingAt)
 	}
 }
 
@@ -213,10 +228,10 @@ func TestCheckpointSkipOnSaveErrorHandoffSave(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	scheduler := &stubHandoffScheduler{}
+	outbox := &stubHandoffOutbox{}
 	handle, err := g.NewRunner(cp).Stream(context.Background(), "soft-handoff-th", state{},
 		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
-		WithHandoffScheduler[state, NoEffect](scheduler),
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
@@ -244,8 +259,21 @@ func TestCheckpointSkipOnSaveErrorHandoffSave(t *testing.T) {
 			t.Fatalf("expected handoff_checkpoint_skipped reason, got %q", ev.Reason)
 		}
 	}
-	if len(scheduler.calls) != 0 {
-		t.Fatal("scheduler must not run when handoff save was skipped on save error")
+	if len(outbox.calls) != 0 {
+		t.Fatal("outbox must not run when handoff save was skipped on save error")
+	}
+	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "soft-handoff-sync-th", state{},
+		WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if syncErr != nil {
+		t.Fatalf("sync handoff start: %v", syncErr)
+	}
+	if syncRes.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status on skip-on-save sync, got %q", syncRes.RunMeta.HandoffStatus)
+	}
+	if !syncRes.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected zero HandoffPendingAt on skip-on-save sync, got %v", syncRes.RunMeta.HandoffPendingAt)
 	}
 }
 
@@ -279,7 +307,7 @@ func TestCheckpointSkipOnSaveErrorContextCancel(t *testing.T) {
 	if res.Reason != "context_canceled_checkpoint_skipped" {
 		t.Fatalf("expected checkpoint_skipped reason, got %q", res.Reason)
 	}
-	if _, loadErr := cp.Load(context.Background(), "soft-cancel-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "soft-cancel-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("expected no persisted snapshot on soft warn cancel, got %v", loadErr)
 	}
 }
@@ -333,7 +361,7 @@ func TestSkipOnSaveErrorCheckpointSkippedWithRetentionFailed(t *testing.T) {
 	type state struct{}
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failSave:  true,
 		failPrune: true,
 	}
@@ -364,7 +392,7 @@ func TestCheckpointSkipOnSaveErrorOnResumeStream(t *testing.T) {
 
 	type state struct{}
 
-	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: *newMemoryCP[state, NoEffect]()}
+	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -409,7 +437,7 @@ func TestCheckpointSkipOnSaveErrorOnResumeStreamReason(t *testing.T) {
 
 	type state struct{}
 
-	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: *newMemoryCP[state, NoEffect]()}
+	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -493,7 +521,7 @@ func TestStreamSkipOnSaveErrorContextCancel(t *testing.T) {
 	if !foundCheckpoint || !foundCtxCanceled {
 		t.Fatalf("expected checkpoint_failed and context_canceled events, got %+v", events)
 	}
-	if _, loadErr := cp.Load(context.Background(), "soft-cancel-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "soft-cancel-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved on ctx cancel soft warn, load err=%v", loadErr)
 	}
 }
@@ -503,7 +531,7 @@ func TestSyncResumeSkipOnSaveErrorReason(t *testing.T) {
 
 	type state struct{}
 
-	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: *newMemoryCP[state, NoEffect]()}
+	cp := &countingFailingMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -597,7 +625,7 @@ func TestSkipOnSaveErrorPersistedThenRetentionFailed(t *testing.T) {
 	type state struct{}
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -627,7 +655,7 @@ func TestSkipOnSaveErrorHandoffSkipRetentionReason(t *testing.T) {
 	type state struct{}
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failSave:  true,
 		failPrune: true,
 	}

@@ -69,7 +69,7 @@ func TestSuspendPointerResolverInvalidPointer(t *testing.T) {
 	if res == nil || res.Status != RunStatusFailed {
 		t.Fatalf("expected RunStatusFailed, got res=%+v", res)
 	}
-	if _, loadErr := cp.Load(context.Background(), "invalid-ptr-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "invalid-ptr-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved on invalid pointer, load err=%v", loadErr)
 	}
 }
@@ -197,7 +197,7 @@ func TestSuspendPointerResolverReturnsError(t *testing.T) {
 	if res.Reason != ReasonSuspendPointerResolveFailed {
 		t.Fatalf("expected reason %q, got %q", ReasonSuspendPointerResolveFailed, res.Reason)
 	}
-	if _, loadErr := cp.Load(context.Background(), "resolver-err-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "resolver-err-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved, load err=%v", loadErr)
 	}
 }
@@ -267,7 +267,7 @@ func TestContextCancelSaveIgnoresSuspendPointerResolver(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected cancel error, got res=%+v", res)
 	}
-	snap, loadErr := cp.Load(context.Background(), "cancel-resolver-th")
+	snap, _, loadErr := cp.Load(context.Background(), "cancel-resolver-th")
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
@@ -296,7 +296,7 @@ func TestCheckpointerStoresResolvedPointerOnly(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	cp := &pointerSpyCP[state, NoEffect]{memoryCP: *newMemoryCP[state, NoEffect]()}
+	cp := &pointerSpyCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
 	_, err = g.NewRunner(cp).Start(context.Background(), "spy-pointer-th", state{},
 		WithSuspendPointerResolver[state, NoEffect](
 			func(_ state, suspendNode ExecutionPointer) (ExecutionPointer, error) {

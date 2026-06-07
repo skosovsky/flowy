@@ -7,6 +7,8 @@ import (
 	"log"
 	"time"
 
+	flowyotel "github.com/skosovsky/flowy/ext/otel"
+
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/testutil"
 )
@@ -25,6 +27,10 @@ func loggingMiddleware(next flowy.Node[agentState, flowy.NoEffect]) flowy.Node[a
 }
 
 func main() {
+	if err := flowyotel.InstallLifecycleObserver(); err != nil {
+		log.Fatal(err)
+	}
+
 	graph, err := flowy.NewGraph[agentState, flowy.NoEffect](func(_ agentState, u agentState) agentState { return u }).
 		Use(loggingMiddleware, flowy.RecoverMiddleware[agentState, flowy.NoEffect]()).
 		AddNode("stable", func(_ context.Context, s agentState) (agentState, flowy.Directive, error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestResumeEmptyToken(t *testing.T) {
@@ -63,8 +64,8 @@ func TestResumeStaleToken(t *testing.T) {
 	}
 
 	_, err = runner.Resume(context.Background(), staleToken)
-	if !errors.Is(err, ErrStaleResumeToken) {
-		t.Fatalf("expected ErrStaleResumeToken on stale token, got %v", err)
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict on stale token, got %v", err)
 	}
 }
 func TestResumeViaRunResultToken(t *testing.T) {
@@ -116,10 +117,43 @@ func TestResumeViaRunResultToken(t *testing.T) {
 	}
 
 	_, err = runner.Resume(context.Background(), suspended.ResumeToken)
-	if !errors.Is(err, ErrStaleResumeToken) {
-		t.Fatalf("expected stale token after revision bump, got %v", err)
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict after revision bump, got %v", err)
 	}
 }
+func TestResumeZeroSnapshotRevisionRejected(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "zero-rev-th",
+		ExecutionPointer: "wait",
+		State:            state{},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("wait")
+	b.SetEntryPoint("wait")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, err = g.NewRunner(cp).Resume(context.Background(), ResumeToken{
+		ThreadID:         "zero-rev-th",
+		SnapshotRevision: 0,
+	})
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict for zero revision token, got %v", err)
+	}
+}
+
 func TestSuspendResumeTokenSnapshotRevisionMatchesRevision(t *testing.T) {
 	t.Parallel()
 
@@ -142,9 +176,9 @@ func TestSuspendResumeTokenSnapshotRevisionMatchesRevision(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 	if res.ResumeToken.SnapshotRevision <= 0 {
-		t.Fatalf("expected positive generation, got %+v", res.ResumeToken)
+		t.Fatalf("expected positive revision, got %+v", res.ResumeToken)
 	}
-	snap, err := cp.Load(context.Background(), "suspend-occ-th")
+	snap, _, err := cp.Load(context.Background(), "suspend-occ-th")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -209,10 +243,253 @@ func TestResumeStreamStaleToken(t *testing.T) {
 	}
 
 	_, err = runner.ResumeStream(context.Background(), staleToken)
-	if !errors.Is(err, ErrStaleResumeToken) {
-		t.Fatalf("expected stale token on ResumeStream, got %v", err)
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict on ResumeStream stale token, got %v", err)
 	}
 }
+
+func TestResumeRejectsHandoffPending(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "resume-pending-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus:    HandoffStatusPending,
+			HandoffPendingAt: time.Now().UTC(),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "resume-pending-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).Resume(context.Background(), ResumeToken{
+		ThreadID:         "resume-pending-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrHandoffPending) {
+		t.Fatalf("expected ErrHandoffPending, got %v", err)
+	}
+}
+
+func TestResumeRejectsHandoffOrphaned(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "resume-orphaned-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus: HandoffStatusOrphaned,
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "resume-orphaned-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).Resume(context.Background(), ResumeToken{
+		ThreadID:         "resume-orphaned-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrHandoffOrphaned) {
+		t.Fatalf("expected ErrHandoffOrphaned, got %v", err)
+	}
+}
+
+func TestResumeStreamRejectsHandoffPending(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "stream-pending-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus:    HandoffStatusPending,
+			HandoffPendingAt: time.Now().UTC(),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "stream-pending-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).ResumeStream(context.Background(), ResumeToken{
+		ThreadID:         "stream-pending-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrHandoffPending) {
+		t.Fatalf("expected ErrHandoffPending on ResumeStream, got %v", err)
+	}
+}
+
+func TestResumeStreamRejectsHandoffOrphaned(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "stream-orphaned-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus: HandoffStatusOrphaned,
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "stream-orphaned-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).ResumeStream(context.Background(), ResumeToken{
+		ThreadID:         "stream-orphaned-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrHandoffOrphaned) {
+		t.Fatalf("expected ErrHandoffOrphaned on ResumeStream, got %v", err)
+	}
+}
+
+func TestResumeRejectsInvalidHandoffStatus(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "resume-corrupt-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus: HandoffStatus("corrupt"),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "resume-corrupt-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).Resume(context.Background(), ResumeToken{
+		ThreadID:         "resume-corrupt-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("expected ErrInvalidSnapshot for corrupt handoff status, got %v", err)
+	}
+}
+
+func TestResumeStreamRejectsInvalidHandoffStatus(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	cp := newMemoryCP[state, NoEffect]()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
+		ThreadID:         "stream-corrupt-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta: RunMetadata{
+			HandoffStatus: HandoffStatus("corrupt"),
+		},
+	}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, rev, err := cp.Load(context.Background(), "stream-corrupt-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	_, err = g.NewRunner(cp).ResumeStream(context.Background(), ResumeToken{
+		ThreadID:         "stream-corrupt-th",
+		SnapshotRevision: rev,
+	})
+	if !errors.Is(err, ErrInvalidSnapshot) {
+		t.Fatalf("expected ErrInvalidSnapshot on ResumeStream, got %v", err)
+	}
+}
+
 func TestResumeTokenFromSnapshotEquivalentToRunResultToken(t *testing.T) {
 	t.Parallel()
 
@@ -235,7 +512,7 @@ func TestResumeTokenFromSnapshotEquivalentToRunResultToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	snap, loadErr := cp.Load(context.Background(), "token-equiv-th")
+	snap, _, loadErr := cp.Load(context.Background(), "token-equiv-th")
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}

@@ -35,8 +35,7 @@ func newRunSession(cancel context.CancelCauseFunc) *runSession {
 func (s *runSession) finish(err error) {
 	s.once.Do(func() {
 		if err != nil {
-			e := err
-			s.err.Store(&e)
+			s.err.Store(new(err))
 		}
 		close(s.done)
 	})

@@ -3,18 +3,19 @@ package flowy
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 )
 
-func TestHandoffSchedulerFailurePreservesSnapshot(t *testing.T) {
+func TestHandoffOutboxFailurePreservesSnapshot(t *testing.T) {
 	t.Parallel()
 
 	type state struct{ N int }
 
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -28,33 +29,38 @@ func TestHandoffSchedulerFailurePreservesSnapshot(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	runner := g.NewRunner(cp)
-	res, err := runner.Start(context.Background(), "schedule-fail-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	res, err := runner.Start(context.Background(), "outbox-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
-	if !errors.Is(err, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected ErrHandoffScheduleFailed, got %v res=%+v", err, res)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v res=%+v", err, res)
 	}
-	if res == nil || res.ResumeToken.ThreadID != "schedule-fail-th" {
+	if res == nil || res.ResumeToken.ThreadID != "outbox-fail-th" {
 		t.Fatalf("expected populated ResumeToken for retry, got %+v", res)
 	}
 	if res.Status != RunStatusHandoff {
 		t.Fatalf("expected handoff status, got %s", res.Status)
 	}
-	snap, loadErr := cp.Load(context.Background(), "schedule-fail-th")
+	if res.Reason != ReasonHandoffOrphaned {
+		t.Fatalf("expected reason %q, got %q", ReasonHandoffOrphaned, res.Reason)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "outbox-fail-th", res, "bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "outbox-fail-th")
+	snap, _, loadErr := cp.Load(context.Background(), "outbox-fail-th")
 	if loadErr != nil {
-		t.Fatalf("snapshot must be preserved after schedule failure: %v", loadErr)
+		t.Fatalf("load: %v", loadErr)
 	}
 	if res.ResumeToken.SnapshotRevision != snap.Revision {
 		t.Fatalf("snapshot revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
 }
 
-func TestHandoffSchedulerSuccess(t *testing.T) {
+func TestHandoffOutboxSuccess(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
-	scheduler := &stubHandoffScheduler{}
+	outbox := &stubHandoffOutbox{}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -68,26 +74,146 @@ func TestHandoffSchedulerSuccess(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	runner := g.NewRunner(cp)
-	res, err := runner.Start(context.Background(), "schedule-ok-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	res, err := runner.Start(context.Background(), "outbox-ok-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	token := scheduler.lastToken()
-	if token.ThreadID != "schedule-ok-th" || token.SnapshotRevision != res.ResumeToken.SnapshotRevision {
-		t.Fatalf("scheduler token mismatch: got %+v result token %+v", token, res.ResumeToken)
+	token := outbox.lastToken()
+	if token.ThreadID != "outbox-ok-th" {
+		t.Fatalf("outbox token thread mismatch: got %+v", token)
+	}
+	snap, _, err := cp.Load(context.Background(), "outbox-ok-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res.ResumeToken.SnapshotRevision != snap.Revision {
+		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
+	}
+	if token.SnapshotRevision != snap.Revision-1 {
+		t.Fatalf("outbox token revision %d != pending revision %d", token.SnapshotRevision, snap.Revision-1)
+	}
+	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
+		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued handoff status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "outbox-ok-th")
+	if !res.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected HandoffPendingAt cleared on enqueued, got %v", res.RunMeta.HandoffPendingAt)
 	}
 }
 
-func TestHandoffSchedulerDoesNotDeleteOnScheduleFailure(t *testing.T) {
+func TestHandoffEnqueueWhileStatusPending(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	cp := newMemoryCP[state, NoEffect]()
+	outbox := &stubHandoffOutbox{
+		onEnqueue: func(token ResumeToken) error {
+			snap, _, loadErr := cp.Load(context.Background(), token.ThreadID)
+			if loadErr != nil {
+				return loadErr
+			}
+			if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+				return fmt.Errorf("expected pending during enqueue, got %q", snap.RunMeta.HandoffStatus)
+			}
+			return nil
+		},
+	}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, err = g.NewRunner(cp).Start(context.Background(), "enqueue-pending-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+}
+
+type spyLifecycleObserver struct {
+	mu              sync.Mutex
+	enqueued        []string
+	rejected        []string
+	checkpointSofts int
+}
+
+func (s *spyLifecycleObserver) HandoffEnqueued(_ context.Context, _ string, _ ExecutionPointer, status string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.enqueued = append(s.enqueued, status)
+}
+
+func (s *spyLifecycleObserver) ResumeRejected(_ context.Context, _ string, _ ExecutionPointer, reason string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.rejected = append(s.rejected, reason)
+}
+
+func (s *spyLifecycleObserver) CheckpointSoftError(context.Context, string, ExecutionPointer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.checkpointSofts++
+}
+
+func TestHandoffLifecycleObserverEmitted(t *testing.T) {
+	type state struct{}
+	obs := &spyLifecycleObserver{}
+	SetLifecycleObserver(obs)
+	t.Cleanup(func() { SetLifecycleObserver(nil) })
+
+	outbox := &stubHandoffOutbox{err: errors.New("down")}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	res, err := g.NewRunner(cp).Start(context.Background(), "obs-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v res=%+v", err, res)
+	}
+	if res == nil || res.Reason != ReasonHandoffOrphaned {
+		t.Fatalf("expected reason %q, got res=%+v", ReasonHandoffOrphaned, res)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "obs-th", res, "bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "obs-th")
+
+	obs.mu.Lock()
+	defer obs.mu.Unlock()
+	if len(obs.enqueued) != 1 || obs.enqueued[0] != "enqueue_failed" {
+		t.Fatalf("expected handoff enqueue_failed metric, got %+v", obs.enqueued)
+	}
+}
+
+func TestHandoffOutboxDoesNotDeleteOnEnqueueFailure(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	baseCP := newMemoryCP[state, NoEffect]()
-	cp := &deleteSpyCP[state, NoEffect]{memoryCP: *baseCP}
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	cp := &deleteSpyCP[state, NoEffect]{memoryCP: baseCP}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -100,19 +226,17 @@ func TestHandoffSchedulerDoesNotDeleteOnScheduleFailure(t *testing.T) {
 	}
 
 	_, err = g.NewRunner(cp).Start(context.Background(), "no-delete-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
-	if !errors.Is(err, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected schedule failure, got %v", err)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected enqueue failure, got %v", err)
 	}
 	if cp.deleteCalls != 0 {
-		t.Fatalf("Delete must not run on schedule failure, calls=%d", cp.deleteCalls)
+		t.Fatalf("Delete must not run on enqueue failure, calls=%d", cp.deleteCalls)
 	}
 }
 
 func TestRequestLocalHandoffContextCancelDuringSave(t *testing.T) {
-	t.Parallel()
-
 	type state struct{ N int }
 
 	ready := make(chan struct{})
@@ -319,41 +443,86 @@ func TestRequestLocalHandoffSkipOnSaveErrorSkipReturnsCheckpointSkipped(t *testi
 	if runErr := <-startDone; !errors.Is(runErr, ErrCheckpointSkipped) {
 		t.Fatalf("expected execute ErrCheckpointSkipped, got %v", runErr)
 	}
-	if _, loadErr := cp.Load(context.Background(), "htb-skip-on-save-th"); loadErr == nil {
+	if _, _, loadErr := cp.Load(context.Background(), "htb-skip-on-save-th"); loadErr == nil {
 		t.Fatal("expected no snapshot on skip-on-save handoff skip")
 	}
 }
 
-func TestRequestLocalHandoffScheduleFailAfterPersist(t *testing.T) {
+func TestRequestLocalHandoffSkipOnSaveErrorWithOutbox(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	outbox := &stubHandoffOutbox{}
+	g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
+	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
+	runner := g.NewRunner(cp)
+
+	startDone := make(chan *RunResult[state, NoEffect], 1)
+	go func() {
+		res, runErr := runner.Start(context.Background(), "htb-skip-outbox-th", state{},
+			WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError),
+			WithHandoffOutbox[state, NoEffect](outbox),
+		)
+		if !errors.Is(runErr, ErrCheckpointSkipped) {
+			t.Errorf("expected execute ErrCheckpointSkipped, got %v", runErr)
+		}
+		startDone <- res
+	}()
+
+	<-ready
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-skip-outbox-th")
+	if !errors.Is(handoffErr, ErrCheckpointSkipped) {
+		t.Fatalf("expected ErrCheckpointSkipped, got %v", handoffErr)
+	}
+	res := <-startDone
+	if res == nil {
+		t.Fatal("expected non-nil RunResult on skip-on-save HTB")
+	}
+	if res.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status on skip-on-save HTB, got %q", res.RunMeta.HandoffStatus)
+	}
+	if !res.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected zero HandoffPendingAt on skip-on-save HTB, got %v", res.RunMeta.HandoffPendingAt)
+	}
+	if _, _, loadErr := cp.Load(context.Background(), "htb-skip-outbox-th"); loadErr == nil {
+		t.Fatal("expected no snapshot on skip-on-save HTB with outbox")
+	}
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not run without persisted handoff save, calls=%d", len(outbox.calls))
+	}
+}
+
+func TestRequestLocalHandoffEnqueueFailAfterPersist(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
 	cp := newMemoryCP[state, NoEffect]()
 	runner := g.NewRunner(cp)
 
 	startDone := make(chan *RunResult[state, NoEffect], 1)
 	go func() {
-		res, _ := runner.Start(context.Background(), "htb-sched-th", state{},
-			WithHandoffScheduler[state, NoEffect](scheduler),
+		res, _ := runner.Start(context.Background(), "htb-enqueue-th", state{},
+			WithHandoffOutbox[state, NoEffect](outbox),
 		)
 		startDone <- res
 	}()
 
 	<-ready
-	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-sched-th")
-	if !errors.Is(handoffErr, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected ErrHandoffScheduleFailed, got %v", handoffErr)
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-enqueue-th")
+	if !errors.Is(handoffErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", handoffErr)
 	}
 	res := <-startDone
 	if res == nil || res.ResumeToken.ThreadID == "" {
-		t.Fatalf("expected ResumeToken after schedule fail, got %+v", res)
+		t.Fatalf("expected ResumeToken after enqueue fail, got %+v", res)
 	}
-	if _, loadErr := cp.Load(context.Background(), "htb-sched-th"); loadErr != nil {
-		t.Fatalf("snapshot must exist after schedule fail: %v", loadErr)
-	}
+	assertHandoffFailureTokenMatchesSnapshot(t, res, cp, "htb-enqueue-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "htb-enqueue-th", "background_handoff")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "htb-enqueue-th")
 }
 
 func TestRequestLocalHandoffPropagatesSaveError(t *testing.T) {
@@ -390,7 +559,7 @@ func TestRequestLocalHandoffRetentionFailAfterPersist(t *testing.T) {
 	type state struct{}
 
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -408,10 +577,13 @@ func TestRequestLocalHandoffRetentionFailAfterPersist(t *testing.T) {
 	}
 	runner := g.NewRunner(cp)
 
-	startDone := make(chan error, 1)
+	startDone := make(chan *RunResult[state, NoEffect], 1)
 	go func() {
-		_, runErr := runner.Start(context.Background(), "htb-retention-th", state{})
-		startDone <- runErr
+		res, runErr := runner.Start(context.Background(), "htb-retention-th", state{})
+		if runErr == nil {
+			t.Errorf("expected retention error from Start")
+		}
+		startDone <- res
 	}()
 
 	<-ready
@@ -422,10 +594,15 @@ func TestRequestLocalHandoffRetentionFailAfterPersist(t *testing.T) {
 	if !strings.Contains(handoffErr.Error(), "retention") {
 		t.Fatalf("expected retention in error, got %v", handoffErr)
 	}
-	if _, loadErr := cp.Load(context.Background(), "htb-retention-th"); loadErr != nil {
+	if _, _, loadErr := cp.Load(context.Background(), "htb-retention-th"); loadErr != nil {
 		t.Fatalf("snapshot must exist despite retention failure: %v", loadErr)
 	}
-	<-startDone
+	syncRes := <-startDone
+	wantReason := retentionFailedReason("background_handoff")
+	if syncRes != nil && syncRes.Reason != wantReason {
+		t.Fatalf("expected sync reason %q, got %q", wantReason, syncRes.Reason)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "htb-retention-th")
 }
 
 func TestRequestLocalHandoffLeaseLostClosesSession(t *testing.T) {
@@ -528,7 +705,7 @@ func TestHandoffPointerResolveFailReasonOnBackgroundHandoff(t *testing.T) {
 	if handoffErr == nil {
 		t.Fatal("expected resolve error")
 	}
-	if _, loadErr := cp.Load(context.Background(), "htb-resolve-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "htb-resolve-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved on resolve fail, load err=%v", loadErr)
 	}
 	res := <-startDone
@@ -592,17 +769,19 @@ func TestRequestLocalHandoffEmptyThreadID(t *testing.T) {
 		t.Fatal("expected error for empty threadID")
 	} else if errors.Is(err, ErrNoActiveExecution) {
 		t.Fatalf("empty threadID must not return ErrNoActiveExecution, got %v", err)
+	} else if !errors.Is(err, ErrInvalidResumeToken) {
+		t.Fatalf("expected ErrInvalidResumeToken, got %v", err)
 	}
 }
 
-func TestRequestLocalHandoffScheduleAndRetentionJoin(t *testing.T) {
+func TestRequestLocalHandoffEnqueueAndRetentionJoin(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -620,31 +799,35 @@ func TestRequestLocalHandoffScheduleAndRetentionJoin(t *testing.T) {
 	}
 	runner := g.NewRunner(cp)
 
-	startDone := make(chan error, 1)
+	startDone := make(chan *RunResult[state, NoEffect], 1)
 	go func() {
-		_, runErr := runner.Start(context.Background(), "htb-sched-retention-th", state{},
-			WithHandoffScheduler[state, NoEffect](scheduler),
+		res, runErr := runner.Start(context.Background(), "htb-enqueue-retention-th", state{},
+			WithHandoffOutbox[state, NoEffect](outbox),
 		)
-		startDone <- runErr
+		if runErr == nil {
+			t.Errorf("expected combined enqueue+retention error from Start")
+		}
+		startDone <- res
 	}()
 
 	<-ready
-	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-sched-retention-th")
-	if !errors.Is(handoffErr, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected schedule failure, got %v", handoffErr)
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-enqueue-retention-th")
+	if !errors.Is(handoffErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected enqueue failure, got %v", handoffErr)
 	}
 	if !strings.Contains(handoffErr.Error(), "retention") {
 		t.Fatalf("expected retention error in join chain, got %v", handoffErr)
 	}
-	if _, loadErr := cp.Load(context.Background(), "htb-sched-retention-th"); loadErr != nil {
-		t.Fatalf("snapshot must exist after schedule+retention fail: %v", loadErr)
+	res := <-startDone
+	wantReason := retentionFailedReason(ReasonHandoffOrphaned)
+	if res == nil || res.Reason != wantReason {
+		t.Fatalf("expected reason %q, got %+v", wantReason, res)
 	}
-	if runErr := <-startDone; runErr == nil {
-		t.Fatal("expected combined schedule+retention error from Start")
-	}
+	assertOrphanedHandoffSnapshot(t, cp, "htb-enqueue-retention-th", nil, "")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "htb-enqueue-retention-th")
 }
 
-func TestHandoffWithoutSchedulerPopulatesResumeToken(t *testing.T) {
+func TestHandoffWithoutOutboxPopulatesResumeToken(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -661,30 +844,34 @@ func TestHandoffWithoutSchedulerPopulatesResumeToken(t *testing.T) {
 	}
 
 	cp := newMemoryCP[state, NoEffect]()
-	res, err := g.NewRunner(cp).Start(context.Background(), "no-sched-th", state{})
+	res, err := g.NewRunner(cp).Start(context.Background(), "no-outbox-th", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	snap, loadErr := cp.Load(context.Background(), "no-sched-th")
+	snap, _, loadErr := cp.Load(context.Background(), "no-outbox-th")
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
-	if res.ResumeToken.ThreadID != "no-sched-th" {
-		t.Fatalf("expected thread no-sched-th, got %+v", res.ResumeToken)
+	if res.ResumeToken.ThreadID != "no-outbox-th" {
+		t.Fatalf("expected thread no-outbox-th, got %+v", res.ResumeToken)
 	}
 	if res.ResumeToken.SnapshotRevision != snap.Revision {
 		t.Fatalf("snapshot revision %d != revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status without outbox, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "no-outbox-th")
 }
 
-func TestHandoffScheduleFailWithRetentionFail(t *testing.T) {
+func TestHandoffEnqueueFailWithRetentionFail(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
-	scheduler := &stubHandoffScheduler{err: errors.New("broker down")}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	cp := &failingMemoryCP[state, NoEffect]{
-		memoryCP:  *newMemoryCP[state, NoEffect](),
+		memoryCP:  newMemoryCP[state, NoEffect](),
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
@@ -698,24 +885,24 @@ func TestHandoffScheduleFailWithRetentionFail(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	handle, err := g.NewRunner(cp).Stream(context.Background(), "sched-retention-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	handle, err := g.NewRunner(cp).Stream(context.Background(), "enqueue-retention-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
 	events, waitErr := CollectEventsAndWait(context.Background(), handle)
-	if !errors.Is(waitErr, ErrHandoffScheduleFailed) {
-		t.Fatalf("expected schedule failure, got %v", waitErr)
+	if !errors.Is(waitErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected enqueue failure, got %v", waitErr)
 	}
 	if waitErr == nil {
-		t.Fatal("expected combined schedule+retention error")
+		t.Fatal("expected combined enqueue+retention error")
 	}
 	if !strings.Contains(waitErr.Error(), "retention") {
 		t.Fatalf("expected retention error in join chain, got %v", waitErr)
 	}
 
-	wantReason := "bg_retention_failed"
+	wantReason := retentionFailedReason(ReasonHandoffOrphaned)
 	foundHandoff := false
 	for _, ev := range events {
 		if ev.Type == EventHandoff {
@@ -729,16 +916,337 @@ func TestHandoffScheduleFailWithRetentionFail(t *testing.T) {
 		t.Fatalf("expected EventHandoff, events=%+v", events)
 	}
 
-	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "sched-retention-sync-th", state{},
-		WithHandoffScheduler[state, NoEffect](scheduler),
+	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "enqueue-retention-sync-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if syncErr == nil {
-		t.Fatalf("expected sync schedule+retention error, got %+v", syncRes)
+		t.Fatalf("expected sync enqueue+retention error, got %+v", syncRes)
 	}
 	if syncRes.Reason != wantReason {
 		t.Fatalf("sync reason: want %q, got %q", wantReason, syncRes.Reason)
 	}
 	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+
+	assertOrphanedHandoffSnapshot(t, cp, "enqueue-retention-th", nil, "")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "enqueue-retention-sync-th")
+}
+
+func TestHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[state, NoEffect]{failOnStatus: HandoffStatusEnqueued}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "patch-enqueued-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err == nil {
+		t.Fatalf("expected patch failure error, got %+v", res)
+	}
+	if !errors.Is(err, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
+	}
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected RunStatusHandoff on patch fail after enqueue, got %+v", res)
+	}
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected one successful enqueue before patch fail, got %d", len(outbox.calls))
+	}
+	if res.ResumeToken.ThreadID == "" {
+		t.Fatalf("expected populated ResumeToken, got %+v", res.ResumeToken)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "patch-enqueued-fail-th", res, "bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "patch-enqueued-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "patch-enqueued-fail-th", "bg")
+}
+
+func TestHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &handoffPatchFailCP[state, NoEffect]{failOnStatus: HandoffStatusOrphaned}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "patch-orphan-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v res=%+v", err, res)
+	}
+	if !errors.Is(err, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed in join, got %v", err)
+	}
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected RunStatusHandoff, got %+v", res)
+	}
+	snap, rev, loadErr := cp.Load(context.Background(), "patch-orphan-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+		t.Fatalf("expected pending status when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if res.ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, rev)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "patch-orphan-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "patch-orphan-fail-th", "bg")
+}
+
+func TestHandoffEnqueueOkBothPatchesFail(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[state, NoEffect]{
+		failOnStatuses: map[HandoffStatus]struct{}{ //nolint:exhaustive // only patch statuses under test
+			HandoffStatusEnqueued: {},
+			HandoffStatusOrphaned: {},
+		},
+	}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "both-patch-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err == nil {
+		t.Fatalf("expected patch failure error, got %+v", res)
+	}
+	if !errors.Is(err, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
+	}
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected RunStatusHandoff, got %+v", res)
+	}
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected one enqueue before patch failures, got %d", len(outbox.calls))
+	}
+	snap, _, loadErr := cp.Load(context.Background(), "both-patch-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+		t.Fatalf("expected pending when both patches fail, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "both-patch-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "both-patch-fail-th", "bg")
+}
+
+func TestHandoffRunMetaMatchesSnapshotOnEnqueueFail(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	res, err := g.NewRunner(cp).Start(context.Background(), "runmeta-orphan-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", err)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "runmeta-orphan-th")
+}
+
+// syncMetaLoadFailCP simulates transient Load failure after orphan patch persisted.
+type syncMetaLoadFailCP[T, E any] struct {
+	*memoryCP[T, E]
+}
+
+func (c *syncMetaLoadFailCP[T, E]) ensureMemoryCP() {
+	if c.memoryCP == nil {
+		c.memoryCP = newMemoryCP[T, E]()
+	}
+}
+
+func (c *syncMetaLoadFailCP[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	c.ensureMemoryCP()
+	return c.memoryCP.Save(ctx, expectedRevision, snapshot)
+}
+
+func (c *syncMetaLoadFailCP[T, E]) Load(
+	ctx context.Context,
+	threadID string,
+) (Snapshot[T, E], uint64, error) {
+	c.ensureMemoryCP()
+	snap, rev, err := c.memoryCP.Load(ctx, threadID)
+	if err != nil {
+		return snap, rev, err
+	}
+	if snap.RunMeta.HandoffStatus == HandoffStatusOrphaned {
+		return Snapshot[T, E]{}, 0, errors.New("transient load fail")
+	}
+	return snap, rev, nil
+}
+
+func (c *syncMetaLoadFailCP[T, E]) GetHistory(
+	ctx context.Context,
+	threadID string,
+	limit int,
+) ([]Snapshot[T, E], error) {
+	c.ensureMemoryCP()
+	return c.memoryCP.GetHistory(ctx, threadID, limit)
+}
+
+func (c *syncMetaLoadFailCP[T, E]) Prune(ctx context.Context, threadID string, limit int) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.Prune(ctx, threadID, limit)
+}
+
+func (c *syncMetaLoadFailCP[T, E]) Delete(ctx context.Context, threadID string) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.Delete(ctx, threadID)
+}
+
+func (c *syncMetaLoadFailCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.DeleteIfIdle(ctx, threadID)
+}
+
+func TestSyncHandoffRunMetaUsesFSMStatusWhenLoadFails(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &syncMetaLoadFailCP[state, NoEffect]{}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "sync-meta-load-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", err)
+	}
+	snap, _, loadErr := cp.memoryCP.Load(context.Background(), "sync-meta-load-fail-th")
+	if loadErr != nil {
+		t.Fatalf("direct load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected orphaned in store, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if res.Reason != ReasonHandoffOrphaned {
+		t.Fatalf("expected orphaned reason from FSM when sync Load fails, got %q", res.Reason)
+	}
+	if res.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected orphaned RunMeta from FSM, got %q", res.RunMeta.HandoffStatus)
+	}
+	if !res.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected HandoffPendingAt cleared on orphaned RunMeta, got %v", res.RunMeta.HandoffPendingAt)
+	}
+}
+
+func TestResumeClearsHandoffEnqueuedStatus(t *testing.T) {
+	t.Parallel()
+
+	type state struct{ N int }
+
+	outbox := &stubHandoffOutbox{}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		s.N++
+		if s.N == 1 {
+			return s, Handoff("bg"), nil
+		}
+		if s.N == 2 {
+			return s, Suspend("hold"), nil
+		}
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	cp := newMemoryCP[state, NoEffect]()
+	runner := g.NewRunner(cp)
+	res, err := runner.Start(context.Background(), "resume-clear-enqueued-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	snap, _, loadErr := cp.Load(context.Background(), "resume-clear-enqueued-th")
+	if loadErr != nil {
+		t.Fatalf("load after handoff: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued before resume, got %q", snap.RunMeta.HandoffStatus)
+	}
+
+	suspended, err := runner.Resume(context.Background(), res.ResumeToken)
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	if suspended.Status != RunStatusSuspended {
+		t.Fatalf("expected suspended after first resume, got %s", suspended.Status)
+	}
+	snap, _, loadErr = cp.Load(context.Background(), "resume-clear-enqueued-th")
+	if loadErr != nil {
+		t.Fatalf("load after resume save: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected HandoffStatusNone after resume save, got %q", snap.RunMeta.HandoffStatus)
+	}
 }
 
 func TestHandoffSaveFailUsesResolvedPointer(t *testing.T) {
@@ -773,4 +1281,145 @@ func TestHandoffSaveFailUsesResolvedPointer(t *testing.T) {
 	if string(res.ExecutionPointer) != "router" {
 		t.Fatalf("expected failed result pointer router, got %q", res.ExecutionPointer)
 	}
+}
+
+func TestTransactionalHandoffNoSnapshotOnEnqueueFail(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &transactionalMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	_, err = g.NewRunner(cp).Start(context.Background(), "tx-handoff-fail-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err == nil {
+		t.Fatal("expected transactional handoff failure")
+	}
+	requireSnapshotMissing(t, cp, "tx-handoff-fail-th")
+}
+
+func TestTransactionalHandoffSuccess(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{}
+	cp := &transactionalMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "tx-handoff-ok-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != RunStatusHandoff {
+		t.Fatalf("expected handoff, got %s", res.Status)
+	}
+	snap, rev, loadErr := cp.Load(context.Background(), "tx-handoff-ok-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected one enqueue, got %d", len(outbox.calls))
+	}
+	if outbox.calls[0].SnapshotRevision != rev {
+		t.Fatalf("outbox token rev %d != snapshot rev %d", outbox.calls[0].SnapshotRevision, rev)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "tx-handoff-ok-th")
+}
+
+func TestTransactionalHandoffFailureRunMeta(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &transactionalMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunner(cp).Start(context.Background(), "tx-fail-runmeta-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+	)
+	if err == nil {
+		t.Fatal("expected transactional handoff failure")
+	}
+	if res == nil {
+		t.Fatal("expected failed RunResult")
+	}
+	if res.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status after TX rollback, got %q", res.RunMeta.HandoffStatus)
+	}
+	requireSnapshotMissing(t, cp, "tx-fail-runmeta-th")
+}
+
+func TestHandoffWithRunLeaseAndMemoryCPUsesThreePhaseFSM(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	outbox := &stubHandoffOutbox{}
+	lease := NewMemoryLeaseManager()
+	cp := newMemoryCP[state, NoEffect]()
+	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
+	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
+		WithLeaseManager[state, NoEffect](lease),
+	})
+	res, err := runner.Start(context.Background(), "lease-handoff-th", state{},
+		WithHandoffOutbox[state, NoEffect](outbox),
+		WithRunLease[state, NoEffect]("worker-1", time.Minute),
+	)
+	if err != nil {
+		t.Fatalf("handoff with lease+memory: %v", err)
+	}
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected handoff, got %+v err=%v", res, err)
+	}
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected one outbox enqueue via 3-phase FSM, got %d", len(outbox.calls))
+	}
+	assertHandoffTokenRevisionContract(t, outbox, res, cp, "lease-handoff-th")
 }

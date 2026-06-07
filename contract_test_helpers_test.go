@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -23,12 +24,12 @@ import (
 //   - Lease guard (distributed): ErrThreadLeaseBusy on lease acquire conflict; ErrLeaseLost on expiry/takeover.
 //
 // Handoff
-//   - Graph Handoff directive: persisted snapshot + optional HandoffScheduler.
+//   - Graph Handoff directive: persisted snapshot + optional HandoffOutbox (HandoffStatus FSM).
 //   - RequestLocalHandoff: in-process active-run API on this Runner instance only.
 //
 // Reason taxonomy
 //   - User reason: Suspend/Handoff directive string.
-//   - System constants: ReasonSuspendedCheckpointSkipped, ReasonHandoffScheduleFailed, etc.
+//   - System constants: ReasonSuspendedCheckpointSkipped, ReasonHandoffSaveFailed, etc.
 //   - Raw error text: infra failures, context cancel, lease lost.
 //
 // HTB + lease timing
@@ -201,7 +202,7 @@ func assertTerminalErrorStreamReasonMatchesSync[tState any, tEffect any](
 
 func requireSnapshotPresent[T, E any](t *testing.T, cp Checkpointer[T, E], threadID string) Snapshot[T, E] {
 	t.Helper()
-	snap, err := cp.Load(context.Background(), threadID)
+	snap, _, err := cp.Load(context.Background(), threadID)
 	if err != nil {
 		t.Fatalf("expected snapshot for %q: %v", threadID, err)
 	}
@@ -210,7 +211,7 @@ func requireSnapshotPresent[T, E any](t *testing.T, cp Checkpointer[T, E], threa
 
 func requireSnapshotMissing[T, E any](t *testing.T, cp Checkpointer[T, E], threadID string) {
 	t.Helper()
-	_, err := cp.Load(context.Background(), threadID)
+	_, _, err := cp.Load(context.Background(), threadID)
 	if err == nil {
 		t.Fatalf("expected no snapshot for %q", threadID)
 	}
@@ -241,6 +242,7 @@ type blockingSaveCP[T, E any] struct {
 	inner       *memoryCP[T, E]
 	saveEntered chan struct{}
 	releaseSave chan struct{}
+	enteredOnce sync.Once
 }
 
 func newBlockingSaveCP[T, E any]() *blockingSaveCP[T, E] {
@@ -251,17 +253,17 @@ func newBlockingSaveCP[T, E any]() *blockingSaveCP[T, E] {
 	}
 }
 
-func (b *blockingSaveCP[T, E]) Save(_ context.Context, snapshot Snapshot[T, E]) error {
-	select {
-	case <-b.saveEntered:
-	default:
-		close(b.saveEntered)
-	}
+func (b *blockingSaveCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	b.enteredOnce.Do(func() { close(b.saveEntered) })
 	<-b.releaseSave
-	return b.inner.Save(context.Background(), snapshot)
+	return b.inner.Save(context.Background(), expectedRevision, snapshot)
 }
 
-func (b *blockingSaveCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], error) {
+func (b *blockingSaveCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], uint64, error) {
 	return b.inner.Load(ctx, threadID)
 }
 
@@ -330,4 +332,367 @@ func collectEvents[T, E any](t *testing.T, stream <-chan RunEvent[T, E], timeout
 		t.Fatalf("stream timeout after %s", timeout)
 	}
 	return events
+}
+
+func assertHandoffRunMetaNoneOnSkip[T, E any](t *testing.T, res *RunResult[T, E]) {
+	t.Helper()
+	if res == nil {
+		t.Fatal("expected non-nil RunResult")
+	}
+	if res.RunMeta.HandoffStatus != HandoffStatusNone {
+		t.Fatalf("expected none handoff status on skip-on-save, got %q", res.RunMeta.HandoffStatus)
+	}
+	if !res.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected zero HandoffPendingAt on skip-on-save, got %v", res.RunMeta.HandoffPendingAt)
+	}
+}
+
+func seedRecoverSnapshot[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	threadID string,
+	state T,
+	meta RunMetadata,
+) {
+	t.Helper()
+	if _, err := cp.Save(context.Background(), 0, Snapshot[T, E]{
+		ThreadID:         threadID,
+		ExecutionPointer: "work",
+		State:            state,
+		RunMeta:          meta,
+	}); err != nil {
+		t.Fatalf("seed recover snapshot: %v", err)
+	}
+}
+
+func newRecoverWorkRunner[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	outbox HandoffOutbox,
+	opts ...RunnerOption[T, E],
+) Runner[T, E] {
+	t.Helper()
+	b := NewGraph[T, E](func(_ T, u T) T { return u })
+	b.AddNode("work", func(_ context.Context, s T) (T, Directive, error) {
+		return s, End(), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile recover work graph: %v", err)
+	}
+	runOpts := make([]RunnerOption[T, E], 0, len(opts)+1)
+	if outbox != nil {
+		runOpts = append(runOpts, WithRunnerHandoffOutbox[T, E](outbox))
+	}
+	runOpts = append(runOpts, opts...)
+	return g.NewRunnerWithOptions(cp, runOpts)
+}
+
+func assertEnqueuedHandoffSnapshot[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	threadID string,
+) {
+	t.Helper()
+	snap, _, loadErr := cp.Load(context.Background(), threadID)
+	if loadErr != nil {
+		t.Fatalf("load snapshot after recovery: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued handoff status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if !snap.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected HandoffPendingAt cleared on enqueued snapshot, got %v", snap.RunMeta.HandoffPendingAt)
+	}
+}
+
+func assertOrphanedHandoffSnapshot[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	threadID string,
+	res *RunResult[T, E],
+	directiveReason string,
+) {
+	t.Helper()
+	snap, _, loadErr := cp.Load(context.Background(), threadID)
+	if loadErr != nil {
+		t.Fatalf("load snapshot after enqueue fail: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected orphaned handoff status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if !snap.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatalf("expected HandoffPendingAt cleared on orphaned snapshot, got %v", snap.RunMeta.HandoffPendingAt)
+	}
+	if res != nil && directiveReason != "" {
+		wantReason := deriveHandoffTerminalReason(directiveReason, HandoffStatusOrphaned)
+		if res.Reason != wantReason {
+			t.Fatalf("reason %q != expected %q for orphaned handoff", res.Reason, wantReason)
+		}
+	}
+}
+
+// handoffPatchFailCP fails Save when snapshot carries the configured HandoffStatus.
+type handoffPatchFailCP[T, E any] struct {
+	*memoryCP[T, E]
+
+	failOnStatus   HandoffStatus
+	failOnStatuses map[HandoffStatus]struct{}
+}
+
+func (c *handoffPatchFailCP[T, E]) ensureMemoryCP() {
+	if c.memoryCP == nil {
+		c.memoryCP = newMemoryCP[T, E]()
+	}
+}
+
+func (c *handoffPatchFailCP[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	if c.failOnStatus != "" && snapshot.RunMeta.HandoffStatus == c.failOnStatus {
+		return 0, errors.New("handoff patch save failed")
+	}
+	if len(c.failOnStatuses) > 0 {
+		if _, ok := c.failOnStatuses[snapshot.RunMeta.HandoffStatus]; ok {
+			return 0, errors.New("handoff patch save failed")
+		}
+	}
+	c.ensureMemoryCP()
+	return c.memoryCP.Save(context.Background(), expectedRevision, snapshot)
+}
+
+func (c *handoffPatchFailCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], uint64, error) {
+	c.ensureMemoryCP()
+	return c.memoryCP.Load(ctx, threadID)
+}
+
+func (c *handoffPatchFailCP[T, E]) GetHistory(
+	ctx context.Context,
+	threadID string,
+	limit int,
+) ([]Snapshot[T, E], error) {
+	c.ensureMemoryCP()
+	return c.memoryCP.GetHistory(ctx, threadID, limit)
+}
+
+func (c *handoffPatchFailCP[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.Prune(ctx, threadID, retainCount)
+}
+
+func (c *handoffPatchFailCP[T, E]) Delete(ctx context.Context, threadID string) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.Delete(ctx, threadID)
+}
+
+func (c *handoffPatchFailCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	c.ensureMemoryCP()
+	return c.memoryCP.DeleteIfIdle(ctx, threadID)
+}
+
+func assertHandoffTokenRevisionContract[T, E any](
+	t *testing.T,
+	outbox *stubHandoffOutbox,
+	res *RunResult[T, E],
+	cp Checkpointer[T, E],
+	threadID string,
+) {
+	t.Helper()
+	snap, rev, err := cp.Load(context.Background(), threadID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil RunResult")
+	}
+	if res.ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, rev)
+	}
+	if len(outbox.calls) == 0 {
+		t.Fatal("expected outbox enqueue call")
+	}
+	token := outbox.calls[len(outbox.calls)-1]
+	if token.SnapshotRevision != rev-1 {
+		t.Fatalf("outbox token revision %d != pending revision %d", token.SnapshotRevision, rev-1)
+	}
+	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
+		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	}
+	_ = snap
+}
+
+func assertHandoffFailureTokenMatchesSnapshot[T, E any](
+	t *testing.T,
+	res *RunResult[T, E],
+	cp Checkpointer[T, E],
+	threadID string,
+) {
+	t.Helper()
+	snap, rev, err := cp.Load(context.Background(), threadID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res == nil || res.ResumeToken.ThreadID == "" {
+		t.Fatalf("expected populated ResumeToken, got %+v", res)
+	}
+	if res.ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, rev)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected orphaned handoff status, got %q", snap.RunMeta.HandoffStatus)
+	}
+}
+
+// transactionalMemoryCP implements TransactionalCheckpointer for unit tests (save → enqueue, like postgres).
+type transactionalMemoryCP[T, E any] struct {
+	*memoryCP[T, E]
+}
+
+func (t *transactionalMemoryCP[T, E]) ensureMemoryCP() {
+	if t.memoryCP == nil {
+		t.memoryCP = newMemoryCP[T, E]()
+	}
+}
+
+func (t *transactionalMemoryCP[T, E]) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+	enqueueFn func(context.Context) error,
+) (uint64, error) {
+	t.ensureMemoryCP()
+	pending := snapshot
+	pending.Revision = expectedRevision + 1
+	txToken := struct{}{}
+	txCtx := ContextWithOutboxTx(ctx, txToken)
+	if _, err := t.memoryCP.Save(txCtx, expectedRevision, pending); err != nil {
+		return 0, err
+	}
+	if enqueueFn != nil {
+		if err := enqueueFn(txCtx); err != nil {
+			_ = t.memoryCP.Delete(ctx, snapshot.ThreadID)
+			return 0, err
+		}
+	}
+	return pending.Revision, nil
+}
+
+func (t *transactionalMemoryCP[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	t.ensureMemoryCP()
+	return t.memoryCP.Save(ctx, expectedRevision, snapshot)
+}
+
+func (t *transactionalMemoryCP[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], uint64, error) {
+	t.ensureMemoryCP()
+	return t.memoryCP.Load(ctx, threadID)
+}
+
+func (t *transactionalMemoryCP[T, E]) GetHistory(
+	ctx context.Context,
+	threadID string,
+	limit int,
+) ([]Snapshot[T, E], error) {
+	t.ensureMemoryCP()
+	return t.memoryCP.GetHistory(ctx, threadID, limit)
+}
+
+func (t *transactionalMemoryCP[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
+	t.ensureMemoryCP()
+	return t.memoryCP.Prune(ctx, threadID, retainCount)
+}
+
+func (t *transactionalMemoryCP[T, E]) Delete(ctx context.Context, threadID string) error {
+	t.ensureMemoryCP()
+	return t.memoryCP.Delete(ctx, threadID)
+}
+
+func (t *transactionalMemoryCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
+	t.ensureMemoryCP()
+	return t.memoryCP.DeleteIfIdle(ctx, threadID)
+}
+
+func assertSegmentEndReason[T, E any](
+	t *testing.T,
+	snap Snapshot[T, E],
+	label string,
+	want SegmentEndReason,
+) {
+	t.Helper()
+	if snap.RunMeta.Segment.EndReason != want {
+		t.Fatalf("%s: segment end=%q want %q", label, snap.RunMeta.Segment.EndReason, want)
+	}
+}
+
+func assertHandoffReasonMatchesStatus[T, E any](
+	t *testing.T,
+	res *RunResult[T, E],
+	cp Checkpointer[T, E],
+	threadID string,
+	directiveReason string,
+) {
+	t.Helper()
+	snap, _, err := cp.Load(context.Background(), threadID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil RunResult")
+	}
+	wantReason := deriveHandoffTerminalReason(directiveReason, snap.RunMeta.HandoffStatus)
+	if res.Reason != wantReason {
+		t.Fatalf("reason %q != expected %q for handoff_status %q", res.Reason, wantReason, snap.RunMeta.HandoffStatus)
+	}
+}
+
+func assertRunMetaHandoffStatusMatchesSnapshot[T, E any](
+	t *testing.T,
+	res *RunResult[T, E],
+	cp Checkpointer[T, E],
+	threadID string,
+) {
+	t.Helper()
+	snap, _, err := cp.Load(context.Background(), threadID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if res == nil {
+		t.Fatal("expected non-nil RunResult")
+	}
+	if res.RunMeta.HandoffStatus != snap.RunMeta.HandoffStatus {
+		t.Fatalf("result handoff status %q != snapshot %q", res.RunMeta.HandoffStatus, snap.RunMeta.HandoffStatus)
+	}
+	if !res.RunMeta.HandoffPendingAt.Equal(snap.RunMeta.HandoffPendingAt) {
+		t.Fatalf(
+			"result HandoffPendingAt %v != snapshot %v",
+			res.RunMeta.HandoffPendingAt,
+			snap.RunMeta.HandoffPendingAt,
+		)
+	}
+}
+
+func resumeAfterOCCConflict[T, E any](
+	t *testing.T,
+	runner Runner[T, E],
+	cp Checkpointer[T, E],
+	staleToken ResumeToken,
+) (*RunResult[T, E], error) {
+	t.Helper()
+	_, err := runner.Resume(context.Background(), staleToken)
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict on stale token, got %v", err)
+	}
+	snap, rev, loadErr := cp.Load(context.Background(), staleToken.ThreadID)
+	if loadErr != nil {
+		t.Fatalf("reload: %v", loadErr)
+	}
+	freshToken := ResumeToken{ThreadID: snap.ThreadID, SnapshotRevision: rev}
+	return runner.Resume(context.Background(), freshToken)
 }

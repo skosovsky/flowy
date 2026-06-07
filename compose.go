@@ -8,7 +8,7 @@ import (
 // SubgraphSlot embeds a subgraph execution cursor in parent persisted state.
 type SubgraphSlot[Sub, E any] struct {
 	ExecutionPointer ExecutionPointer
-	Revision         int
+	Revision         uint64
 	State            Sub
 	RunMeta          RunMetadata
 	Effects          []E
@@ -17,7 +17,7 @@ type SubgraphSlot[Sub, E any] struct {
 // SubgraphNode runs a subgraph with state mapped from parent to sub and back.
 // For suspend/handoff resume at the inner node, use SubgraphNodeWithSlot.
 // Nested subgraph runners do not inherit parent RunOptions (WithBindings, WithRunMetadata,
-// WithRunLease, WithStateOverlay, WithSuspendPointerResolver, WithHandoffScheduler,
+// WithRunLease, WithStateOverlay, WithSuspendPointerResolver, WithHandoffOutbox,
 // WithCheckpointErrorPolicy). Parent ctx values and BindingFromContext still apply in subgraph nodes.
 func SubgraphNode[Parent, Sub, E any](
 	sub *Graph[Sub, E],
@@ -49,19 +49,21 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		var err error
 		if slot, ok := loadSlot(parentState); ok && slot.ExecutionPointer != "" {
 			// Slot seed uses direct Save (not persistSnapshot); parent RunOptions do not apply.
-			if seedErr := cp.Save(ctx, Snapshot[Sub, E]{
+			// Ephemeral inner CP is always empty: first write expects revision 0.
+			newRev, seedErr := cp.Save(ctx, 0, Snapshot[Sub, E]{
 				ThreadID:         threadID,
 				ExecutionPointer: slot.ExecutionPointer,
-				Revision:         slot.Revision,
+				Revision:         0,
 				State:            slot.State,
 				RunMeta:          slot.RunMeta,
 				Effects:          append([]E(nil), slot.Effects...),
-			}); seedErr != nil {
+			})
+			if seedErr != nil {
 				return parentState, Fail("subgraph seed"), seedErr
 			}
 			result, err = sub.NewRunner(cp).Resume(ctx, ResumeToken{
 				ThreadID:         threadID,
-				SnapshotRevision: slot.Revision,
+				SnapshotRevision: newRev,
 			})
 		} else {
 			subState := mapIn(parentState)
@@ -73,7 +75,7 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 
 		parentState = mapOut(parentState, result.State)
 		if result.Status == RunStatusSuspended || result.Status == RunStatusHandoff {
-			snap, loadErr := cp.Load(ctx, threadID)
+			snap, _, loadErr := cp.Load(ctx, threadID)
 			if loadErr != nil {
 				return parentState, Fail("subgraph slot"), loadErr
 			}

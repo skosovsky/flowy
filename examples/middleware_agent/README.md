@@ -31,7 +31,12 @@ go run main.go
 import flowyotel "github.com/skosovsky/flowy/ext/otel"
 
 flowyotel.InstallTelemetryBridge()
+if err := flowyotel.InstallLifecycleObserver(); err != nil {
+	log.Fatal(err)
+}
 graph, _ := flowy.NewGraph[State, flowy.NoEffect](reducer).
 	Use(flowyotel.TracingMiddleware[State, flowy.NoEffect](tracer)).
 	Compile()
 ```
+
+`InstallLifecycleObserver` регистрирует counters `flowy.handoff_enqueued_total`, `flowy.resume_rejected_total`, `flowy.checkpoint_soft_error_total` (атрибуты `thread_id`, `node`, `status`/`reason`).

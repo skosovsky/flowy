@@ -62,7 +62,7 @@ func TestAsNodeSuspendNotResumable(t *testing.T) {
 		t.Fatalf("AsNode inner suspend is not resumable; inline graph restarts, got %s", second.Status)
 	}
 }
-func TestSubgraphDoesNotInheritHandoffScheduler(t *testing.T) {
+func TestSubgraphDoesNotInheritHandoffOutbox(t *testing.T) {
 	t.Parallel()
 
 	type childState struct{}
@@ -70,7 +70,7 @@ func TestSubgraphDoesNotInheritHandoffScheduler(t *testing.T) {
 		Slot SubgraphSlot[childState, NoEffect]
 	}
 
-	scheduler := &stubHandoffScheduler{}
+	outbox := &stubHandoffOutbox{}
 	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
 	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
 		return s, Handoff("inner-bg"), nil
@@ -103,9 +103,10 @@ func TestSubgraphDoesNotInheritHandoffScheduler(t *testing.T) {
 		t.Fatalf("compile parent: %v", err)
 	}
 
-	res, err := parentGraph.NewRunner(newMemoryCP[parentState, NoEffect]()).
-		Start(context.Background(), "sub-scheduler-th", parentState{},
-			WithHandoffScheduler[parentState, NoEffect](scheduler),
+	cp := newMemoryCP[parentState, NoEffect]()
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-outbox-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
 		)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -113,14 +114,479 @@ func TestSubgraphDoesNotInheritHandoffScheduler(t *testing.T) {
 	if res.Status != RunStatusHandoff {
 		t.Fatalf("expected parent handoff from inner handoff, got %s", res.Status)
 	}
-	if len(scheduler.calls) != 1 {
-		t.Fatalf("scheduler must run once at parent handoff, not on inner runner, calls=%d", len(scheduler.calls))
+	if len(outbox.calls) != 1 {
+		t.Fatalf("outbox must run once at parent handoff, not on inner runner, calls=%d", len(outbox.calls))
 	}
-	if scheduler.calls[0].ThreadID != "sub-scheduler-th" {
-		t.Fatalf("expected parent thread in scheduler token, got %+v", scheduler.calls[0])
+	if outbox.calls[0].ThreadID != "sub-outbox-th" {
+		t.Fatalf("expected parent thread in outbox token, got %+v", outbox.calls[0])
+	}
+	snap, _, loadErr := cp.Load(context.Background(), "sub-outbox-th")
+	if loadErr != nil {
+		t.Fatalf("load parent snapshot: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued handoff status on parent snap, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertHandoffTokenRevisionContract(t, outbox, res, cp, "sub-outbox-th")
+}
+
+func TestSubgraphHandoffEnqueueFailureOrphansParentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{}
+	type parentState struct {
+		Slot SubgraphSlot[childState, NoEffect]
+	}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		return s, Handoff("inner-bg"), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("work")
+	subBuilder.SetEntryPoint("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	loadSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
+		return p.Slot, p.Slot.ExecutionPointer != ""
+	}
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(_ parentState) childState { return childState{} },
+		loadSlot,
+		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			p.Slot = slot
+			return p
+		},
+		func(p parentState, _ childState) parentState { return p },
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	cp := newMemoryCP[parentState, NoEffect]()
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-enqueue-fail-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
+		)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", err)
+	}
+	if res == nil || res.Status != RunStatusHandoff {
+		t.Fatalf("expected RunStatusHandoff, got %+v", res)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "sub-enqueue-fail-th", res, "inner-bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-enqueue-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "sub-enqueue-fail-th", "inner-bg")
+}
+
+func TestSubgraphHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{}
+	type parentState struct {
+		Slot SubgraphSlot[childState, NoEffect]
+	}
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &handoffPatchFailCP[parentState, NoEffect]{failOnStatus: HandoffStatusOrphaned}
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		return s, Handoff("inner-bg"), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("work")
+	subBuilder.SetEntryPoint("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	loadSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
+		return p.Slot, p.Slot.ExecutionPointer != ""
+	}
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(_ parentState) childState { return childState{} },
+		loadSlot,
+		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			p.Slot = slot
+			return p
+		},
+		func(p parentState, _ childState) parentState { return p },
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-patch-orphan-fail-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
+		)
+	if !errors.Is(err, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", err)
+	}
+	snap, _, loadErr := cp.Load(context.Background(), "sub-patch-orphan-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+		t.Fatalf("expected pending when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-patch-orphan-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "sub-patch-orphan-fail-th", "inner-bg")
+}
+
+func TestSubgraphHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{}
+	type parentState struct {
+		Slot SubgraphSlot[childState, NoEffect]
+	}
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[parentState, NoEffect]{failOnStatus: HandoffStatusEnqueued}
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		return s, Handoff("inner-bg"), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("work")
+	subBuilder.SetEntryPoint("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	loadSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
+		return p.Slot, p.Slot.ExecutionPointer != ""
+	}
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(_ parentState) childState { return childState{} },
+		loadSlot,
+		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			p.Slot = slot
+			return p
+		},
+		func(p parentState, _ childState) parentState { return p },
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-patch-enqueued-fail-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
+		)
+	if err == nil {
+		t.Fatalf("expected patch failure, got %+v", res)
+	}
+	if !errors.Is(err, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "sub-patch-enqueued-fail-th", res, "inner-bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-patch-enqueued-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "sub-patch-enqueued-fail-th", "inner-bg")
+}
+
+func TestSubgraphHandoffEnqueueOkBothPatchesFail(t *testing.T) {
+	t.Parallel()
+
+	type childState struct{}
+	type parentState struct {
+		Slot SubgraphSlot[childState, NoEffect]
+	}
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[parentState, NoEffect]{
+		failOnStatuses: map[HandoffStatus]struct{}{ //nolint:exhaustive // patch statuses only
+			HandoffStatusEnqueued: {},
+			HandoffStatusOrphaned: {},
+		},
+	}
+	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
+	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
+		return s, Handoff("inner-bg"), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("work")
+	subBuilder.SetEntryPoint("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+
+	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
+	loadSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
+		return p.Slot, p.Slot.ExecutionPointer != ""
+	}
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(_ parentState) childState { return childState{} },
+		loadSlot,
+		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
+			p.Slot = slot
+			return p
+		},
+		func(p parentState, _ childState) parentState { return p },
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+
+	res, err := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-both-patch-fail-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
+		)
+	if err == nil {
+		t.Fatalf("expected patch failure, got %+v", res)
+	}
+	if !errors.Is(err, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
+	}
+	snap, _, loadErr := cp.Load(context.Background(), "sub-both-patch-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+		t.Fatalf("expected pending when both patches fail, got %q", snap.RunMeta.HandoffStatus)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-both-patch-fail-th")
+	assertHandoffReasonMatchesStatus(t, res, cp, "sub-both-patch-fail-th", "inner-bg")
+}
+
+type subHandoffChildState struct{}
+type subHandoffParentState struct {
+	Slot SubgraphSlot[subHandoffChildState, NoEffect]
+}
+
+func subHandoffParentGraph(
+	t *testing.T,
+	cp Checkpointer[subHandoffParentState, NoEffect],
+	outbox *stubHandoffOutbox,
+) *Graph[subHandoffParentState, NoEffect] {
+	t.Helper()
+	subBuilder := NewGraph[subHandoffChildState, NoEffect](
+		func(_ subHandoffChildState, u subHandoffChildState) subHandoffChildState { return u },
+	)
+	subBuilder.AddNode("work", func(_ context.Context, s subHandoffChildState) (
+		subHandoffChildState, Directive, error,
+	) {
+		return s, Handoff("inner-bg"), nil
+	})
+	subBuilder.AllowNoOutgoingRoute("work")
+	subBuilder.SetEntryPoint("work")
+	sub, err := subBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile subgraph: %v", err)
+	}
+	parentBuilder := NewGraph[subHandoffParentState, NoEffect](
+		func(_ subHandoffParentState, u subHandoffParentState) subHandoffParentState { return u },
+	)
+	loadSlot := func(p subHandoffParentState) (SubgraphSlot[subHandoffChildState, NoEffect], bool) {
+		return p.Slot, p.Slot.ExecutionPointer != ""
+	}
+	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+		sub,
+		func(_ subHandoffParentState) subHandoffChildState { return subHandoffChildState{} },
+		loadSlot,
+		func(p subHandoffParentState, slot SubgraphSlot[subHandoffChildState, NoEffect]) subHandoffParentState {
+			p.Slot = slot
+			return p
+		},
+		func(p subHandoffParentState, _ subHandoffChildState) subHandoffParentState { return p },
+	))
+	parentBuilder.SetEntryPoint("sub")
+	parentBuilder.AllowNoOutgoingRoute("sub")
+	parentGraph, err := parentBuilder.Compile()
+	if err != nil {
+		t.Fatalf("compile parent: %v", err)
+	}
+	_ = cp
+	_ = outbox
+	return parentGraph
+}
+
+func TestSubgraphStreamHandoffEnqueueFail(t *testing.T) {
+	t.Parallel()
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := newMemoryCP[subHandoffParentState, NoEffect]()
+	parentGraph := subHandoffParentGraph(t, cp, outbox)
+
+	handle, err := parentGraph.NewRunner(cp).
+		Stream(context.Background(), "sub-stream-enqueue-fail-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if !errors.Is(waitErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", waitErr)
+	}
+	syncRes, syncErr := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-stream-enqueue-sync-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if !errors.Is(syncErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected sync ErrHandoffEnqueueFailed, got %v", syncErr)
+	}
+	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+	assertOrphanedHandoffSnapshot(t, cp, "sub-stream-enqueue-fail-th", syncRes, "inner-bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "sub-stream-enqueue-sync-th")
+}
+
+func TestSubgraphStreamHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
+	t.Parallel()
+
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &handoffPatchFailCP[subHandoffParentState, NoEffect]{failOnStatus: HandoffStatusOrphaned}
+	parentGraph := subHandoffParentGraph(t, cp, outbox)
+
+	handle, err := parentGraph.NewRunner(cp).
+		Stream(context.Background(), "sub-stream-patch-orphan-fail-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if !errors.Is(waitErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", waitErr)
+	}
+	syncRes, syncErr := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-stream-patch-orphan-sync-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if !errors.Is(syncErr, ErrHandoffEnqueueFailed) {
+		t.Fatalf("expected sync ErrHandoffEnqueueFailed, got %v", syncErr)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "sub-stream-patch-orphan-sync-th")
+	assertHandoffReasonMatchesStatus(t, syncRes, cp, "sub-stream-patch-orphan-sync-th", "inner-bg")
+	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+}
+
+func TestSubgraphStreamHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
+	t.Parallel()
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[subHandoffParentState, NoEffect]{failOnStatus: HandoffStatusEnqueued}
+	parentGraph := subHandoffParentGraph(t, cp, outbox)
+
+	handle, err := parentGraph.NewRunner(cp).
+		Stream(context.Background(), "sub-stream-patch-enqueued-fail-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if waitErr == nil {
+		t.Fatal("expected patch failure from Wait")
+	}
+	if !errors.Is(waitErr, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed from Wait, got %v", waitErr)
+	}
+	syncRes, syncErr := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-stream-patch-enqueued-sync-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if syncErr == nil {
+		t.Fatalf("expected sync patch failure, got %+v", syncRes)
+	}
+	assertOrphanedHandoffSnapshot(t, cp, "sub-stream-patch-enqueued-fail-th", syncRes, "inner-bg")
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "sub-stream-patch-enqueued-sync-th")
+	assertHandoffReasonMatchesStatus(t, syncRes, cp, "sub-stream-patch-enqueued-sync-th", "inner-bg")
+	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+}
+
+func TestSubgraphStreamHandoffEnqueueOkBothPatchesFail(t *testing.T) {
+	t.Parallel()
+
+	outbox := &stubHandoffOutbox{}
+	cp := &handoffPatchFailCP[subHandoffParentState, NoEffect]{
+		failOnStatuses: map[HandoffStatus]struct{}{ //nolint:exhaustive // patch statuses only
+			HandoffStatusEnqueued: {},
+			HandoffStatusOrphaned: {},
+		},
+	}
+	parentGraph := subHandoffParentGraph(t, cp, outbox)
+
+	handle, err := parentGraph.NewRunner(cp).
+		Stream(context.Background(), "sub-stream-both-patch-fail-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	events, waitErr := CollectEventsAndWait(context.Background(), handle)
+	if waitErr == nil {
+		t.Fatal("expected patch failure from Wait")
+	}
+	if !errors.Is(waitErr, ErrHandoffPatchFailed) {
+		t.Fatalf("expected ErrHandoffPatchFailed from Wait, got %v", waitErr)
+	}
+	syncRes, syncErr := parentGraph.NewRunner(cp).
+		Start(context.Background(), "sub-stream-both-patch-sync-th", subHandoffParentState{},
+			WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+		)
+	if syncErr == nil {
+		t.Fatalf("expected sync patch failure, got %+v", syncRes)
+	}
+	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "sub-stream-both-patch-sync-th")
+	assertHandoffReasonMatchesStatus(t, syncRes, cp, "sub-stream-both-patch-sync-th", "inner-bg")
+	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
+}
+
+func TestSubgraphTransactionalHandoffSuccess(t *testing.T) {
+	t.Parallel()
+
+	outbox := &stubHandoffOutbox{}
+	cp := &transactionalMemoryCP[subHandoffParentState, NoEffect]{
+		memoryCP: newMemoryCP[subHandoffParentState, NoEffect](),
+	}
+	parentGraph := subHandoffParentGraph(t, cp, outbox)
+
+	res, err := parentGraph.NewRunner(cp).Start(context.Background(), "sub-tx-handoff-ok-th", subHandoffParentState{},
+		WithHandoffOutbox[subHandoffParentState, NoEffect](outbox),
+	)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	if res.Status != RunStatusHandoff {
+		t.Fatalf("expected handoff, got %s", res.Status)
+	}
+	snap, rev, loadErr := cp.Load(context.Background(), "sub-tx-handoff-ok-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if len(outbox.calls) != 1 || outbox.calls[0].SnapshotRevision != rev {
+		t.Fatalf("unexpected outbox calls: %+v rev=%d", outbox.calls, rev)
 	}
 }
-func TestSubgraphInnerHandoffParentSchedulerRunsAtParentLevel(t *testing.T) {
+
+func TestSubgraphInnerHandoffParentOutboxRunsAtParentLevel(t *testing.T) {
 	t.Parallel()
 
 	type childState struct{ Done bool }
@@ -129,7 +595,7 @@ func TestSubgraphInnerHandoffParentSchedulerRunsAtParentLevel(t *testing.T) {
 		Slot  SubgraphSlot[childState, NoEffect]
 	}
 
-	scheduler := &stubHandoffScheduler{}
+	outbox := &stubHandoffOutbox{}
 	subBuilder := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
 	subBuilder.AddNode("work", func(_ context.Context, s childState) (childState, Directive, error) {
 		s.Done = true
@@ -172,8 +638,8 @@ func TestSubgraphInnerHandoffParentSchedulerRunsAtParentLevel(t *testing.T) {
 
 	cp := newMemoryCP[parentState, NoEffect]()
 	res, err := parentGraph.NewRunner(cp).
-		Start(context.Background(), "parent-sched-th", parentState{},
-			WithHandoffScheduler[parentState, NoEffect](scheduler),
+		Start(context.Background(), "parent-outbox-th", parentState{},
+			WithHandoffOutbox[parentState, NoEffect](outbox),
 		)
 	if err != nil {
 		t.Fatalf("start: %v", err)
@@ -184,26 +650,28 @@ func TestSubgraphInnerHandoffParentSchedulerRunsAtParentLevel(t *testing.T) {
 	if res.Reason != "parent-bg" {
 		t.Fatalf("expected parent handoff reason, got %q", res.Reason)
 	}
-	if len(scheduler.calls) != 1 {
-		t.Fatalf("expected single parent-level scheduler call, got %d", len(scheduler.calls))
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected single parent-level outbox call, got %d", len(outbox.calls))
 	}
-	token := scheduler.calls[0]
-	if token.ThreadID != "parent-sched-th" {
+	token := outbox.calls[0]
+	if token.ThreadID != "parent-outbox-th" {
 		t.Fatalf("expected parent thread token, got %+v", token)
 	}
-	if token.SnapshotRevision != res.ResumeToken.SnapshotRevision {
-		t.Fatalf(
-			"scheduler snapshot revision %d != result token %d",
-			token.SnapshotRevision,
-			res.ResumeToken.SnapshotRevision,
-		)
-	}
-	snap, err := cp.Load(context.Background(), "parent-sched-th")
+	snap, _, err := cp.Load(context.Background(), "parent-outbox-th")
 	if err != nil {
 		t.Fatalf("load parent snapshot: %v", err)
 	}
-	if token.SnapshotRevision != snap.Revision {
-		t.Fatalf("scheduler snapshot revision %d != snapshot revision %d", token.SnapshotRevision, snap.Revision)
+	if res.ResumeToken.SnapshotRevision != snap.Revision {
+		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
+	}
+	if token.SnapshotRevision != snap.Revision-1 {
+		t.Fatalf("outbox snapshot revision %d != pending revision %d", token.SnapshotRevision, snap.Revision-1)
+	}
+	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
+		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued handoff status on parent snap, got %q", snap.RunMeta.HandoffStatus)
 	}
 }
 func TestAsNodeStartErrorReturnsFailDirective(t *testing.T) {
@@ -488,7 +956,7 @@ func TestSubgraphDoesNotInheritSuspendPointerResolverOnInnerHandoff(t *testing.T
 	if len(resolverCalls) != 1 {
 		t.Fatalf("expected single parent resolver call, got %d calls %v", len(resolverCalls), resolverCalls)
 	}
-	snap, err := cp.Load(context.Background(), "sub-handoff-resolver-th")
+	snap, _, err := cp.Load(context.Background(), "sub-handoff-resolver-th")
 	if err != nil {
 		t.Fatalf("load parent snapshot: %v", err)
 	}
@@ -565,7 +1033,7 @@ func TestSubgraphDoesNotInheritSuspendPointerResolver(t *testing.T) {
 		t.Fatal("expected parent resolver call on parent suspend save path")
 	}
 
-	snap, err := cp.Load(context.Background(), "sub-resolver-th")
+	snap, _, err := cp.Load(context.Background(), "sub-resolver-th")
 	if err != nil {
 		t.Fatalf("load parent snapshot: %v", err)
 	}
@@ -692,8 +1160,8 @@ func TestSubgraphStaleInnerSlotRevisionRejected(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected stale inner resume token, got res=%+v", first)
 	}
-	if !strings.Contains(err.Error(), "stale resume token") {
-		t.Fatalf("expected ErrStaleResumeToken, got %v", err)
+	if !errors.Is(err, ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict on stale inner revision, got %v", err)
 	}
 }
 func TestSubgraphInnerContextCanceledMapsToCompleted(t *testing.T) {

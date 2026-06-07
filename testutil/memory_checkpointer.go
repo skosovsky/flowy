@@ -9,9 +9,9 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-// MemoryCheckpointer is a thread-safe in-memory implementation of flowy.Checkpointer.
+// MemoryCheckpointer is a thread-safe in-memory implementation of flowy.Checkpointer with OCC.
 type MemoryCheckpointer[T, E any] struct {
-	mu      sync.RWMutex
+	mu      sync.Mutex
 	history map[string][]flowy.Snapshot[T, E]
 }
 
@@ -21,22 +21,38 @@ func NewMemoryCheckpointer[T, E any]() *MemoryCheckpointer[T, E] {
 	}
 }
 
-func (m *MemoryCheckpointer[T, E]) Save(_ context.Context, snapshot flowy.Snapshot[T, E]) error {
+func (m *MemoryCheckpointer[T, E]) Save(
+	_ context.Context,
+	expectedRevision uint64,
+	snapshot flowy.Snapshot[T, E],
+) (uint64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	items := m.history[snapshot.ThreadID]
+	var current uint64
+	if len(items) > 0 {
+		current = items[len(items)-1].Revision
+	}
+	if current != expectedRevision {
+		return 0, flowy.ErrConcurrencyConflict
+	}
+	newRevision := expectedRevision + 1
 	copied := copySnapshot(snapshot)
-	m.history[snapshot.ThreadID] = append(m.history[snapshot.ThreadID], copied)
-	return nil
+	copied.Revision = newRevision
+	m.history[snapshot.ThreadID] = append(items, copied)
+	return newRevision, nil
 }
 
-func (m *MemoryCheckpointer[T, E]) Load(_ context.Context, threadID string) (flowy.Snapshot[T, E], error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+func (m *MemoryCheckpointer[T, E]) Load(_ context.Context, threadID string) (flowy.Snapshot[T, E], uint64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	items := m.history[threadID]
 	if len(items) == 0 {
-		return flowy.Snapshot[T, E]{}, flowy.ErrThreadNotFound
+		return flowy.Snapshot[T, E]{}, 0, flowy.ErrThreadNotFound
 	}
-	return copySnapshot(items[len(items)-1]), nil
+	latest := copySnapshot(items[len(items)-1])
+	return latest, latest.Revision, nil
 }
 
 func (m *MemoryCheckpointer[T, E]) GetHistory(
@@ -44,8 +60,8 @@ func (m *MemoryCheckpointer[T, E]) GetHistory(
 	threadID string,
 	limit int,
 ) ([]flowy.Snapshot[T, E], error) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	items := m.history[threadID]
 	if len(items) == 0 {
 		return []flowy.Snapshot[T, E]{}, nil

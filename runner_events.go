@@ -8,7 +8,7 @@ import (
 const (
 	streamEventBufferSize    = 32
 	contextCancelSaveTimeout = 5 * time.Second
-	handoffScheduleTimeout   = 5 * time.Second
+	handoffEnqueueTimeout    = 5 * time.Second
 	terminalEventEmitTimeout = 250 * time.Millisecond
 	defaultLeaseTTL          = 30 * time.Second
 	leaseHeartbeatDivisor    = 3

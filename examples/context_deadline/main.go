@@ -53,7 +53,7 @@ func run() error {
 		return fmt.Errorf("unexpected cancel status: %s %q", result.Status, result.Reason)
 	}
 
-	snap, loadErr := cp.Load(context.Background(), threadID)
+	snap, _, loadErr := cp.Load(context.Background(), threadID)
 	if loadErr != nil {
 		return loadErr
 	}

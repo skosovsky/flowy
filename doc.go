@@ -13,8 +13,8 @@
 //
 // Resume pipeline (prepareResume order):
 //  1. ResumeToken validation (ThreadID required)
-//  2. Checkpointer.Load → OCC: token.SnapshotRevision == snapshot.Revision (stale-token guard only;
-//     use WithRunLease for exclusive resume against parallel workers)
+//  2. Checkpointer.Load → OCC: token.SnapshotRevision == snapshot.Revision; mismatch or zero revision
+//     returns ErrConcurrencyConflict (use WithRunLease for exclusive resume against parallel workers)
 //  3. StateInterceptor.AfterLoad (optional)
 //  4. WithStateOverlay (optional)
 //  5. resetSegmentCounters (StepCount/Segment; BudgetCounts preserved)
@@ -24,7 +24,19 @@
 //  9. execute from active (post-reconcile) ExecutionPointer
 //
 // Suspend/Handoff save path: WithSuspendPointerResolver normalizes ExecutionPointer before Save.
-// Handoff Outbox: WithHandoffScheduler schedules ResumeToken after save (snapshot retained on schedule error).
+// Handoff Outbox: WithHandoffOutbox runs a 3-phase FSM — Save(pending) → EnqueueIntent(pending rev)
+// → patch enqueued/orphaned. EnqueueIntent uses the pending snapshot revision; RunResult.ResumeToken
+// uses the post-patch revision. Workers should Load before Resume when consuming outbox messages.
+// When the checkpointer implements TransactionalCheckpointer (postgres), handoff uses SaveWithOutbox:
+// one TX for checkpoint + EnqueueIntent (tx available via ContextWithOutboxTx / postgres.PgxTxFromContext).
+// Otherwise the 3-phase FSM applies (Save pending → EnqueueIntent → patch enqueued/orphaned).
+// RecoverStaleHandoff re-enqueues orphaned or stale-pending checkpoints; use WithRecoverForceReenqueue
+// to reconcile false-enqueued rows. Returns ErrHandoffPending for fresh pending, ErrHandoffAlreadyEnqueued
+// when already enqueued, ErrHandoffNotRecoverable for HandoffStatusNone or unknown status,
+// and ErrHandoffOutboxRequired when recovery is invoked without an outbox.
+// Recovery cron should be single-leader or use WithRunLease.
+// Checkpointer Save/Load use strict OCC (expectedRevision uint64); ErrConcurrencyConflict on conflict.
+// LifecycleObserver (SetLifecycleObserver) receives handoff/resume/checkpoint-soft events; see ext/otel.
 // Soft checkpoint: WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError) emits EventCheckpointFailed on
 // Stream/ResumeStream without aborting terminal flow; sync Start/Resume have no event sink.
 // ResumeToken is set only after a persisted Suspend/Handoff terminal save. When skip-on-save-error
@@ -35,12 +47,14 @@
 // [ErrNoActiveExecution] because the run already terminated.
 // StreamHandle.Wait: RequestStop after persisted cancel save returns nil; RequestStop with
 // skip-on-save-error policy returns ErrCheckpointSkipped; parent context cancel returns
-// [context.Canceled]; retention or schedule failures return their respective errors.
+// [context.Canceled]; retention or enqueue failures return their respective errors.
 // Post-save retention (Prune) runs in-loop on suspend/handoff/cancel only when the terminal
 // checkpoint was persisted. Retention failure returns terminal success status with a wrapped
 // error and reason suffix *_retention_failed (checkpoint already persisted). Stream terminal events use the same
 // reason as RunResult (event.Reason == result.Reason on terminal fail, retention failure, and EventFailed).
-// Handoff schedule failure may combine ErrHandoffScheduleFailed with retention error via [errors.Join].
+// Handoff enqueue failure sets ReasonHandoffOrphaned on RunResult/EventHandoff only when the
+// compensating patch persisted HandoffStatusOrphaned; otherwise the directive reason is kept.
+// ErrHandoffEnqueueFailed may combine with retention error via [errors.Join].
 // Cancel save HardFail uses reason context_canceled_save_failed (EventContextCanceled, not EventFailed).
 // Handoff/suspend save HardFail uses ReasonHandoffSaveFailed / ReasonSuspendSaveFailed on RunResult and EventFailed.
 // ErrThreadAlreadyRunning is returned when Start/Stream/ResumeStream/Resume targets a threadID with an active in-process session (without lease). ErrThreadLeaseBusy is lease-layer only.
@@ -50,7 +64,9 @@
 // Completed/Failed only logs a warning (does not change RunResult).
 //
 // ResumeTokenFromSnapshot builds a ResumeToken from a loaded snapshot (SnapshotRevision = Revision).
-// ErrStaleResumeToken, ErrInvalidResumeToken, ErrHandoffScheduleFailed, ErrThreadNotFound are
+// ErrConcurrencyConflict (stale or zero SnapshotRevision), ErrInvalidResumeToken,
+// ErrHandoffPending, ErrHandoffOrphaned, ErrHandoffEnqueueFailed, ErrHandoffPatchFailed,
+// ErrThreadNotFound are
 // returned from Resume/ResumeStream on validation failures.
 // ErrCheckpointSkipped is returned from StreamHandle.Wait when consumer RequestStop stops execution
 // with skip-on-save-error policy, and from RequestLocalHandoff when persist is skipped.

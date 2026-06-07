@@ -2,6 +2,7 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -12,6 +13,7 @@ type memoryState struct {
 	Value int
 }
 
+//nolint:gocognit // concurrent OCC retry loop is the test subject
 func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 	t.Parallel()
 	cp := NewMemoryCheckpointer[memoryState, int]()
@@ -22,21 +24,35 @@ func TestMemoryCheckpointerConcurrentAccess(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			if err := cp.Save(context.Background(), flowy.Snapshot[memoryState, int]{
-				ThreadID:         "thread-1",
-				Revision:         i,
-				ExecutionPointer: "node",
-				State:            memoryState{Value: i},
-				RunMeta:          flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
-				Effects:          []int{i},
-			}); err != nil {
-				t.Errorf("save %d: %v", i, err)
+			for {
+				_, rev, err := cp.Load(context.Background(), "thread-1")
+				if err != nil && !errors.Is(err, flowy.ErrThreadNotFound) {
+					t.Errorf("load: %v", err)
+					return
+				}
+				if errors.Is(err, flowy.ErrThreadNotFound) {
+					rev = 0
+				}
+				_, err = cp.Save(context.Background(), rev, flowy.Snapshot[memoryState, int]{
+					ThreadID:         "thread-1",
+					ExecutionPointer: "node",
+					State:            memoryState{Value: i},
+					RunMeta:          flowy.RunMetadata{RetryCounts: map[string]int{"node": i}},
+					Effects:          []int{i},
+				})
+				if errors.Is(err, flowy.ErrConcurrencyConflict) {
+					continue
+				}
+				if err != nil {
+					t.Errorf("save %d: %v", i, err)
+				}
+				return
 			}
 		}(i)
 	}
 	wg.Wait()
 
-	latest, err := cp.Load(context.Background(), "thread-1")
+	latest, _, err := cp.Load(context.Background(), "thread-1")
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -57,9 +73,8 @@ func TestMemoryCheckpointerPruneRetainsLatestN(t *testing.T) {
 	t.Parallel()
 	cp := NewMemoryCheckpointer[memoryState, flowy.NoEffect]()
 	for i := 1; i <= 4; i++ {
-		if err := cp.Save(context.Background(), flowy.Snapshot[memoryState, flowy.NoEffect]{
+		if _, err := cp.Save(context.Background(), uint64(i-1), flowy.Snapshot[memoryState, flowy.NoEffect]{
 			ThreadID:         "thread-2",
-			Revision:         i,
 			ExecutionPointer: "node",
 			State:            memoryState{Value: i},
 		}); err != nil {

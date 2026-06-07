@@ -21,11 +21,15 @@ func NewLeaseGuardCheckpointer[T, E any](
 
 func (*leaseGuardCheckpointer[T, E]) isLeaseGuardCheckpointer() {}
 
-func (c *leaseGuardCheckpointer[T, E]) Save(ctx context.Context, snapshot Snapshot[T, E]) error {
-	return c.inner.Save(ctx, snapshot)
+func (c *leaseGuardCheckpointer[T, E]) Save(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+) (uint64, error) {
+	return c.inner.Save(ctx, expectedRevision, snapshot)
 }
 
-func (c *leaseGuardCheckpointer[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], error) {
+func (c *leaseGuardCheckpointer[T, E]) Load(ctx context.Context, threadID string) (Snapshot[T, E], uint64, error) {
 	return c.inner.Load(ctx, threadID)
 }
 
@@ -59,3 +63,23 @@ func (c *leaseGuardCheckpointer[T, E]) DeleteIfIdle(ctx context.Context, threadI
 	}
 	return c.inner.DeleteIfIdle(ctx, threadID)
 }
+
+func (c *leaseGuardCheckpointer[T, E]) transactionalCheckpointerInner() (TransactionalCheckpointer[T, E], bool) {
+	txCP, ok := c.inner.(TransactionalCheckpointer[T, E])
+	return txCP, ok
+}
+
+func (c *leaseGuardCheckpointer[T, E]) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+	enqueueFn func(context.Context) error,
+) (uint64, error) {
+	txCP, ok := c.transactionalCheckpointerInner()
+	if !ok {
+		return 0, ErrTransactionalOutboxUnsupported
+	}
+	return txCP.SaveWithOutbox(ctx, expectedRevision, snapshot, enqueueFn)
+}
+
+var _ TransactionalCheckpointer[any, any] = (*leaseGuardCheckpointer[any, any])(nil)

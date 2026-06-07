@@ -112,9 +112,11 @@ func TestTelemetryBridgeRoundTrip(t *testing.T) {
 
 type newCP[T, E any] struct{}
 
-func (newCP[T, E]) Save(context.Context, flowy.Snapshot[T, E]) error { return nil }
-func (newCP[T, E]) Load(context.Context, string) (flowy.Snapshot[T, E], error) {
-	return flowy.Snapshot[T, E]{}, flowy.ErrThreadNotFound
+func (newCP[T, E]) Save(_ context.Context, expectedRevision uint64, _ flowy.Snapshot[T, E]) (uint64, error) {
+	return expectedRevision + 1, nil
+}
+func (newCP[T, E]) Load(context.Context, string) (flowy.Snapshot[T, E], uint64, error) {
+	return flowy.Snapshot[T, E]{}, 0, flowy.ErrThreadNotFound
 }
 func (newCP[T, E]) GetHistory(context.Context, string, int) ([]flowy.Snapshot[T, E], error) {
 	return nil, nil

@@ -166,7 +166,7 @@ func AwaitStreamCollectWithSnapshot[T, E any](
 	if err != nil && len(result.Events) == 0 {
 		return result, err
 	}
-	snap, loadErr := cp.Load(ctx, threadID)
+	snap, _, loadErr := cp.Load(ctx, threadID)
 	if loadErr != nil {
 		return result, loadErr
 	}

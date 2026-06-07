@@ -27,7 +27,7 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	cp := NewCheckpointer[state, string](client, Options{Prefix: prefix, LeasePrefix: prefix}, checkpoint.JSONSerializer[state]{})
 	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: prefix})
 
-	if err := cp.Save(context.Background(), testSnapshot(1, "v1")); err != nil {
+	if _, err := cp.Save(context.Background(), 0, testSnapshot(1, "v1")); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	if err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
@@ -41,5 +41,20 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	}
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
 		t.Fatalf("delete after release: %v", err)
+	}
+}
+
+func TestOCCConcurrencyConflict(t *testing.T) {
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	if _, err := cp.Save(context.Background(), 0, testSnapshot(1, "v1")); err != nil {
+		t.Fatalf("initial save: %v", err)
+	}
+	_, err := cp.Save(context.Background(), 0, testSnapshot(2, "stale"))
+	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
+		t.Fatalf("expected ErrConcurrencyConflict, got %v", err)
 	}
 }
