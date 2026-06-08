@@ -9,7 +9,7 @@ INSERT INTO flowy_checkpoints (
 )
 SELECT
     @thread_id,
-    @expected_revision + 1,
+    (@expected_revision::int + 1),
     @node_id,
     @state_payload,
     @run_meta,
@@ -18,5 +18,5 @@ SELECT
 WHERE COALESCE(
     (SELECT MAX(revision) FROM flowy_checkpoints WHERE thread_id = @thread_id),
     0
-) = @expected_revision
+) = @expected_revision::int
 RETURNING revision;
