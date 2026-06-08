@@ -1461,8 +1461,9 @@ func TestResumeStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError(t *t
 			return len(pre) < 2
 		},
 	)
-	if waitErr != nil && !errors.Is(waitErr, ErrCheckpointSkipped) {
-		t.Fatalf("Wait: got %v want nil or ErrCheckpointSkipped", waitErr)
+	if waitErr != nil && !errors.Is(waitErr, ErrCheckpointSkipped) &&
+		!errors.Is(waitErr, context.Canceled) {
+		t.Fatalf("Wait: got %v want nil, ErrCheckpointSkipped, or context.Canceled", waitErr)
 	}
 	for _, ev := range pre {
 		if ev.Type == EventContextCanceled {

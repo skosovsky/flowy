@@ -60,10 +60,10 @@ func (s *streamHandle[T, E]) Events() <-chan RunEvent[T, E] {
 
 func (s *streamHandle[T, E]) RequestStop() {
 	s.once.Do(func() {
+		close(s.stop)
 		if s.onStop != nil {
 			s.onStop()
 		}
-		close(s.stop)
 	})
 }
 

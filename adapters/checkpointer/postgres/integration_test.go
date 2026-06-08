@@ -311,7 +311,7 @@ func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState
 	return pool, cp
 }
 
-func pgHandoffGraph(t *testing.T) flowy.Graph[runnerHandoffState, flowy.NoEffect] {
+func pgHandoffGraph(t *testing.T) *flowy.Graph[runnerHandoffState, flowy.NoEffect] {
 	t.Helper()
 	b := flowy.NewGraph[runnerHandoffState, flowy.NoEffect](func(s, u runnerHandoffState) runnerHandoffState { return u })
 	b.AddNode("work", func(_ context.Context, s runnerHandoffState) (runnerHandoffState, flowy.Directive, error) {
