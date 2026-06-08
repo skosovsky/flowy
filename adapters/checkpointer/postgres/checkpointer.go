@@ -142,9 +142,10 @@ func (c *Checkpointer[T, E]) GetHistory(
 
 func (c *Checkpointer[T, E]) Prune(ctx context.Context, threadID string, retainCount int) error {
 	if retainCount <= 0 {
-		_, err := c.db.Exec(ctx, "DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id", pgx.NamedArgs{
-			"thread_id": threadID,
-		})
+		_, err := c.db.Exec(ctx,
+			"DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id::varchar(255)",
+			pgx.NamedArgs{"thread_id": threadID},
+		)
 		return err
 	}
 	_, err := c.db.Exec(ctx, pruneSQL, pgx.NamedArgs{
@@ -156,9 +157,10 @@ func (c *Checkpointer[T, E]) Prune(ctx context.Context, threadID string, retainC
 
 // Delete removes checkpoints unconditionally. Prefer DeleteIfIdle for runner policies.
 func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error {
-	_, err := c.db.Exec(ctx, "DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id", pgx.NamedArgs{
-		"thread_id": threadID,
-	})
+	_, err := c.db.Exec(ctx,
+		"DELETE FROM flowy_checkpoints WHERE thread_id = @thread_id::varchar(255)",
+		pgx.NamedArgs{"thread_id": threadID},
+	)
 	return err
 }
 
@@ -169,8 +171,9 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 	}
 	if tag.RowsAffected() == 0 {
 		var held bool
-		row := c.db.QueryRow(ctx,
-			"SELECT EXISTS (SELECT 1 FROM flowy_leases WHERE thread_id = @thread_id AND expires_at > NOW())",
+		row := c.db.QueryRow(
+			ctx,
+			"SELECT EXISTS (SELECT 1 FROM flowy_leases WHERE thread_id = @thread_id::varchar(255) AND expires_at > NOW())",
 			pgx.NamedArgs{"thread_id": threadID},
 		)
 		if scanErr := row.Scan(&held); scanErr == nil && held {
