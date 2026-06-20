@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
@@ -115,7 +116,11 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	snap := testSnapshot(1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
-	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(context.Context) error {
+	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
+		context.Context,
+		flowy.TransactionHandle,
+		flowy.ResumeToken,
+	) error {
 		return errors.New("enqueue failed")
 	})
 	if err == nil {
@@ -151,15 +156,19 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	snap := testSnapshot(1, 42)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
 	var sawTx bool
-	rev, err := cp.SaveWithOutbox(ctx, 0, snap, func(enqueueCtx context.Context) error {
-		tx, ok := PgxTxFromContext(enqueueCtx)
+	rev, err := cp.SaveWithOutbox(ctx, 0, snap, func(
+		enqueueCtx context.Context,
+		txHandle flowy.TransactionHandle,
+		token flowy.ResumeToken,
+	) error {
+		tx, ok := PgxTxFromHandle(txHandle)
 		if !ok {
-			return errors.New("expected pgx.Tx in enqueue context")
+			return errors.New("expected pgx.Tx transaction handle")
 		}
 		sawTx = true
 		_, execErr := tx.Exec(enqueueCtx,
 			`INSERT INTO flowy_handoff_outbox (thread_id, snapshot_revision) VALUES ($1, $2)`,
-			"t1", uint64(1),
+			token.ThreadID, token.SnapshotRevision,
 		)
 		return execErr
 	})
@@ -217,7 +226,13 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	}
 	snap := testSnapshot(2, 2)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
-	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(context.Context) error { return nil })
+	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
+		context.Context,
+		flowy.TransactionHandle,
+		flowy.ResumeToken,
+	) error {
+		return nil
+	})
 	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
 		t.Fatalf("expected ErrConcurrencyConflict, got %v", err)
 	}
@@ -253,14 +268,18 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	snap := testSnapshot(1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
-	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(enqueueCtx context.Context) error {
-		tx, ok := PgxTxFromContext(enqueueCtx)
+	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
+		enqueueCtx context.Context,
+		txHandle flowy.TransactionHandle,
+		token flowy.ResumeToken,
+	) error {
+		tx, ok := PgxTxFromHandle(txHandle)
 		if !ok {
 			return errors.New("missing pgx.Tx")
 		}
 		_, execErr := tx.Exec(enqueueCtx,
 			`INSERT INTO flowy_handoff_outbox_nonexistent (thread_id) VALUES ($1)`,
-			"t1",
+			token.ThreadID,
 		)
 		return execErr
 	})
@@ -283,13 +302,34 @@ type runnerHandoffState struct {
 }
 
 type stubHandoffOutbox struct {
-	calls []flowy.ResumeToken
-	err   error
+	calls   []flowy.ResumeToken
+	txCalls []flowy.ResumeToken
+	err     error
 }
 
 func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, token flowy.ResumeToken) error {
 	s.calls = append(s.calls, token)
 	return s.err
+}
+
+func (s *stubHandoffOutbox) EnqueueIntentTx(
+	ctx context.Context,
+	tx flowy.TransactionHandle,
+	token flowy.ResumeToken,
+) error {
+	s.txCalls = append(s.txCalls, token)
+	if s.err != nil {
+		return s.err
+	}
+	pgxTx, ok := tx.(pgx.Tx)
+	if !ok {
+		return errors.New("expected pgx.Tx transaction handle")
+	}
+	_, err := pgxTx.Exec(ctx,
+		`INSERT INTO flowy_handoff_outbox (thread_id, snapshot_revision) VALUES ($1, $2)`,
+		token.ThreadID, int64(token.SnapshotRevision),
+	)
+	return err
 }
 
 func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState, flowy.NoEffect]) {
@@ -306,6 +346,9 @@ func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState
 	t.Cleanup(func() { pool.Close() })
 	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
 		t.Fatalf("schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, OutboxSchemaSQL()); err != nil {
+		t.Fatalf("outbox schema: %v", err)
 	}
 	cp := NewCheckpointer[runnerHandoffState, flowy.NoEffect](pool, checkpoint.JSONSerializer[runnerHandoffState]{})
 	return pool, cp
@@ -327,7 +370,7 @@ func pgHandoffGraph(t *testing.T) *flowy.Graph[runnerHandoffState, flowy.NoEffec
 }
 
 func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
-	_, cp := pgRunnerPool(t)
+	pool, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	g := pgHandoffGraph(t)
 
@@ -347,11 +390,24 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	if snap.RunMeta.HandoffStatus != flowy.HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued, got %q", snap.RunMeta.HandoffStatus)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one enqueue, got %d", len(outbox.calls))
+	if len(outbox.txCalls) != 1 {
+		t.Fatalf("expected one transactional enqueue, got %d", len(outbox.txCalls))
 	}
-	if outbox.calls[0].SnapshotRevision != rev {
-		t.Fatalf("outbox token rev %d != snapshot rev %d", outbox.calls[0].SnapshotRevision, rev)
+	if len(outbox.calls) != 0 {
+		t.Fatalf("expected no non-transactional enqueue, got %d", len(outbox.calls))
+	}
+	if outbox.txCalls[0].SnapshotRevision != rev {
+		t.Fatalf("outbox token rev %d != snapshot rev %d", outbox.txCalls[0].SnapshotRevision, rev)
+	}
+	var outboxRows int
+	if err := pool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1 AND snapshot_revision = $2`,
+		"pg-tx-handoff-ok", int64(rev),
+	).Scan(&outboxRows); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if outboxRows != 1 {
+		t.Fatalf("expected one transactional outbox row, got %d", outboxRows)
 	}
 	if res.RunMeta.HandoffStatus != snap.RunMeta.HandoffStatus {
 		t.Fatalf("result handoff status %q != snapshot %q", res.RunMeta.HandoffStatus, snap.RunMeta.HandoffStatus)
@@ -377,6 +433,12 @@ func TestRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
 	}
 	if res.RunMeta.HandoffStatus != flowy.HandoffStatusNone {
 		t.Fatalf("expected none handoff status after TX rollback, got %q", res.RunMeta.HandoffStatus)
+	}
+	if len(outbox.txCalls) != 1 {
+		t.Fatalf("expected one transactional enqueue attempt, got %d", len(outbox.txCalls))
+	}
+	if len(outbox.calls) != 0 {
+		t.Fatalf("expected no non-transactional enqueue, got %d", len(outbox.calls))
 	}
 	_, _, loadErr := cp.Load(context.Background(), "pg-tx-handoff-fail")
 	if !errors.Is(loadErr, flowy.ErrThreadNotFound) {
@@ -404,7 +466,7 @@ func TestRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-orphan-recover"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-orphan-recover"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if len(outbox.calls) != 1 {
@@ -440,7 +502,7 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 		flowy.WithHandoffStaleAfter[runnerHandoffState, flowy.NoEffect](time.Minute),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-stale-pending-recover"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-stale-pending-recover"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if len(outbox.calls) != 1 {
@@ -478,7 +540,7 @@ func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[runnerHandoffState, flowy.NoEffect](5 * time.Minute),
 	})
-	err := runner.RecoverStaleHandoff(context.Background(), "pg-fresh-pending-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-fresh-pending-reject")
 	if !errors.Is(err, flowy.ErrHandoffPending) {
 		t.Fatalf("expected ErrHandoffPending, got %v", err)
 	}
@@ -499,7 +561,7 @@ func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 
 	g := pgHandoffGraph(t)
 	runner := g.NewRunner(cp)
-	err := runner.RecoverStaleHandoff(context.Background(), "pg-no-outbox-recover")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-no-outbox-recover")
 	if !errors.Is(err, flowy.ErrHandoffOutboxRequired) {
 		t.Fatalf("expected ErrHandoffOutboxRequired, got %v", err)
 	}
@@ -522,7 +584,7 @@ func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 	})
-	err := runner.RecoverStaleHandoff(context.Background(), "pg-already-enqueued-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-already-enqueued-reject")
 	if !errors.Is(err, flowy.ErrHandoffAlreadyEnqueued) {
 		t.Fatalf("expected ErrHandoffAlreadyEnqueued, got %v", err)
 	}
@@ -543,7 +605,7 @@ func TestRecoverStaleHandoffPostgresNoneStatusRejected(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 	})
-	err := runner.RecoverStaleHandoff(context.Background(), "pg-none-status-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-none-status-reject")
 	if !errors.Is(err, flowy.ErrHandoffNotRecoverable) {
 		t.Fatalf("expected ErrHandoffNotRecoverable, got %v", err)
 	}

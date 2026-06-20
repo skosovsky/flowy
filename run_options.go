@@ -11,6 +11,14 @@ import (
 // StateMerger merges snapshot base state with invocation overlay deterministically.
 type StateMerger[T any] func(base, overlay T) T
 
+// ResumeTargetPolicy adjusts state and the resume execution pointer after overlay merge.
+// It is explicit per Resume invocation; the runner validates the returned pointer.
+type ResumeTargetPolicy[T any] func(
+	ctx context.Context,
+	state T,
+	current ExecutionPointer,
+) (T, ExecutionPointer, error)
+
 // InvariantValidator validates state after reducer and before checkpoint save.
 type InvariantValidator[T any] func(state T) error
 
@@ -20,16 +28,16 @@ type RunOption[T, E any] interface {
 }
 
 type runInvocationOptions[T, E any] struct {
-	bindings               *RunBindings
-	overlay                *T
-	overlayMerger          StateMerger[T]
-	invariantValidator     InvariantValidator[T]
-	runMetadata            RunMetadataInput
-	leaseOwner             string
-	leaseTTL               time.Duration
-	suspendPointerResolver SuspendPointerResolver[T]
-	handoffOutbox          HandoffOutbox
-	checkpointPolicy       CheckpointFailurePolicy
+	bindings           *RunBindings
+	overlay            *T
+	overlayMerger      StateMerger[T]
+	resumeTargetPolicy ResumeTargetPolicy[T]
+	invariantValidator InvariantValidator[T]
+	runMetadata        RunMetadataInput
+	leaseOwner         string
+	leaseTTL           time.Duration
+	handoffOutbox      HandoffOutbox
+	checkpointPolicy   CheckpointFailurePolicy
 }
 
 type runOptionFunc[T, E any] func(*runInvocationOptions[T, E])
@@ -57,6 +65,13 @@ func WithStateOverlay[T, E any](overlay T, merger StateMerger[T]) RunOption[T, E
 // ErrOverlayMergerRequired is returned when overlay is set without a merger.
 var ErrOverlayMergerRequired = errors.New("flowy: WithStateOverlay requires a non-nil merger")
 
+// WithResumeTargetPolicy applies an explicit state-aware resume target policy after overlay merge.
+func WithResumeTargetPolicy[T, E any](policy ResumeTargetPolicy[T]) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.resumeTargetPolicy = policy
+	})
+}
+
 // WithRunMetadata merges invocation metadata into run metadata before execution.
 func WithRunMetadata[T, E any](input RunMetadataInput) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
@@ -79,13 +94,6 @@ func WithRunLease[T, E any](owner string, ttl time.Duration) RunOption[T, E] {
 	})
 }
 
-// WithSuspendPointerResolver normalizes ExecutionPointer before Suspend/Handoff checkpoint saves.
-func WithSuspendPointerResolver[T, E any](resolver SuspendPointerResolver[T]) RunOption[T, E] {
-	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
-		opts.suspendPointerResolver = resolver
-	})
-}
-
 // WithHandoffOutbox enqueues handoff continuation after a successful handoff checkpoint save.
 func WithHandoffOutbox[T, E any](outbox HandoffOutbox) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
@@ -102,21 +110,6 @@ func WithCheckpointErrorPolicy[T, E any](policy CheckpointFailurePolicy) RunOpti
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
 		opts.checkpointPolicy = policy
 	})
-}
-
-func resolveSuspendPointer[T any](
-	state T,
-	current string,
-	resolver SuspendPointerResolver[T],
-) (ExecutionPointer, error) {
-	if resolver == nil {
-		return ExecutionPointer(current), nil
-	}
-	ptr, err := resolver(state, ExecutionPointer(current))
-	if err != nil {
-		return "", fmt.Errorf("flowy: suspend pointer resolver: %w", err)
-	}
-	return ptr, nil
 }
 
 func applyRunOptions[T, E any](opts ...RunOption[T, E]) (runInvocationOptions[T, E], error) {
@@ -181,22 +174,20 @@ func runMetadataFromContext(ctx context.Context) (*RunMetadata, bool) {
 	return meta, ok
 }
 
-// reconcileResume invokes ResumeReconciler when state implements it.
-// Caller must assign the returned state back; when T is a struct, mutations apply
-// to a local copy inside this helper until reassigned.
-func reconcileResume[T any](state T, currentPtr ExecutionPointer) (T, ExecutionPointer, error) {
-	rr, ok := any(state).(ResumeReconciler)
-	if !ok {
-		rr, ok = any(&state).(ResumeReconciler)
-	}
-	if !ok {
+func applyResumeTargetPolicy[T, E any](
+	ctx context.Context,
+	state T,
+	currentPtr ExecutionPointer,
+	inv runInvocationOptions[T, E],
+) (T, ExecutionPointer, error) {
+	if inv.resumeTargetPolicy == nil {
 		return state, currentPtr, nil
 	}
-	newPtr, err := rr.ReconcileResume(currentPtr)
+	nextState, newPtr, err := inv.resumeTargetPolicy(ctx, state, currentPtr)
 	if err != nil {
-		return state, "", fmt.Errorf("%w: %w", ErrResumeReconcileFailed, err)
+		return state, "", fmt.Errorf("%w: %w", ErrResumeTargetPolicyFailed, err)
 	}
-	return state, newPtr, nil
+	return nextState, newPtr, nil
 }
 
 func mergeRunMetadataInput(meta *RunMetadata, input RunMetadataInput) {

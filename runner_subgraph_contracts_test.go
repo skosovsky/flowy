@@ -664,16 +664,15 @@ func TestSubgraphInnerHandoffParentOutboxRunsAtParentLevel(t *testing.T) {
 	if res.ResumeToken.SnapshotRevision != snap.Revision {
 		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
-	if token.SnapshotRevision != snap.Revision-1 {
-		t.Fatalf("outbox snapshot revision %d != pending revision %d", token.SnapshotRevision, snap.Revision-1)
-	}
-	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
-		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	pendingRev := requireHandoffStatusRevision(t, cp, "parent-outbox-th", HandoffStatusPending)
+	if token.SnapshotRevision != pendingRev {
+		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
 	}
 	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued handoff status on parent snap, got %q", snap.RunMeta.HandoffStatus)
 	}
 }
+
 func TestAsNodeStartErrorReturnsFailDirective(t *testing.T) {
 	t.Parallel()
 
@@ -884,161 +883,6 @@ func TestSubgraphInnerHandoffWithParentSkipOnSaveError(t *testing.T) {
 	}
 	if res.ResumeToken.ThreadID != "" {
 		t.Fatalf("expected zero ResumeToken on parent soft warn, got %+v", res.ResumeToken)
-	}
-}
-func TestSubgraphDoesNotInheritSuspendPointerResolverOnInnerHandoff(t *testing.T) {
-	t.Parallel()
-
-	type childState struct{}
-	type parentState struct {
-		Slot SubgraphSlot[childState, NoEffect]
-	}
-
-	sub := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
-	sub.AddNode("wait", func(_ context.Context, s childState) (childState, Directive, error) {
-		return s, Handoff("inner-bg"), nil
-	})
-	sub.AddNode("router", func(_ context.Context, s childState) (childState, Directive, error) {
-		return s, Handoff("inner-bg"), nil
-	})
-	sub.AllowNoOutgoingRoute("wait")
-	sub.AllowNoOutgoingRoute("router")
-	sub.SetEntryPoint("wait")
-	subGraph, err := sub.Compile()
-	if err != nil {
-		t.Fatalf("compile sub: %v", err)
-	}
-
-	parent := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	loadResolverSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
-		return p.Slot, p.Slot.ExecutionPointer != ""
-	}
-	parent.AddNode("sub", SubgraphNodeWithSlot(
-		subGraph,
-		func(_ parentState) childState { return childState{} },
-		loadResolverSlot,
-		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
-			p.Slot = slot
-			return p
-		},
-		func(p parentState, _ childState) parentState { return p },
-	))
-	parent.SetEntryPoint("sub")
-	parent.AllowNoOutgoingRoute("sub")
-	parentGraph, err := parent.Compile()
-	if err != nil {
-		t.Fatalf("compile parent: %v", err)
-	}
-
-	var resolverCalls []string
-	trackResolver := func(_ parentState, ptr ExecutionPointer) (ExecutionPointer, error) {
-		resolverCalls = append(resolverCalls, string(ptr))
-		return ptr, nil
-	}
-	cp := newMemoryCP[parentState, NoEffect]()
-	res, err := parentGraph.NewRunner(cp).Start(
-		context.Background(),
-		"sub-handoff-resolver-th",
-		parentState{},
-		WithSuspendPointerResolver[parentState, NoEffect](trackResolver),
-	)
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-	if res.Status != RunStatusHandoff {
-		t.Fatalf("expected handoff, got %s", res.Status)
-	}
-	for _, ptr := range resolverCalls {
-		if ptr == "wait" {
-			t.Fatalf("parent resolver must not run on inner subgraph handoff node %q", ptr)
-		}
-	}
-	if len(resolverCalls) != 1 {
-		t.Fatalf("expected single parent resolver call, got %d calls %v", len(resolverCalls), resolverCalls)
-	}
-	snap, _, err := cp.Load(context.Background(), "sub-handoff-resolver-th")
-	if err != nil {
-		t.Fatalf("load parent snapshot: %v", err)
-	}
-	if snap.State.Slot.ExecutionPointer != "wait" {
-		t.Fatalf("expected inner pointer wait in slot, got %q", snap.State.Slot.ExecutionPointer)
-	}
-}
-func TestSubgraphDoesNotInheritSuspendPointerResolver(t *testing.T) {
-	t.Parallel()
-
-	type childState struct{}
-	type parentState struct {
-		Slot SubgraphSlot[childState, NoEffect]
-	}
-
-	sub := NewGraph[childState, NoEffect](func(_ childState, u childState) childState { return u })
-	sub.AddNode("wait", func(_ context.Context, s childState) (childState, Directive, error) {
-		return s, Suspend("inner"), nil
-	})
-	sub.AddNode("router", func(_ context.Context, s childState) (childState, Directive, error) {
-		return s, Suspend("inner"), nil
-	})
-	sub.AllowNoOutgoingRoute("wait")
-	sub.AllowNoOutgoingRoute("router")
-	sub.SetEntryPoint("wait")
-	subGraph, err := sub.Compile()
-	if err != nil {
-		t.Fatalf("compile sub: %v", err)
-	}
-
-	parent := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	loadResolverSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
-		return p.Slot, p.Slot.ExecutionPointer != ""
-	}
-	parent.AddNode("sub", SubgraphNodeWithSlot(
-		subGraph,
-		func(_ parentState) childState { return childState{} },
-		loadResolverSlot,
-		func(p parentState, slot SubgraphSlot[childState, NoEffect]) parentState {
-			p.Slot = slot
-			return p
-		},
-		func(p parentState, _ childState) parentState { return p },
-	))
-	parent.SetEntryPoint("sub")
-	parent.AllowNoOutgoingRoute("sub")
-	parentGraph, err := parent.Compile()
-	if err != nil {
-		t.Fatalf("compile parent: %v", err)
-	}
-
-	var resolverCalls []string
-	trackResolver := func(_ parentState, ptr ExecutionPointer) (ExecutionPointer, error) {
-		resolverCalls = append(resolverCalls, string(ptr))
-		return ptr, nil
-	}
-	cp := newMemoryCP[parentState, NoEffect]()
-	_, err = parentGraph.NewRunner(cp).Start(
-		context.Background(),
-		"sub-resolver-th",
-		parentState{},
-		WithSuspendPointerResolver[parentState, NoEffect](trackResolver),
-	)
-	if err != nil {
-		t.Fatalf("start: %v", err)
-	}
-
-	for _, ptr := range resolverCalls {
-		if ptr == "wait" {
-			t.Fatalf("parent resolver must not run on inner subgraph suspend pointer %q", ptr)
-		}
-	}
-	if len(resolverCalls) == 0 {
-		t.Fatal("expected parent resolver call on parent suspend save path")
-	}
-
-	snap, _, err := cp.Load(context.Background(), "sub-resolver-th")
-	if err != nil {
-		t.Fatalf("load parent snapshot: %v", err)
-	}
-	if snap.State.Slot.ExecutionPointer != "wait" {
-		t.Fatalf("expected inner pointer wait without parent resolver, got %q", snap.State.Slot.ExecutionPointer)
 	}
 }
 func TestSubgraphSeedSaveBypassesParentCheckpointPolicy(t *testing.T) {

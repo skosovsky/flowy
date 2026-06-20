@@ -10,6 +10,60 @@ import (
 	"time"
 )
 
+type txContextCheckCP[T, E any] struct {
+	transactionalMemoryCP[T, E]
+
+	sawSave bool
+}
+
+func (c *txContextCheckCP[T, E]) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, fmt.Errorf("transactional save context is canceled: %w", err)
+	}
+	c.sawSave = true
+	return c.transactionalMemoryCP.SaveWithOutbox(ctx, expectedRevision, snapshot, enqueueFn)
+}
+
+type arbitraryRevisionTxCP[T, E any] struct {
+	*memoryCP[T, E]
+
+	revision uint64
+}
+
+func (c *arbitraryRevisionTxCP[T, E]) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+) (uint64, error) {
+	if c.memoryCP == nil {
+		c.memoryCP = newMemoryCP[T, E]()
+	}
+	current := uint64(0)
+	if len(c.hist[snapshot.ThreadID]) > 0 {
+		current = c.hist[snapshot.ThreadID][len(c.hist[snapshot.ThreadID])-1].Revision
+	}
+	if current != expectedRevision {
+		return 0, ErrConcurrencyConflict
+	}
+	snapshot.Revision = c.revision
+	token := ResumeToken{ThreadID: snapshot.ThreadID, SnapshotRevision: c.revision}
+	if enqueueFn != nil {
+		if err := enqueueFn(ctx, struct{}{}, token); err != nil {
+			return 0, err
+		}
+	}
+	c.last = snapshot
+	c.reads[snapshot.ThreadID] = snapshot
+	c.hist[snapshot.ThreadID] = append(c.hist[snapshot.ThreadID], snapshot)
+	return c.revision, nil
+}
+
 func TestHandoffOutboxFailurePreservesSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -91,11 +145,9 @@ func TestHandoffOutboxSuccess(t *testing.T) {
 	if res.ResumeToken.SnapshotRevision != snap.Revision {
 		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
-	if token.SnapshotRevision != snap.Revision-1 {
-		t.Fatalf("outbox token revision %d != pending revision %d", token.SnapshotRevision, snap.Revision-1)
-	}
-	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
-		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	pendingRev := requireHandoffStatusRevision(t, cp, "outbox-ok-th", HandoffStatusPending)
+	if token.SnapshotRevision != pendingRev {
+		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
 	}
 	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued handoff status, got %q", snap.RunMeta.HandoffStatus)
@@ -681,36 +733,90 @@ func TestRequestLocalHandoffLeaseLostClosesSession(t *testing.T) {
 	})
 }
 
-func TestHandoffPointerResolveFailReasonOnBackgroundHandoff(t *testing.T) {
+func TestRequestLocalHandoffTransactionalSaveUsesUncanceledContext(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
-	cp := newMemoryCP[state, NoEffect]()
-	runner := g.NewRunner(cp)
+	cp := &txContextCheckCP[state, NoEffect]{}
+	outbox := &stubHandoffOutbox{}
+	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
+		WithRunnerHandoffOutbox[state, NoEffect](outbox),
+	})
 
-	startDone := make(chan *RunResult[state, NoEffect], 1)
+	type startOutcome struct {
+		result *RunResult[state, NoEffect]
+		err    error
+	}
+	startDone := make(chan startOutcome, 1)
 	go func() {
-		res, _ := runner.Start(context.Background(), "htb-resolve-th", state{},
-			WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-				return "", errors.New("bad pointer")
-			}),
-		)
-		startDone <- res
+		res, err := runner.Start(context.Background(), "tx-local-handoff-th", state{})
+		startDone <- startOutcome{result: res, err: err}
 	}()
 
 	<-ready
-	handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-resolve-th")
-	if handoffErr == nil {
-		t.Fatal("expected resolve error")
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "tx-local-handoff-th")
+	if handoffErr != nil {
+		t.Fatalf("RequestLocalHandoff: %v", handoffErr)
 	}
-	if _, _, loadErr := cp.Load(context.Background(), "htb-resolve-th"); !errors.Is(loadErr, ErrThreadNotFound) {
-		t.Fatalf("snapshot must not be saved on resolve fail, load err=%v", loadErr)
+	start := <-startDone
+	if start.err != nil {
+		t.Fatalf("Start: %v", start.err)
 	}
-	res := <-startDone
-	if res == nil || res.Reason != ReasonHandoffPointerResolveFailed {
-		t.Fatalf("expected reason %q, got %+v", ReasonHandoffPointerResolveFailed, res)
+	if start.result == nil || start.result.Status != RunStatusHandoff {
+		t.Fatalf("expected handoff result, got %+v", start.result)
+	}
+	if !cp.sawSave {
+		t.Fatal("transactional SaveWithOutbox was not called")
+	}
+	snap := requireSnapshotPresent(t, cp, "tx-local-handoff-th")
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if token := outbox.lastToken(); token.ThreadID != "tx-local-handoff-th" || token.SnapshotRevision == 0 {
+		t.Fatalf("expected transactional outbox token, got %+v", token)
+	}
+}
+
+func TestRequestLocalHandoffTransactionalOutboxUsesAuthoritativeRevision(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+	g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
+	cp := &arbitraryRevisionTxCP[state, NoEffect]{
+		memoryCP: newMemoryCP[state, NoEffect](),
+		revision: 42,
+	}
+	outbox := &stubHandoffOutbox{}
+	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
+		WithRunnerHandoffOutbox[state, NoEffect](outbox),
+	})
+
+	type startOutcome struct {
+		result *RunResult[state, NoEffect]
+		err    error
+	}
+	startDone := make(chan startOutcome, 1)
+	go func() {
+		res, err := runner.Start(context.Background(), "tx-authoritative-rev-th", state{})
+		startDone <- startOutcome{result: res, err: err}
+	}()
+
+	<-ready
+	if err := runner.RequestLocalHandoff(context.Background(), "tx-authoritative-rev-th"); err != nil {
+		t.Fatalf("RequestLocalHandoff: %v", err)
+	}
+	start := <-startDone
+	if start.err != nil {
+		t.Fatalf("Start: %v", start.err)
+	}
+	if start.result == nil || start.result.ResumeToken.SnapshotRevision != 42 {
+		t.Fatalf("expected result token rev 42, got %+v", start.result)
+	}
+	if token := outbox.lastToken(); token.ThreadID != "tx-authoritative-rev-th" ||
+		token.SnapshotRevision != 42 {
+		t.Fatalf("expected transactional outbox token rev 42, got %+v", token)
 	}
 }
 
@@ -1257,7 +1363,7 @@ func TestHandoffSaveFailUsesResolvedPointer(t *testing.T) {
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Handoff("bg"), nil
+		return s, Handoff("bg", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -1270,11 +1376,7 @@ func TestHandoffSaveFailUsesResolvedPointer(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	res, err := g.NewRunner(cp).Start(context.Background(), "handoff-ptr-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		}),
-	)
+	res, err := g.NewRunner(cp).Start(context.Background(), "handoff-ptr-th", state{})
 	if err == nil {
 		t.Fatalf("expected save failure, got %+v", res)
 	}

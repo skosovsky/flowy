@@ -3,12 +3,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
-
-	flowyotel "github.com/skosovsky/flowy/ext/otel"
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/testutil"
@@ -64,9 +63,10 @@ func runStaleRecoveryDemo(
 	}); saveErr != nil {
 		log.Fatal(saveErr)
 	}
-	if recoverErr := staleRunner.RecoverStaleHandoff(context.Background(), staleThreadID,
+	recovery, recoverErr := staleRunner.RecoverStaleHandoff(context.Background(), staleThreadID,
 		flowy.WithRecoverStaleAfter(time.Minute),
-	); recoverErr != nil {
+	)
+	if recoverErr != nil {
 		log.Fatalf("recover stale pending: %v", recoverErr)
 	}
 	staleToken, ok := outbox.pop()
@@ -80,13 +80,17 @@ func runStaleRecoveryDemo(
 	if staleSnap.RunMeta.HandoffStatus != flowy.HandoffStatusEnqueued {
 		log.Fatalf("expected enqueued after recovery, got %q", staleSnap.RunMeta.HandoffStatus)
 	}
-	if staleToken.SnapshotRevision != staleRev-1 {
-		log.Fatalf("outbox token rev %d != pending rev %d", staleToken.SnapshotRevision, staleRev-1)
+	if recovery.ResumeToken.SnapshotRevision != staleRev {
+		log.Fatalf("recovery token rev %d != snapshot rev %d", recovery.ResumeToken.SnapshotRevision, staleRev)
 	}
-	recovered, err := bgRunner.Resume(context.Background(), flowy.ResumeToken{
-		ThreadID:         staleThreadID,
-		SnapshotRevision: staleRev,
-	})
+	decision, err := bgRunner.EvaluateResume(context.Background(), staleToken)
+	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
+		log.Fatalf("expected stale recovery outbox token, got decision=%+v err=%v", decision, err)
+	}
+	if decision.ResumeToken != recovery.ResumeToken {
+		log.Fatalf("decision token %+v != recovery token %+v", decision.ResumeToken, recovery.ResumeToken)
+	}
+	recovered, err := bgRunner.Resume(context.Background(), decision.ResumeToken)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -94,10 +98,6 @@ func runStaleRecoveryDemo(
 }
 
 func main() {
-	if err := flowyotel.InstallLifecycleObserver(); err != nil {
-		log.Fatal(err)
-	}
-
 	cp := testutil.NewMemoryCheckpointer[jobState, flowy.NoEffect]()
 	outbox := &memoryOutbox{}
 	threadID := "handoff-outbox-demo"
@@ -137,20 +137,26 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	if outboxToken.SnapshotRevision != rev-1 {
-		log.Fatalf("outbox token rev %d != pending rev %d", outboxToken.SnapshotRevision, rev-1)
+	if snap.ThreadID != threadID {
+		log.Fatalf("snapshot thread %q != %q", snap.ThreadID, threadID)
 	}
-	freshToken := flowy.ResumeToken{ThreadID: snap.ThreadID, SnapshotRevision: rev}
-	if freshToken.SnapshotRevision != res.ResumeToken.SnapshotRevision {
+	if rev != res.ResumeToken.SnapshotRevision {
 		log.Fatalf(
 			"loaded rev %d != result token rev %d",
-			freshToken.SnapshotRevision,
+			rev,
 			res.ResumeToken.SnapshotRevision,
 		)
 	}
 
 	bgRunner := graph.NewRunner(cp)
-	completed, err := bgRunner.Resume(context.Background(), freshToken)
+	decision, err := bgRunner.EvaluateResume(context.Background(), outboxToken)
+	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
+		log.Fatalf("expected stale outbox token decision, got decision=%+v err=%v", decision, err)
+	}
+	if decision.ResumeToken != res.ResumeToken {
+		log.Fatalf("decision token %+v != result token %+v", decision.ResumeToken, res.ResumeToken)
+	}
+	completed, err := bgRunner.Resume(context.Background(), decision.ResumeToken)
 	if err != nil {
 		log.Fatal(err)
 	}

@@ -6,7 +6,7 @@
 
 - Foreground: `Handoff()` → Save `pending` → `EnqueueIntent` → patch `enqueued`.
 - Outbox-токен несёт revision pending-снимка; `RunResult.ResumeToken` — revision после patch.
-- Worker: `Load` → свежий `ResumeToken` → `Resume`.
+- Worker: использует core-generated `ResumeToken` из terminal/recovery result → `Resume`.
 
 ## Сценарий 2 — stale pending recovery
 
@@ -14,19 +14,40 @@
 
 1. Seed stale `pending` (`HandoffPendingAt` в прошлом).
 2. `RecoverStaleHandoff` с `WithRecoverStaleAfter` → enqueue + patch `enqueued`.
-3. Background `Resume` по свежему revision из `Load`.
+3. Background `Resume` по `ResumeToken` из `HandoffRecoveryResult`.
 
-`RecoverStaleHandoff` отклоняет **свежий** `pending` (`ErrHandoffPending`), уже доставленный `enqueued` (`ErrHandoffAlreadyEnqueued`), пустой/none статус (`ErrHandoffNotRecoverable`) и вызов без outbox (`ErrHandoffOutboxRequired`). Обрабатывайте через `errors.Is`:
+`RecoverStaleHandoff` возвращает `HandoffRecoveryResult` + error. Result всегда несет typed `Decision`:
 
 ```go
-if err := runner.RecoverStaleHandoff(ctx, threadID); err != nil {
-    switch {
-    case errors.Is(err, flowy.ErrHandoffPending):
-        // fresh pending — retry later
-    case errors.Is(err, flowy.ErrHandoffAlreadyEnqueued):
+result, err := runner.RecoverStaleHandoff(ctx, threadID)
+if err != nil {
+    switch result.Decision.Status {
+    case flowy.ResumeDecisionHandoffPending:
+        _ = result.Decision // fresh pending — retry later
+    case flowy.ResumeDecisionHandoffAlreadyScheduled:
         // already delivered
-    case errors.Is(err, flowy.ErrHandoffNotRecoverable):
+    case flowy.ResumeDecisionHandoffNotRecoverable:
         // none/unknown status
+    default:
+        if errors.Is(err, flowy.ErrHandoffOutboxRequired) {
+            // configure WithRunnerHandoffOutbox or WithRecoverOutbox
+            return err
+        }
+        if errors.Is(err, flowy.ErrHandoffPatchFailed) && errors.Is(err, flowy.ErrConcurrencyConflict) {
+            // cron retry: another worker won the OCC race
+            return err
+        }
+        return err
+    }
+}
+token := result.ResumeToken
+```
+
+Low-level errors remain `errors.Is`-compatible:
+
+```go
+if err != nil {
+    switch {
     case errors.Is(err, flowy.ErrHandoffOutboxRequired):
         // configure WithRunnerHandoffOutbox or WithRecoverOutbox
     case errors.Is(err, flowy.ErrHandoffPatchFailed):
@@ -34,8 +55,6 @@ if err := runner.RecoverStaleHandoff(ctx, threadID); err != nil {
         if errors.Is(err, flowy.ErrConcurrencyConflict) {
             // cron retry: another worker won the OCC race
         }
-    default:
-        return err
     }
 }
 ```
@@ -44,12 +63,12 @@ Recovery cron should retry on `ErrHandoffPatchFailed` when the cause is `ErrConc
 
 ## Observability
 
-Пример вызывает `ext/otel.InstallLifecycleObserver()` для lifecycle counters.
+Пример подключает lifecycle observer adapter для counters.
 
 ## Production notes
 
-- Postgres: используйте `TransactionalCheckpointer.SaveWithOutbox` + outbox INSERT через `postgres.PgxTxFromContext`.
-- Redis/memory: 3-phase FSM + `RecoverStaleHandoff` cron (single-leader или `WithRunLease`).
+- Transactional adapters: используйте `TransactionalCheckpointer.SaveWithOutbox` + `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, token)`; callback получает explicit transaction handle и authoritative token от checkpointer.
+- Non-transactional adapters: 3-phase FSM + `RecoverStaleHandoff` cron (single-leader или external lock).
 - False `enqueued`: `RecoverStaleHandoff(..., WithRecoverForceReenqueue(true))`.
 
 ```bash

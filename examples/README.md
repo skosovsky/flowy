@@ -8,12 +8,12 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 | -------------- | ------------------------ | ------------- | ----------------------- |
 | `Start`        | `RunResult` + error      | —             | returned error / result |
 | `Resume`       | `RunResult` + error      | —             | returned error / result |
-| `Stream`       | handle opens immediately | `Events()`    | `Wait()`                |
-| `ResumeStream` | handle opens immediately | `Events()`    | `Wait()`                |
+| `Stream`       | handle opens immediately | `Events()`    | `WaitResult()`          |
+| `ResumeStream` | handle opens immediately | `Events()`    | `WaitResult()`          |
 
 - `StreamHandle.RequestStop()` — consumer-initiated stop (cancels run context + closes event sink). Do not call `RequestLocalHandoff` after `RequestStop`.
-- `StreamHandle.Wait()` — authoritative terminal outcome (`nil`, `ErrCheckpointSkipped`, retention/save errors, `context.Canceled`).
-- **Stream helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect(ctx, handle, out)` — safe drain+Wait (see `stream_request_stop` example).
+- `StreamHandle.WaitResult()` — authoritative terminal result and error (`nil`, `ErrCheckpointSkipped`, retention/save errors, `context.Canceled`).
+- **Stream helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect(ctx, handle, out)` — safe drain+Wait; `StreamCollectResult.Outcome` carries the terminal `RunResult`.
 - `RequestLocalHandoff` — in-process active-run handoff on **this** `Runner` instance only; cross-process continuation uses checkpoint + lease + `Resume`.
 
 ## Матрица сценариев
@@ -47,13 +47,13 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 | Lease / `WithRunLease` (in-memory happy path)  | `lease_agent`                                                | `runner_lifecycle_test.go`, `runner_reason_parity_test.go`                                                                |
 | Policies (`DeleteOnSuccess`, `RetentionLimit`) | `lease_agent` (`WithDeleteOnSuccess(true)`)                  | `runner_lifecycle_test.go`                                                                                                |
 | Typed `BindingKey` + `Bind`                    | `bindings_agent`                                             | `runner_lifecycle_test.go`                                                                                                |
-| `ResumeReconciler.ReconcileResume`             | `conditional_routing` (state normalize + pointer rewind)     | `runner_lifecycle_test.go`, `runner_resume_overlay_test.go`                                                               |
+| `WithResumeTargetPolicy`                       | `conditional_routing` (state-aware target after overlay)      | `runner_lifecycle_test.go`, `runner_resume_overlay_test.go`                                                               |
 | `WithRunMetadata`                              | —                                                            | `runner_lifecycle_test.go`, `stream_test.go` (Stream + ResumeStream)                                                      |
 | `BudgetUsed` / `ContextWithRunMetadata`        | — (isolated node pattern)                                    | `run_options_test.go`                                                                                                     |
 | `DeleteIfIdle` / lease-aware delete            | `lease_agent` (`WithDeleteOnSuccess` demo)                   | `runner_lifecycle_test.go`, adapter tests                                                                                 |
 | Subgraph slot resume                           | `subgraph_slot_agent`                                        | `compose_test.go`                                                                                                         |
 | `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                          | `runner_lifecycle_contracts_test.go`                                                                                      |
-| `WithSuspendPointerResolver`                   | —                                                            | `runner_lifecycle_contracts_test.go`                                                                                      |
+| `ResumeAt` on `Suspend` / `Handoff`            | —                                                            | `runner_resume_target_contracts_test.go`                                                                                  |
 | `WithHandoffOutbox` (Outbox + HandoffStatus)   | —                                                            | `runner_handoff_contracts_test.go`, `runner_handoff_recovery_test.go`                                                     |
 | `WithCheckpointErrorPolicy(SkipOnSaveError)`   | — (use Stream)                                               | `runner_checkpoint_policy_test.go`, `stream_test.go` (`TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError`) |
 | Session guard / duplicate active run           | —                                                            | `runner_session_guard_test.go`                                                                                            |
@@ -64,11 +64,11 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 Общие правила:
 
 - Роутинг только через `AddEdge` / `AddConditionalEdge` с обязательными `allowedTargets` (без `Next(nodeID)`).
-- Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.SnapshotRevision == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `ResumeReconciler.ReconcileResume()` → validate pointer → `Execute` from active (post-reconcile) `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
-- Task18/19 orchestration: `WithSuspendPointerResolver`, `WithHandoffOutbox`, `RecoverStaleHandoff`, `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)`. Nested `SubgraphNode` / `AsNode` **не наследуют** эти RunOptions.
+- Resume pipeline: `ResumeToken` validation → `Load` → **OCC** (`token.SnapshotRevision == snapshot.Revision`) → `AfterLoad` → `WithStateOverlay` → `resetSegmentCounters` → `WithRunMetadata` → `WithResumeTargetPolicy` → validate pointer → `Execute` from active `ExecutionPointer`. `DeleteIfIdle` / delete-on-success — после `releaseLease` (`postRunCleanup`). `Prune` (retention) — in-loop при suspend/handoff/cancel, до release.
+- Task20 orchestration: `ResumeAt`, `WithHandoffOutbox`, `EvaluateResume`, `EvaluateHandoffRecovery`, `RecoverStaleHandoff`, `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)`.
 - Handoff: `Handoff(reason)` или `RequestLocalHandoff` (только активный run **в том же процессе** runner); другой воркер — `Resume` + новый lease по checkpoint. Directive `Handoff()` skip-on-save-error → `(result, nil)` + `*_checkpoint_skipped`; `RequestLocalHandoff` skip → `ErrCheckpointSkipped`.
 - Lease: `WithRunLease` обязателен при `WithLeaseManager`; повторный acquire → `ErrThreadLeaseBusy`. In-process duplicate → `ErrThreadAlreadyRunning`. Для `Stream`/`ResumeStream` дубликат виден на `Wait()` второго handle.
-- Stream: `RequestStop()` + `Wait()`. Strict terminal-event tests требуют доставку event; persist-vs-event тесты (`*PersistVsEvent*`) допускают drop terminal event — authoritative `Wait()` / snapshot.
+- Stream: `RequestStop()` + `WaitResult()`. Strict terminal-event tests требуют доставку event; persist-vs-event тесты (`*PersistVsEvent*`) допускают drop terminal event — authoritative terminal outcome is `WaitResult()`.
 - `RequestLocalHandoff`: `nil` при persist, `ErrCheckpointSkipped` при skip-on-save-error, `ErrHandoffEnqueueFailed` при enqueue fail после persist.
 - `handoff_outbox`: `WithHandoffOutbox` + `RecoverStaleHandoff` для фонового resume.
 

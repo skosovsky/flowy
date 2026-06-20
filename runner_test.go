@@ -181,8 +181,8 @@ func TestRunnerContextCancelSavesSnapshot(t *testing.T) {
 	if res == nil || res.Status != RunStatusContextCanceled {
 		t.Fatalf("expected context_canceled status, got res=%+v", res)
 	}
-	if res.ResumeToken.ThreadID != "" || res.ResumeToken.SnapshotRevision != 0 {
-		t.Fatalf("cancel path must not populate ResumeToken, got %+v", res.ResumeToken)
+	if res.ResumeToken.ThreadID != "ctx-1" || res.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("cancel path must populate ResumeToken after save, got %+v", res.ResumeToken)
 	}
 	if cp.last.ThreadID != "ctx-1" {
 		t.Fatal("expected saved snapshot on context cancellation")
@@ -392,7 +392,10 @@ func TestInterceptorsAreApplied(t *testing.T) {
 	snap := cp.reads["i"]
 	snap.State = interceptState{Value: "v2"}
 	cp.reads["i"] = snap
-	res, err := g.NewRunner(cp, testInterceptor{}).Resume(context.Background(), ResumeTokenFromSnapshot(snap))
+	res, err := g.NewRunner(cp, testInterceptor{}).Resume(
+		context.Background(),
+		ResumeToken{ThreadID: snap.ThreadID, SnapshotRevision: snap.Revision},
+	)
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}

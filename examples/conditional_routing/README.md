@@ -1,13 +1,13 @@
 # Conditional Routing / Semantic Cache
 
-Демонстрация v2 декларативного роутинга и late binding через `WithStateOverlay`.
+Демонстрация декларативного роутинга и late binding через `WithStateOverlay`.
 
 ## Сценарии
 
 1. **Cache miss** — `check_cache` → `heavy_llm` → `output`.
 2. **Cache hit** — `check_cache` → `output` (без LLM).
-3. **Late binding** — overlay применяется до execute; `prepare` выполняется повторно с `AllowedTools` (без rewind). Для пропуска stale-узла — сценарий 4.
-4. **Pointer rewind** — suspend на `prepare`, overlay с `SkipPrepare=true`, `ReconcileResume("prepare")` → `check_cache` (узел `prepare` не выполняется повторно; `prepare_runs=1`).
+3. **Late binding** — overlay применяется до execute; `prepare` выполняется повторно с `AllowedTools`.
+4. **State-aware resume target** — suspend на `prepare`, overlay с `SkipPrepare=true`, `WithResumeTargetPolicy` → `check_cache` (узел `prepare` не выполняется повторно; `prepare_runs=1`).
 
 ## Запуск
 
@@ -16,13 +16,13 @@ cd examples/conditional_routing
 go run main.go
 ```
 
-## ResumeReconciler.ReconcileResume
+## WithResumeTargetPolicy
 
-`routeState` реализует `ResumeReconciler`: после overlay `ReconcileResume` нормализует `AllowedTools` и при `SkipPrepare` перематывает с `prepare` на `check_cache` (сценарий 4 в `main.go`).
+`main.go` передает explicit policy в `Resume`: после overlay policy нормализует `AllowedTools` и при `SkipPrepare` возвращает target `check_cache` (сценарий 4).
 
-## v2 routing
+## Current routing
 
-| Старый подход                                 | v2                                                           |
+| Старый подход                                 | Current API                                                  |
 | --------------------------------------------- | ------------------------------------------------------------ |
 | `Next("output")` / `Next("heavy_llm")` в узле | `Completed()` + `AddConditionalEdge(..., allowedTargets...)` |
 | runtime-only ветвление                        | compile-time allowed targets + conditional router            |

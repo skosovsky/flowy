@@ -490,7 +490,7 @@ func TestResumeStreamRejectsInvalidHandoffStatus(t *testing.T) {
 	}
 }
 
-func TestResumeTokenFromSnapshotEquivalentToRunResultToken(t *testing.T) {
+func TestRunResultResumeTokenCanResume(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -512,16 +512,11 @@ func TestResumeTokenFromSnapshotEquivalentToRunResultToken(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	snap, _, loadErr := cp.Load(context.Background(), "token-equiv-th")
-	if loadErr != nil {
-		t.Fatalf("load: %v", loadErr)
+	if res.ResumeToken.ThreadID != "token-equiv-th" || res.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("expected core-generated resume token, got %+v", res.ResumeToken)
 	}
-	fromSnap := ResumeTokenFromSnapshot(snap)
-	if fromSnap != res.ResumeToken {
-		t.Fatalf("ResumeTokenFromSnapshot %+v != result token %+v", fromSnap, res.ResumeToken)
-	}
-	_, err = runner.Resume(context.Background(), fromSnap)
+	_, err = runner.Resume(context.Background(), res.ResumeToken)
 	if err != nil {
-		t.Fatalf("resume via snapshot token: %v", err)
+		t.Fatalf("resume via result token: %v", err)
 	}
 }

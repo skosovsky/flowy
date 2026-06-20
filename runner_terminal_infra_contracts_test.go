@@ -22,28 +22,21 @@ func TestTerminalStatusOnInfraFailure(t *testing.T) {
 
 	tests := []terminalInfraFailureCase{
 		{
-			name: "handoff resolve invalid pointer",
+			name: "handoff invalid resume target",
 			setup: func() (*Graph[terminalInfraState, NoEffect], Checkpointer[terminalInfraState, NoEffect], []RunOption[terminalInfraState, NoEffect]) {
 				b := NewGraph[terminalInfraState, NoEffect](
 					func(_ terminalInfraState, u terminalInfraState) terminalInfraState { return u },
 				)
 				b.AddNode("work", func(_ context.Context, s terminalInfraState) (terminalInfraState, Directive, error) {
-					return s, Handoff("bg"), nil
+					return s, Handoff("bg", ResumeAt("ghost")), nil
 				})
 				b.AllowNoOutgoingRoute("work")
 				b.SetEntryPoint("work")
 				g, _ := b.Compile()
-				resolver := WithSuspendPointerResolver[terminalInfraState, NoEffect](
-					func(_ terminalInfraState, _ ExecutionPointer) (ExecutionPointer, error) {
-						return "ghost", nil
-					},
-				)
-				return g, newMemoryCP[terminalInfraState, NoEffect](), []RunOption[terminalInfraState, NoEffect]{
-					resolver,
-				}
+				return g, newMemoryCP[terminalInfraState, NoEffect](), nil
 			},
 			wantStatus:    RunStatusFailed,
-			wantReason:    ReasonHandoffPointerResolveFailed,
+			wantReason:    ReasonHandoffResumeTargetInvalid,
 			wantResumeTok: false,
 		},
 		{

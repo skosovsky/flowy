@@ -22,7 +22,7 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot flowy.Snapshot[T, E],
-	enqueueFn func(ctx context.Context) error,
+	enqueueFn func(ctx context.Context, tx flowy.TransactionHandle, token flowy.ResumeToken) error,
 ) (uint64, error) {
 	beginner, ok := c.db.(TxBeginner)
 	if !ok {
@@ -57,7 +57,8 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 		return 0, err
 	}
 	if enqueueFn != nil {
-		if err := enqueueFn(flowy.ContextWithOutboxTx(ctx, tx)); err != nil {
+		token := flowy.ResumeToken{ThreadID: snapshot.ThreadID, SnapshotRevision: inserted}
+		if err := enqueueFn(ctx, tx, token); err != nil {
 			return 0, err
 		}
 	}

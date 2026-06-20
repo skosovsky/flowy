@@ -13,15 +13,7 @@ type rewindOverlayState struct {
 	Rewound  bool
 }
 
-func (s *rewindOverlayState) ReconcileResume(currentPtr ExecutionPointer) (ExecutionPointer, error) {
-	if currentPtr == "wait_user" {
-		s.Rewound = true
-		return "router", nil
-	}
-	return currentPtr, nil
-}
-
-func TestResumeReconcilerPointerRewind(t *testing.T) {
+func TestResumeTargetPolicyRewritesPointer(t *testing.T) {
 	t.Parallel()
 
 	b := NewGraph[rewindOverlayState, NoEffect](func(cur, upd rewindOverlayState) rewindOverlayState {
@@ -66,6 +58,19 @@ func TestResumeReconcilerPointerRewind(t *testing.T) {
 				return base
 			},
 		),
+		WithResumeTargetPolicy[rewindOverlayState, NoEffect](
+			func(_ context.Context, state rewindOverlayState, current ExecutionPointer) (
+				rewindOverlayState,
+				ExecutionPointer,
+				error,
+			) {
+				if current == "wait_user" {
+					state.Rewound = true
+					return state, "router", nil
+				}
+				return state, current, nil
+			},
+		),
 	)
 	if err != nil {
 		t.Fatalf("resume: %v", err)
@@ -74,23 +79,19 @@ func TestResumeReconcilerPointerRewind(t *testing.T) {
 		t.Fatalf("expected completed, got %s", res.Status)
 	}
 	if res.State.HitWait {
-		t.Fatal("wait_user must be skipped after pointer rewind")
+		t.Fatal("wait_user must be skipped after resume target policy rewrite")
 	}
 	if !res.State.HitRoute {
-		t.Fatal("router must run after pointer rewind")
+		t.Fatal("router must run after resume target policy rewrite")
 	}
 	if !res.State.Rewound {
-		t.Fatal("ReconcileResume side effect must propagate")
+		t.Fatal("resume target policy state update must propagate")
 	}
 }
 
 type invalidPtrState struct{}
 
-func (s *invalidPtrState) ReconcileResume(_ ExecutionPointer) (ExecutionPointer, error) {
-	return "ghost", nil
-}
-
-func TestResumeReconcilerInvalidPointer(t *testing.T) {
+func TestResumeTargetPolicyInvalidPointer(t *testing.T) {
 	t.Parallel()
 
 	b := NewGraph[invalidPtrState, NoEffect](func(_ invalidPtrState, u invalidPtrState) invalidPtrState {
@@ -113,30 +114,39 @@ func TestResumeReconcilerInvalidPointer(t *testing.T) {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = resumeLoaded(context.Background(), runner, cp, "invalid-ptr-th")
-	if err == nil || !errors.Is(err, ErrResumeStartNodeNotFound) ||
+	_, err = resumeLoaded(context.Background(), runner, cp, "invalid-ptr-th",
+		WithResumeTargetPolicy[invalidPtrState, NoEffect](
+			func(_ context.Context, state invalidPtrState, _ ExecutionPointer) (
+				invalidPtrState,
+				ExecutionPointer,
+				error,
+			) {
+				return state, "ghost", nil
+			},
+		),
+	)
+	if err == nil || !errors.Is(err, ErrResumeStartNodeNotFound) || !errors.Is(err, ErrInvalidSnapshot) ||
 		!strings.Contains(err.Error(), "ghost") {
 		t.Fatalf("expected ErrResumeStartNodeNotFound for ghost node, got %v", err)
 	}
 }
 
-type emptyReconcilePtrState struct{}
+type emptyTargetPolicyPtrState struct{}
 
-func (s *emptyReconcilePtrState) ReconcileResume(_ ExecutionPointer) (ExecutionPointer, error) {
-	return "", nil
-}
-
-func TestResumeReconcilerEmptyPointer(t *testing.T) {
+func TestResumeTargetPolicyEmptyPointer(t *testing.T) {
 	t.Parallel()
 
-	b := NewGraph[emptyReconcilePtrState, NoEffect](
-		func(_ emptyReconcilePtrState, u emptyReconcilePtrState) emptyReconcilePtrState {
+	b := NewGraph[emptyTargetPolicyPtrState, NoEffect](
+		func(_ emptyTargetPolicyPtrState, u emptyTargetPolicyPtrState) emptyTargetPolicyPtrState {
 			return u
 		},
 	)
-	b.AddNode("wait", func(_ context.Context, s emptyReconcilePtrState) (emptyReconcilePtrState, Directive, error) {
-		return s, Suspend("hold"), nil
-	})
+	b.AddNode(
+		"wait",
+		func(_ context.Context, s emptyTargetPolicyPtrState) (emptyTargetPolicyPtrState, Directive, error) {
+			return s, Suspend("hold"), nil
+		},
+	)
 	b.AllowNoOutgoingRoute("wait")
 	b.SetEntryPoint("wait")
 	g, err := b.Compile()
@@ -144,14 +154,24 @@ func TestResumeReconcilerEmptyPointer(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	cp := newMemoryCP[emptyReconcilePtrState, NoEffect]()
+	cp := newMemoryCP[emptyTargetPolicyPtrState, NoEffect]()
 	runner := g.NewRunner(cp)
-	_, err = runner.Start(context.Background(), "empty-rec-ptr-th", emptyReconcilePtrState{})
+	_, err = runner.Start(context.Background(), "empty-target-policy-ptr-th", emptyTargetPolicyPtrState{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 
-	_, err = resumeLoaded(context.Background(), runner, cp, "empty-rec-ptr-th")
+	_, err = resumeLoaded(context.Background(), runner, cp, "empty-target-policy-ptr-th",
+		WithResumeTargetPolicy[emptyTargetPolicyPtrState, NoEffect](
+			func(_ context.Context, state emptyTargetPolicyPtrState, _ ExecutionPointer) (
+				emptyTargetPolicyPtrState,
+				ExecutionPointer,
+				error,
+			) {
+				return state, "", nil
+			},
+		),
+	)
 	if !errors.Is(err, ErrInvalidSnapshot) {
 		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
 	}

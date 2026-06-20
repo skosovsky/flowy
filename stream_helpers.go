@@ -5,12 +5,13 @@ import (
 	"errors"
 )
 
-// StreamCollectResult holds the outcome of BeginStreamCollect after AwaitStreamCollect.
+// StreamCollectResult holds events and terminal outcome after AwaitStreamCollect.
 // For terminal reason/state when a terminal event may be dropped (persist-vs-event),
-// prefer Snapshot over TerminalEvent.
+// prefer Outcome over TerminalEvent.
 type StreamCollectResult[T, E any] struct {
 	Events        []RunEvent[T, E]
 	WaitErr       error
+	Outcome       *RunResult[T, E]
 	TerminalEvent *RunEvent[T, E]
 	Snapshot      *Snapshot[T, E]
 	ResumeToken   ResumeToken
@@ -113,10 +114,11 @@ func BeginStreamCollect[T, E any](h StreamHandle[T, E]) <-chan StreamCollectResu
 		for ev := range h.Events() {
 			events = append(events, ev)
 		}
-		waitErr := h.Wait()
+		outcome, waitErr := h.WaitResult()
 		out <- StreamCollectResult[T, E]{
 			Events:        events,
 			WaitErr:       waitErr,
+			Outcome:       outcome,
 			TerminalEvent: terminalEventPtr(events),
 			Snapshot:      nil,
 			ResumeToken:   ResumeToken{ThreadID: "", SnapshotRevision: 0},
@@ -145,6 +147,7 @@ func AwaitStreamCollect[T, E any](
 			return StreamCollectResult[T, E]{
 				Events:        nil,
 				WaitErr:       ctx.Err(),
+				Outcome:       nil,
 				TerminalEvent: nil,
 				Snapshot:      nil,
 				ResumeToken:   ResumeToken{ThreadID: "", SnapshotRevision: 0},
@@ -154,7 +157,8 @@ func AwaitStreamCollect[T, E any](
 }
 
 // AwaitStreamCollectWithSnapshot awaits collection and loads the persisted snapshot.
-// ResumeToken is built via ResumeTokenFromSnapshot for Handoff/HITL flows.
+// ResumeToken is copied from terminal Outcome when available; applications should not
+// rebuild tokens from raw snapshots.
 func AwaitStreamCollectWithSnapshot[T, E any](
 	ctx context.Context,
 	h StreamHandle[T, E],
@@ -171,6 +175,8 @@ func AwaitStreamCollectWithSnapshot[T, E any](
 		return result, loadErr
 	}
 	result.Snapshot = &snap
-	result.ResumeToken = ResumeTokenFromSnapshot(snap)
+	if result.Outcome != nil {
+		result.ResumeToken = result.Outcome.ResumeToken
+	}
 	return result, result.WaitErr
 }

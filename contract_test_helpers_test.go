@@ -12,7 +12,7 @@ import (
 //
 // Sync vs stream
 //   - Start/Resume return RunResult synchronously; terminal error is the returned error.
-//   - Stream/ResumeStream expose Events(); terminal outcome is authoritative from Wait().
+//   - Stream/ResumeStream expose Events(); terminal outcome is authoritative from WaitResult().
 //
 // Terminal event delivery
 //   - Strict: consumer drains Events(); terminal RunEvent is required (requireTerminalEventReason).
@@ -516,13 +516,31 @@ func assertHandoffTokenRevisionContract[T, E any](
 		t.Fatal("expected outbox enqueue call")
 	}
 	token := outbox.calls[len(outbox.calls)-1]
-	if token.SnapshotRevision != rev-1 {
-		t.Fatalf("outbox token revision %d != pending revision %d", token.SnapshotRevision, rev-1)
-	}
-	if token.SnapshotRevision == res.ResumeToken.SnapshotRevision {
-		t.Fatalf("outbox token must differ from result token when enqueued: %+v", token)
+	pendingRev := requireHandoffStatusRevision(t, cp, threadID, HandoffStatusPending)
+	if token.SnapshotRevision != pendingRev {
+		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
 	}
 	_ = snap
+}
+
+func requireHandoffStatusRevision[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	threadID string,
+	status HandoffStatus,
+) uint64 {
+	t.Helper()
+	history, err := cp.GetHistory(context.Background(), threadID, 10)
+	if err != nil {
+		t.Fatalf("history: %v", err)
+	}
+	for _, snap := range history {
+		if snap.RunMeta.HandoffStatus == status {
+			return snap.Revision
+		}
+	}
+	t.Fatalf("expected snapshot with handoff status %q in history %+v", status, history)
+	return 0
 }
 
 func assertHandoffFailureTokenMatchesSnapshot[T, E any](
@@ -562,18 +580,18 @@ func (t *transactionalMemoryCP[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
-	enqueueFn func(context.Context) error,
+	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
 ) (uint64, error) {
 	t.ensureMemoryCP()
 	pending := snapshot
 	pending.Revision = expectedRevision + 1
 	txToken := struct{}{}
-	txCtx := ContextWithOutboxTx(ctx, txToken)
-	if _, err := t.memoryCP.Save(txCtx, expectedRevision, pending); err != nil {
+	if _, err := t.memoryCP.Save(ctx, expectedRevision, pending); err != nil {
 		return 0, err
 	}
 	if enqueueFn != nil {
-		if err := enqueueFn(txCtx); err != nil {
+		token := ResumeToken{ThreadID: pending.ThreadID, SnapshotRevision: pending.Revision}
+		if err := enqueueFn(ctx, txToken, token); err != nil {
 			_ = t.memoryCP.Delete(ctx, snapshot.ThreadID)
 			return 0, err
 		}

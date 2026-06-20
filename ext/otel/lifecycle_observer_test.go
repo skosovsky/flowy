@@ -50,6 +50,14 @@ func (o *testHandoffOutbox) EnqueueIntent(_ context.Context, _ flowy.ResumeToken
 	return o.err
 }
 
+func (o *testHandoffOutbox) EnqueueIntentTx(
+	_ context.Context,
+	_ flowy.TransactionHandle,
+	_ flowy.ResumeToken,
+) error {
+	return o.err
+}
+
 func datapointMatchesAttr(dp metricdata.DataPoint[int64], key, want string) bool {
 	for _, attr := range dp.Attributes.ToSlice() {
 		if string(attr.Key) == key && attr.Value.AsString() == want {
@@ -1002,7 +1010,7 @@ func TestLifecycleObserverRecoverStaleHandoffFromOrphaned(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[state, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-orphan-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-orphan-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if got := counterAttributeValue(
@@ -1045,7 +1053,7 @@ func TestLifecycleObserverRecoverStaleHandoffStalePending(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[state, flowy.NoEffect](time.Minute),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-stale-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-stale-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if got := counterAttributeValue(
@@ -1087,7 +1095,7 @@ func TestLifecycleObserverRecoverStaleHandoffFreshPending(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[state, flowy.NoEffect](5 * time.Minute),
 	})
-	_ = runner.RecoverStaleHandoff(context.Background(), "otel-recover-pending-th")
+	_, _ = runner.RecoverStaleHandoff(context.Background(), "otel-recover-pending-th")
 	if got := counterAttributeValue(
 		t, reader, "flowy.resume_rejected_total", "reason", "handoff_pending",
 	); got != 1 {
@@ -1144,7 +1152,7 @@ func (c *otelTxErrCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) e
 
 func (c *otelTxErrCP[T, E]) SaveWithOutbox(
 	_ context.Context, _ uint64, _ flowy.Snapshot[T, E],
-	_ func(context.Context) error,
+	_ func(context.Context, flowy.TransactionHandle, flowy.ResumeToken) error,
 ) (uint64, error) {
 	return 0, c.err
 }

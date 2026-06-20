@@ -20,16 +20,23 @@ const (
 )
 
 // HandoffOutbox enqueues a resume intent during the 3-phase handoff FSM:
-//  1. Save checkpoint with HandoffStatusPending (revision N)
-//  2. EnqueueIntent with ResumeToken{revision N}
-//  3. patch HandoffStatusEnqueued or HandoffStatusOrphaned (revision N+1)
+//  1. Save checkpoint with HandoffStatusPending and receive the pending ResumeToken.
+//  2. EnqueueIntent with that pending ResumeToken.
+//  3. Patch HandoffStatusEnqueued or HandoffStatusOrphaned and receive the terminal ResumeToken.
 //
 // EnqueueIntent and Save are not atomic; on enqueue OK + patch failure a compensating
 // orphan patch is attempted. RunResult.ResumeToken uses the post-patch revision.
-// Workers consuming outbox messages should Load the checkpoint and Resume with the
-// loaded revision (outbox token revision N may lag behind the stored revision).
+// Workers consuming outbox messages should call EvaluateResume first: the outbox
+// token revision may lag behind the stored revision, and the decision returns the
+// current core-issued token when the snapshot has already advanced.
 type HandoffOutbox interface {
 	EnqueueIntent(ctx context.Context, token ResumeToken) error
+}
+
+// TransactionalHandoffOutbox persists a handoff intent using the explicit storage transaction handle.
+type TransactionalHandoffOutbox interface {
+	HandoffOutbox
+	EnqueueIntentTx(ctx context.Context, tx TransactionHandle, token ResumeToken) error
 }
 
 // RecoverStaleHandoffOption configures RecoverStaleHandoff.
@@ -39,6 +46,15 @@ type recoverStaleHandoffOpts struct {
 	staleAfter     time.Duration
 	outbox         HandoffOutbox
 	forceReenqueue bool
+}
+
+// HandoffRecoveryResult is the structured outcome of RecoverStaleHandoff.
+type HandoffRecoveryResult[T, E any] struct {
+	Decision         ResumeDecision[T, E]
+	ResumeToken      ResumeToken
+	SnapshotRevision uint64
+	HandoffStatus    HandoffStatus
+	Recovered        bool
 }
 
 // WithRecoverStaleAfter overrides the stale-pending TTL for a single recovery call.
@@ -55,7 +71,7 @@ func WithRecoverOutbox(outbox HandoffOutbox) RecoverStaleHandoffOption {
 	}
 }
 
-// WithRecoverForceReenqueue re-enqueues when HandoffStatus is enqueued (reconcile false enqueued).
+// WithRecoverForceReenqueue re-enqueues when HandoffStatus is already enqueued.
 func WithRecoverForceReenqueue(force bool) RecoverStaleHandoffOption {
 	return func(o *recoverStaleHandoffOpts) {
 		o.forceReenqueue = force
@@ -67,7 +83,53 @@ func (r *graphRunner[T, E]) RecoverStaleHandoff(
 	ctx context.Context,
 	threadID string,
 	opts ...RecoverStaleHandoffOption,
-) error {
+) (HandoffRecoveryResult[T, E], error) {
+	cfg := r.recoverStaleHandoffConfig(opts...)
+	if cfg.staleAfter <= 0 {
+		cfg.staleAfter = DefaultHandoffStaleAfter
+	}
+	decision, decisionErr := r.EvaluateHandoffRecovery(ctx, threadID, opts...)
+	result := recoveryResultFromDecision(decision)
+	if decision.Status != ResumeDecisionHandoffRecoverable {
+		if decisionErr != nil {
+			return result, decisionErr
+		}
+		return result, decision.Err
+	}
+	if cfg.outbox == nil {
+		result.Decision.Reason = "handoff_outbox_required"
+		result.Decision.Err = ErrHandoffOutboxRequired
+		return result, ErrHandoffOutboxRequired
+	}
+	fsm, err := r.recoverHandoffEnqueue(
+		ctx,
+		threadID,
+		decision.Snapshot,
+		decision.SnapshotRevision,
+		cfg.outbox,
+		HandoffStatusEnqueued,
+	)
+	applyFSMHandoffRecoveryResult(&result, fsm)
+	if err != nil {
+		return result, err
+	}
+	result.Recovered = true
+	return result, nil
+}
+
+func recoveryResultFromDecision[T, E any](decision ResumeDecision[T, E]) HandoffRecoveryResult[T, E] {
+	return HandoffRecoveryResult[T, E]{
+		Decision:         decision,
+		ResumeToken:      decision.ResumeToken,
+		SnapshotRevision: decision.SnapshotRevision,
+		HandoffStatus:    decision.HandoffStatus,
+		Recovered:        false,
+	}
+}
+
+func (r *graphRunner[T, E]) recoverStaleHandoffConfig(
+	opts ...RecoverStaleHandoffOption,
+) recoverStaleHandoffOpts {
 	cfg := recoverStaleHandoffOpts{
 		staleAfter:     r.handoffStaleAfter,
 		outbox:         r.handoffOutbox,
@@ -78,45 +140,12 @@ func (r *graphRunner[T, E]) RecoverStaleHandoff(
 			opt(&cfg)
 		}
 	}
-	if cfg.staleAfter <= 0 {
-		cfg.staleAfter = DefaultHandoffStaleAfter
-	}
-	if cfg.outbox == nil {
-		return ErrHandoffOutboxRequired
-	}
-	if threadID == "" {
-		return fmt.Errorf("%w: recovery requires threadID", ErrInvalidResumeToken)
-	}
-
-	snapshot, revision, err := r.checkpointer.Load(ctx, threadID)
-	if err != nil {
-		return fmt.Errorf("%w: %w", ErrThreadNotFound, err)
-	}
-	status := snapshot.RunMeta.HandoffStatus
-	pointer := snapshot.ExecutionPointer
-
-	switch status {
-	case HandoffStatusEnqueued:
-		if !cfg.forceReenqueue {
-			return ErrHandoffAlreadyEnqueued
-		}
-		return r.recoverHandoffEnqueue(ctx, threadID, snapshot, revision, cfg.outbox, HandoffStatusEnqueued)
-	case HandoffStatusOrphaned:
-		return r.recoverHandoffEnqueue(ctx, threadID, snapshot, revision, cfg.outbox, HandoffStatusEnqueued)
-	case HandoffStatusPending:
-		if !isHandoffPendingStale(snapshot.RunMeta.HandoffPendingAt, cfg.staleAfter) {
-			emitResumeRejected(ctx, threadID, pointer, "handoff_pending")
-			return ErrHandoffPending
-		}
-		return r.recoverHandoffEnqueue(ctx, threadID, snapshot, revision, cfg.outbox, HandoffStatusEnqueued)
-	default:
-		return fmt.Errorf("%w: snapshot handoff status %q", ErrHandoffNotRecoverable, status)
-	}
+	return cfg
 }
 
 func isHandoffPendingStale(pendingAt time.Time, staleAfter time.Duration) bool {
 	if pendingAt.IsZero() {
-		return true // legacy rows without timestamp — treat as stale
+		return true // no freshness timestamp means recoverable immediately
 	}
 	return time.Since(pendingAt) > staleAfter
 }
@@ -273,6 +302,32 @@ func applyFSMPersistedHandoffMeta[T, E any](result *RunResult[T, E], fsm handoff
 	result.RunMeta.HandoffPendingAt = fsm.PersistedPendingAt
 }
 
+func applyFSMHandoffRecoveryResult[T, E any](
+	result *HandoffRecoveryResult[T, E],
+	fsm handoffOutboxFSMResult,
+) {
+	if result == nil {
+		return
+	}
+	if fsm.ResumeToken.ThreadID != "" {
+		result.ResumeToken = fsm.ResumeToken
+		result.Decision.ResumeToken = fsm.ResumeToken
+	}
+	if fsm.ResumeToken.SnapshotRevision != 0 {
+		result.SnapshotRevision = fsm.ResumeToken.SnapshotRevision
+		result.Decision.SnapshotRevision = fsm.ResumeToken.SnapshotRevision
+		result.Decision.Snapshot.Revision = fsm.ResumeToken.SnapshotRevision
+	}
+	if fsm.PersistedStatus != HandoffStatusNone {
+		result.HandoffStatus = fsm.PersistedStatus
+		result.Decision.HandoffStatus = fsm.PersistedStatus
+		result.Decision.RunMeta.HandoffStatus = fsm.PersistedStatus
+		result.Decision.RunMeta.HandoffPendingAt = fsm.PersistedPendingAt
+		result.Decision.Snapshot.RunMeta.HandoffStatus = fsm.PersistedStatus
+		result.Decision.Snapshot.RunMeta.HandoffPendingAt = fsm.PersistedPendingAt
+	}
+}
+
 // deriveHandoffTerminalReason maps persisted HandoffStatus to the terminal EventHandoff reason.
 // Orphaned status yields ReasonHandoffOrphaned; pending (failed patch) keeps the directive reason.
 func deriveHandoffTerminalReason(directiveReason string, status HandoffStatus) string {
@@ -313,13 +368,23 @@ func (r *graphRunner[T, E]) tryTransactionalHandoffSave(
 	if !ok || outbox == nil {
 		return 0, false, nil
 	}
+	txOutbox, ok := outbox.(TransactionalHandoffOutbox)
+	if !ok {
+		return 0, false, nil
+	}
 	meta.HandoffStatus = HandoffStatusEnqueued
 	meta.HandoffPendingAt = time.Time{}
 	snapshot.RunMeta = meta
-	enqueueToken := ResumeToken{ThreadID: threadID, SnapshotRevision: expectedRevision + 1}
-	newRev, err := txCP.SaveWithOutbox(runCtx, expectedRevision, snapshot, func(ctx context.Context) error {
-		return r.enqueueHandoffIntent(ctx, outbox, enqueueToken)
-	})
+	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(runCtx), contextCancelSaveTimeout)
+	defer cancelSave()
+	newRev, err := txCP.SaveWithOutbox(
+		saveCtx,
+		expectedRevision,
+		snapshot,
+		func(ctx context.Context, tx TransactionHandle, token ResumeToken) error {
+			return r.enqueueTransactionalHandoffIntent(ctx, txOutbox, tx, token)
+		},
+	)
 	if err != nil {
 		emitHandoffEnqueued(runCtx, threadID, snapshot.ExecutionPointer, transactionalHandoffMetricStatus(err))
 		return 0, true, err
@@ -331,6 +396,23 @@ func (r *graphRunner[T, E]) tryTransactionalHandoffSave(
 	return newRev, true, nil
 }
 
+func (r *graphRunner[T, E]) enqueueTransactionalHandoffIntent(
+	runCtx context.Context,
+	outbox TransactionalHandoffOutbox,
+	tx TransactionHandle,
+	token ResumeToken,
+) error {
+	enqueueCtx, cancelEnqueue := context.WithTimeout(
+		context.WithoutCancel(runCtx),
+		handoffEnqueueTimeout,
+	)
+	defer cancelEnqueue()
+	if err := outbox.EnqueueIntentTx(enqueueCtx, tx, token); err != nil {
+		return fmt.Errorf("%w: %w", ErrHandoffEnqueueFailed, err)
+	}
+	return nil
+}
+
 func (r *graphRunner[T, E]) recoverHandoffEnqueue(
 	ctx context.Context,
 	threadID string,
@@ -338,26 +420,37 @@ func (r *graphRunner[T, E]) recoverHandoffEnqueue(
 	expectedRevision uint64,
 	outbox HandoffOutbox,
 	targetStatus HandoffStatus,
-) error {
+) (handoffOutboxFSMResult, error) {
 	var inv runInvocationOptions[T, E]
 	fsm := r.runHandoffOutboxFSM(
 		ctx, threadID, expectedRevision, snapshot, snapshot.RunMeta,
 		inv, outbox,
 		snapshot.ExecutionPointer,
 	)
+	fsm = normalizeRecoveryFSMResult(snapshot.RunMeta, fsm)
 	if fsm.EnqueueErr != nil {
 		if fsm.PatchErr != nil {
-			return errors.Join(fsm.EnqueueErr, fsm.PatchErr)
+			return fsm, errors.Join(fsm.EnqueueErr, fsm.PatchErr)
 		}
-		return fsm.EnqueueErr
+		return fsm, fsm.EnqueueErr
 	}
 	if fsm.PatchErr != nil {
-		return wrapHandoffPatchRecoveryErr(fsm.PatchErr)
+		return fsm, wrapHandoffPatchRecoveryErr(fsm.PatchErr)
 	}
 	if targetStatus != HandoffStatusEnqueued {
-		return fmt.Errorf("flowy: unexpected recovery target status %q", targetStatus)
+		return fsm, fmt.Errorf("flowy: unexpected recovery target status %q", targetStatus)
 	}
-	return nil
+	return fsm, nil
+}
+
+func normalizeRecoveryFSMResult(initial RunMetadata, fsm handoffOutboxFSMResult) handoffOutboxFSMResult {
+	if fsm.PatchErr != nil &&
+		fsm.PersistedStatus == HandoffStatusPending &&
+		initial.HandoffStatus != HandoffStatusPending {
+		fsm.PersistedStatus = initial.HandoffStatus
+		fsm.PersistedPendingAt = initial.HandoffPendingAt
+	}
+	return fsm
 }
 
 func wrapHandoffPatchFailed(err error) error {

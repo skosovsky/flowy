@@ -130,7 +130,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffFromOrphaned(t *t
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[state, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "trace-recover-orphan-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "trace-recover-orphan-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 
@@ -178,7 +178,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffStalePending(t *t
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[state, flowy.NoEffect](time.Minute),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "trace-recover-stale-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "trace-recover-stale-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 
@@ -225,7 +225,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffFreshPending(t *t
 		flowy.WithRunnerHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[state, flowy.NoEffect](5 * time.Minute),
 	})
-	_ = runner.RecoverStaleHandoff(context.Background(), "trace-recover-pending-th")
+	_, _ = runner.RecoverStaleHandoff(context.Background(), "trace-recover-pending-th")
 
 	spans := sr.Ended()
 	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume_rejected" {

@@ -24,16 +24,16 @@ func TestDoDNoCheckpointCollectorWithValue(t *testing.T) {
 	assertNoCheckpointCollectorNeedles(t, testGoFilesForDoDScan(t), strictForbidden)
 }
 
-func TestDoDNoTask19LegacySymbols(t *testing.T) {
+func TestDoDNoRemovedHandoffSymbols(t *testing.T) {
 	t.Parallel()
 
-	task19Forbidden := []string{
+	removedHandoffForbidden := []string{
 		"HandoffScheduler",
 		"syncHandoffRunMetaFromCheckpointer",
 		"ErrStaleResumeToken",
 		"HandoffGeneration",
 		"type HandoffGeneration",
 	}
-	assertNoCheckpointCollectorNeedles(t, prodGoFilesForDoDScan(t), task19Forbidden)
-	assertNoCheckpointCollectorNeedles(t, testGoFilesForDoDScan(t), task19Forbidden)
+	assertNoCheckpointCollectorNeedles(t, prodGoFilesForDoDScan(t), removedHandoffForbidden)
+	assertNoCheckpointCollectorNeedles(t, testGoFilesForDoDScan(t), removedHandoffForbidden)
 }

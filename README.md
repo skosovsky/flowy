@@ -20,18 +20,18 @@ type Builder = flowy.GraphBuilder[AgentState, AgentEffect]
 b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 ```
 
-## Migration from v1
+## Migration from Previous API
 
-| v1                                | Current API                                                                             |
+| Previous API                      | Current API                                                                             |
 | --------------------------------- | --------------------------------------------------------------------------------------- |
 | `flowy.Next(nodeID)`              | **Удалено** — только `Completed()` + `AddEdge` / `AddConditionalEdge`                   |
 | `Graph[T]`, `Runner[T]`           | `Graph[T, E]`, `Runner[T, E]`                                                           |
 | `Effect(base, any)`               | `Effect[E](base, payload E)`                                                            |
 | `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                                  |
 | string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                                         |
-| `WithResumeReconciler`            | state implements `ResumeReconciler.ReconcileResume()`                                   |
+| implicit state resume hook        | explicit `WithResumeTargetPolicy` run option                                            |
 | `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, SnapshotRevision})`                     |
-| Checkpointer pointer rewrite      | `WithSuspendPointerResolver` (save-path, до `Checkpointer.Save`)                        |
+| Checkpointer pointer rewrite      | `Suspend(..., ResumeAt(node))` / `Handoff(..., ResumeAt(node))`                         |
 | Manual handoff queue + rollback   | `WithHandoffOutbox` (save → `EnqueueIntent`; snapshot сохраняется, `HandoffStatus` FSM) |
 | context error collectors          | `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` + `EventCheckpointFailed`  |
 | ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                                 |
@@ -41,7 +41,7 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 
 ### Migration example (routing)
 
-**Before (v1):** узел возвращал target id через `flowy.Next("heavy_llm")`.
+**Before:** узел возвращал target id через `flowy.Next("heavy_llm")`.
 
 **After:** узел возвращает `flowy.Completed()`, маршрут объявляется в builder:
 
@@ -64,34 +64,40 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 4. `WithStateOverlay` (optional, deterministic merge)
 5. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
 6. `WithRunMetadata` merge (optional)
-7. `ResumeReconciler.ReconcileResume()` (optional pointer rewind после overlay)
+7. `WithResumeTargetPolicy` (optional explicit state-aware target после overlay)
 8. validate active `ExecutionPointer` (non-empty, узел в графе)
-9. `execute` с активного (post-reconcile) `ExecutionPointer`
+9. `execute` с активного `ExecutionPointer`
 
 `WithInvariantValidator` — in-loop в `execute`, не в `prepareResume`.
 
-### Pointer rewind
+### State-aware resume target
 
-Когда overlay делает сохранённый wait-узел stale (например, HITL: вместо ответа пользователя пришёл новый маршрут), реализуйте `ResumeReconciler` на state и верните другой `ExecutionPointer` из `ReconcileResume`. Движок валидирует, что узел существует в графе, и стартует execute с возвращённого pointer.
+Когда overlay делает сохранённый wait-узел stale (например, HITL: вместо ответа пользователя пришёл новый маршрут), передайте явную `WithResumeTargetPolicy`. Движок валидирует, что узел существует в графе, и стартует execute с возвращённого pointer.
 
 ```go
-func (s *MyState) ReconcileResume(currentPtr flowy.ExecutionPointer) (flowy.ExecutionPointer, error) {
-    if currentPtr == "wait_user" && s.RouteReady {
-        return "router", nil
-    }
-    return currentPtr, nil
-}
+res, err := runner.Resume(ctx, token,
+    flowy.WithStateOverlay[State, Effect](overlay, mergeFn),
+    flowy.WithResumeTargetPolicy[State, Effect](
+        func(ctx context.Context, state State, current flowy.ExecutionPointer) (State, flowy.ExecutionPointer, error) {
+            if current == "wait_user" && state.RouteReady {
+                return state, "router", nil
+            }
+            return state, current, nil
+        },
+    ),
+)
 ```
 
-См. `examples/conditional_routing` (сценарий 4 — rewind), `examples/hitl_agent` (default overlay resume без rewind) и unit-тест `TestResumeReconcilerPointerRewind` в `runner_resume_overlay_test.go`.
+См. `examples/conditional_routing` и unit-тест `TestResumeTargetPolicyRewritesPointer` в `runner_resume_overlay_test.go`.
 
 `DeleteIfIdle` и delete-on-success применяются **после** `execute` и `releaseLease` (`postRunCleanup`). `Prune` (retention) — **in-loop** при suspend/handoff/cancel, до release.
-Prod: paired `adapters/checkpointer/*` + `adapters/lease/*` с одним store/prefix.
+Prod: pair native checkpointer and lease adapters in one coordination domain.
 
 ## Directives
 
 - `flowy.Completed()` — делегирует маршрутизацию графу
-- `flowy.End()` / `flowy.Fail(reason)` / `flowy.Suspend(reason)`
+- `flowy.End()` / `flowy.Fail(reason)` / `flowy.Suspend(reason, flowy.ResumeAt(node))`
+- `flowy.Handoff(reason, flowy.ResumeAt(node))`
 - `flowy.Retry(maxAttempts)` — fallback через `AddRetryRoute(from, to)`
 - `flowy.Effect[E](base, payload)`
 
@@ -116,7 +122,7 @@ runner := graph.NewRunnerWithOptions(cp, []flowy.RunnerOption[State, Effect]{
     flowy.WithLeaseManager[State, Effect](leaseMgr),
 })
 
-// После Suspend/Handoff используйте result.ResumeToken (или ResumeTokenFromSnapshot после Load).
+// После Suspend/Handoff используйте только result.ResumeToken.
 res, err := runner.Resume(ctx, suspended.ResumeToken,
     flowy.WithBindings[State, Effect](bindings),
     flowy.WithStateOverlay[State, Effect](overlay, mergeFn),
@@ -128,20 +134,21 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 )
 ```
 
-### Lifecycle contracts (Task18 + Task19)
+### Lifecycle contracts (Task20)
 
-- **Save-path pointer:** `WithSuspendPointerResolver` нормализует `ExecutionPointer` до `Save` на Suspend/Handoff (Checkpointer остаётся dumb CRUD).
-- **Strict OCC Checkpointer:** `Save(ctx, expectedRevision, snapshot) (newRevision, error)` и `Load(ctx, threadID) (snapshot, revision, error)`. Конфликт Save или несовпадение `ResumeToken.SnapshotRevision` при `Resume` → `ErrConcurrencyConflict` (воркер: Load → свежий `ResumeToken` → retry).
-- **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → `EnqueueIntent` (token rev = pending) → patch `enqueued` / `orphaned`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, БД может остаться `pending`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). **Phase B:** при `TransactionalCheckpointer` (postgres `SaveWithOutbox`) initial handoff сохраняет `enqueued` в одной TX с `EnqueueIntent` (без `pending`); tx через `ContextWithOutboxTx` / `postgres.PgxTxFromContext`. `WithRunLease` + memory/redis CP: lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе 3-phase FSM. At-least-once: consumer идемпотентен по `thread_id`.
-- **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM, даже с postgres TX adapter. `WithRecoverForceReenqueue(true)` — reconcile `enqueued` без сообщения в outbox. Cron recovery — **single-leader** или worker с `WithRunLease`. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` на legacy rows = stale сразу.
-- **Worst-case runbook:** enqueue OK + оба patch fail → БД `pending@N`, сообщение в outbox; consumer получает stale token → `Load` → `RecoverStaleHandoff` после TTL. Query: `handoff_status='pending' AND handoff_pending_at < now() - interval '5 min'` OR `handoff_status='orphaned'`.
-- **LifecycleObserver:** process-wide hook (`SetLifecycleObserver`); production bootstrap: `ext/otel.InstallLifecycleObserver()` (+ optional `InstallLifecycleObserverWithTracing()`). Метрики `handoff_enqueued_total{status}`: `success`, `enqueue_failed`, `patch_enqueued_failed`, `patch_orphan_failed`, `save_failed`, `commit_failed`.
-- **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с resolved pointer в snapshot (после `WithSuspendPointerResolver`), как и terminal events.
+- **Resume target:** `ResumeAt(node)` на `Suspend`/`Handoff` задает persisted `ExecutionPointer` до `Save`; target валидируется ядром.
+- **Strict OCC Checkpointer:** `Save(ctx, expectedRevision, snapshot) (newRevision, error)` и `Load(ctx, threadID) (snapshot, revision, error)`. Конфликт Save или несовпадение `ResumeToken.SnapshotRevision` при `Resume` → `ErrConcurrencyConflict`; orchestration code вызывает `EvaluateResume` и получает typed decision с текущим core-issued token, когда snapshot уже продвинулся.
+- **Resume preflight:** `EvaluateResume` и `EvaluateHandoffRecovery` возвращают typed `ResumeDecision`; `Resume`, `ResumeStream` и `RecoverStaleHandoff` используют тот же normalized path.
+- **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → `EnqueueIntent` (pending token) → patch `enqueued` / `orphaned`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, snapshot может остаться `pending`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). Transactional path требует `TransactionalCheckpointer.SaveWithOutbox` и `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, token)`: checkpointer передает authoritative token в callback вместе с explicit transaction handle; context-carried transaction state не используется. Lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе используется 3-phase FSM. At-least-once consumer начинает с `EvaluateResume`: stale-token decision возвращает текущий core-issued token, pending/orphaned уводит в recovery contract.
+- **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM. Возвращает `HandoffRecoveryResult` + error; result содержит typed `Decision`, `ResumeToken`, snapshot revision, recovered status и persisted handoff status. `WithRecoverForceReenqueue(true)` — force re-enqueue для `enqueued` без сообщения в outbox. Cron recovery должен быть **single-leader** или защищен external lock; `RecoverStaleHandoff` сам не берет run lease. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` считается stale сразу.
+- **Worst-case runbook:** enqueue OK + оба patch fail → snapshot `pending@N`, сообщение в outbox; consumer получает `handoff_pending` decision и не вызывает `Resume` до `RecoverStaleHandoff` после TTL. Recovery scanner берет checkpoints со статусом `orphaned` или `pending` старше configured stale window.
+- **LifecycleObserver:** process-wide hook (`SetLifecycleObserver`) receives handoff/recovery/checkpoint-soft events. Метрики `handoff_enqueued_total{status}`: `success`, `enqueue_failed`, `patch_enqueued_failed`, `patch_orphan_failed`, `save_failed`, `commit_failed`.
+- **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с persisted pointer в snapshot, как и terminal events.
 - **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
 - **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune (Completed/Failed) — log only.
-- **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.Wait()` не возвращает `RunResult` — только ошибку завершения goroutine (`nil` после RequestStop+persist, `ErrCheckpointSkipped` при SkipOnSaveError skip, `context.Canceled` при ctx cancel, wrapped error при retention/enqueue fail).
+- **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.WaitResult()` возвращает terminal `RunResult` + error; `Wait()` оставлен как error-only helper.
 - **RequestLocalHandoff return matrix:** `nil` = persisted handoff; `ErrCheckpointSkipped` = SkipOnSaveError skip (no snapshot); `ErrHandoffEnqueueFailed` = enqueue fail after persist (snapshot + `ResumeToken` for Outbox retry); wrapped retention/save errors otherwise. Stream `RequestLocalHandoff` mirrors the same errors on `Wait()`.
-- **Persist-vs-event / consumer stop:** после `RequestStop` terminal event может не дойти до consumer; **snapshot/checkpointer — source of truth**. Не вызывайте `RequestLocalHandoff` после `RequestStop` (`ErrNoActiveExecution`).
+- **Persist-vs-event / consumer stop:** terminal event может не дойти до consumer; terminal `RunResult` из `WaitResult()` остается source of truth для run outcome, а checkpoint нужен для durable resume/recovery. Не вызывайте `RequestLocalHandoff` после `RequestStop` (`ErrNoActiveExecution`).
 - **Stream consumer helpers:** `CollectEventsAndWait`, `ConsumeEventsAndWait`, `BeginStreamCollect` + `AwaitStreamCollect` — безопасный drain+`Wait` без дедлока. Примеры:
 
 ```go
@@ -157,8 +164,9 @@ err := flowy.ConsumeEventsAndWait(ctx, handle, func(ev flowy.RunEvent[S, E]) boo
 out := flowy.BeginStreamCollect(handle)
 handle.RequestStop() // или RequestLocalHandoff / ctx cancel
 result, err := flowy.AwaitStreamCollect(ctx, handle, out)
+outcome := result.Outcome
 
-// Handoff/HITL: snapshot + ResumeToken после await
+// Handoff/HITL: terminal outcome owns ResumeToken; optional snapshot load is diagnostic only
 result, err := flowy.AwaitStreamCollectWithSnapshot(ctx, handle, out, cp, threadID)
 ```
 
@@ -183,9 +191,7 @@ type Checkpointer[T, E any] interface {
 
 Compile-time policies: `WithDeleteOnSuccess(true)` (использует `DeleteIfIdle`), `WithRetentionLimit(n)`.
 
-Postgres/Redis adapters: атомарный `DeleteIfIdle` в storage. Prod: используйте пару `adapters/checkpointer/{postgres,redis}` + `adapters/lease/{postgres,redis}` с одним prefix/store. In-process dev — auto-wrap `NewLeaseGuardCheckpointer` (только для non-native checkpointer).
-
-Redis: `Options.LeasePrefix` checkpointer должен совпадать с `Options.Prefix` lease manager (иначе `DeleteIfIdle` обходит lease guard). Postgres использует общую таблицу `flowy_leases`.
+Native adapters should pair checkpointer and lease records in the same coordination domain. In-process dev auto-wraps `NewLeaseGuardCheckpointer` for non-native checkpointers.
 
 ## DX Recommendations
 
@@ -205,14 +211,7 @@ make test-race && make test-goleak && make lint
 go test -count=20 -run 'Close|Stop|Wait|Handoff|Lease|Checkpoint|ResumeStream|StreamCollect|ConsumeEvents' .
 ```
 
-Опционально integration-тесты paired lease + checkpointer (включая runner handoff E2E на postgres adapter):
-
-```bash
-go test -tags=integration ./adapters/checkpointer/redis/...
-FLOWY_TEST_DATABASE_URL=postgres://... go test -tags=integration ./adapters/checkpointer/postgres/...
-```
-
-Runner postgres E2E (`TestRunnerHandoffPostgresTransactional*`, `TestRecoverStaleHandoffPostgres*`) живут в `adapters/checkpointer/postgres/integration_test.go` — не добавляйте root `//go:build integration` с импортом `checkpoint`/adapter (import cycle).
+Adapter-specific integration tests live with their adapter modules; keep adapter imports out of root integration tests to avoid import cycles.
 
 Stress gate для handoff/resume/orphan контрактов:
 

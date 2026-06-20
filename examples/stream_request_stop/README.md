@@ -5,7 +5,7 @@ Demonstrates the safe consumer pattern when stopping a stream from another gorou
 1. `BeginStreamCollect(handle)` — background drain + `Wait`
 2. `RequestStop` — cancel run and close event sink
 3. `AwaitStreamCollect(ctx, handle, out)` — join without deadlock
-4. `AwaitStreamCollectWithSnapshot(ctx, handle, out, cp, threadID)` — load checkpoint + `ResumeToken` for Handoff/HITL
+4. `AwaitStreamCollectWithSnapshot(ctx, handle, out, cp, threadID)` — optional checkpoint load; `Outcome.ResumeToken` remains authoritative
 
 Run:
 

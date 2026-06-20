@@ -12,23 +12,23 @@ func TestInfraFailureStreamEventReasonMatchesSync(t *testing.T) {
 
 	t.Run("handoff resolve invalid pointer", func(t *testing.T) {
 		t.Parallel()
-		g, cp, opts := infraFailureHandoffResolveGraph(t)
+		g, cp := infraFailureHandoffResolveGraph(t)
 		assertInfraFailureStreamSync(
 			t,
 			g,
 			cp,
-			opts,
+			nil,
 			RunStatusFailed,
 			EventFailed,
 			"",
-			ReasonHandoffPointerResolveFailed,
+			ReasonHandoffResumeTargetInvalid,
 		)
 	})
 
 	t.Run("handoff save hard fail", func(t *testing.T) {
 		t.Parallel()
-		g, cp, opts := infraFailureHandoffSaveGraph(t)
-		assertInfraFailureStreamSync(t, g, cp, opts, RunStatusFailed, EventFailed, "router", ReasonHandoffSaveFailed)
+		g, cp := infraFailureHandoffSaveGraph(t)
+		assertInfraFailureStreamSync(t, g, cp, nil, RunStatusFailed, EventFailed, "router", ReasonHandoffSaveFailed)
 	})
 }
 

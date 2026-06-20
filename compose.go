@@ -17,7 +17,7 @@ type SubgraphSlot[Sub, E any] struct {
 // SubgraphNode runs a subgraph with state mapped from parent to sub and back.
 // For suspend/handoff resume at the inner node, use SubgraphNodeWithSlot.
 // Nested subgraph runners do not inherit parent RunOptions (WithBindings, WithRunMetadata,
-// WithRunLease, WithStateOverlay, WithSuspendPointerResolver, WithHandoffOutbox,
+// WithRunLease, WithStateOverlay, WithHandoffOutbox,
 // WithCheckpointErrorPolicy). Parent ctx values and BindingFromContext still apply in subgraph nodes.
 func SubgraphNode[Parent, Sub, E any](
 	sub *Graph[Sub, E],

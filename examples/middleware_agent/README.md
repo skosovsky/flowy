@@ -4,7 +4,7 @@
 
 ## Слои
 
-- `loggingMiddleware` — замер длительности каждого узла (шаблон для Langfuse/OpenTelemetry).
+- `loggingMiddleware` — замер длительности каждого узла (шаблон для tracing adapters).
 - `flowy.RecoverMiddleware` — panic в узле превращается в ошибку, процесс не падает.
 
 ## Запуск
@@ -14,9 +14,9 @@ cd examples/middleware_agent
 go run main.go
 ```
 
-## Миграция с legacy
+## Миграция
 
-| Legacy                    | v2                            |
+| Старый подход             | Current API                   |
 | ------------------------- | ----------------------------- |
 | `ExecutionChain`          | `NodeMiddleware` + `Use(...)` |
 | Локальные обёртки вручную | Onion-цепочка на compile      |
@@ -25,18 +25,6 @@ go run main.go
 
 Второй прогон использует `Stream` + `CollectEventsAndWait` (безопасный drain + `Wait`): при panic в `unstable` ожидайте терминальное событие `failed` в потоке.
 
-## Boxed OTel middleware
+## Adapter middleware
 
-```go
-import flowyotel "github.com/skosovsky/flowy/ext/otel"
-
-flowyotel.InstallTelemetryBridge()
-if err := flowyotel.InstallLifecycleObserver(); err != nil {
-	log.Fatal(err)
-}
-graph, _ := flowy.NewGraph[State, flowy.NoEffect](reducer).
-	Use(flowyotel.TracingMiddleware[State, flowy.NoEffect](tracer)).
-	Compile()
-```
-
-`InstallLifecycleObserver` регистрирует counters `flowy.handoff_enqueued_total`, `flowy.resume_rejected_total`, `flowy.checkpoint_soft_error_total` (атрибуты `thread_id`, `node`, `status`/`reason`).
+Middleware adapters should stay outside state and snapshot contracts: install them at graph build time with `Use(...)`, keep persisted state type-owned by the application, and avoid storing telemetry/session objects in `Snapshot`.

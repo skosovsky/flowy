@@ -20,8 +20,16 @@ func TestRecoverStaleHandoffFromOrphaned(t *testing.T) {
 	})
 
 	runner := newRecoverWorkRunner(t, cp, outbox)
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "orphan-th"); recoverErr != nil {
+	result, recoverErr := runner.RecoverStaleHandoff(context.Background(), "orphan-th")
+	if recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
+	}
+	if !result.Recovered ||
+		result.Decision.Status != ResumeDecisionHandoffRecoverable ||
+		result.HandoffStatus != HandoffStatusEnqueued ||
+		result.ResumeToken.ThreadID != "orphan-th" ||
+		result.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("unexpected recovery result: %+v", result)
 	}
 	if len(outbox.calls) != 1 {
 		t.Fatalf("expected one enqueue, got %d", len(outbox.calls))
@@ -64,7 +72,7 @@ func TestRecoverStaleHandoffFromOrphanedLifecycleObserver(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-obs-orphan-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-obs-orphan-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	obs.mu.Lock()
@@ -106,7 +114,7 @@ func TestRecoverStaleHandoffFreshPendingRejected(t *testing.T) {
 		WithRunnerHandoffOutbox[state, NoEffect](&stubHandoffOutbox{}),
 		WithHandoffStaleAfter[state, NoEffect](5 * time.Minute),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "fresh-pending-th")
+	_, err = runner.RecoverStaleHandoff(context.Background(), "fresh-pending-th")
 	if !errors.Is(err, ErrHandoffPending) {
 		t.Fatalf("expected ErrHandoffPending, got %v", err)
 	}
@@ -146,7 +154,7 @@ func TestRecoverStaleHandoffFreshPendingRejectedNoObserverMetric(t *testing.T) {
 		WithRunnerHandoffOutbox[state, NoEffect](&stubHandoffOutbox{}),
 		WithHandoffStaleAfter[state, NoEffect](5 * time.Minute),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "fresh-pending-obs-th")
+	_, err = runner.RecoverStaleHandoff(context.Background(), "fresh-pending-obs-th")
 	if !errors.Is(err, ErrHandoffPending) {
 		t.Fatalf("expected ErrHandoffPending, got %v", err)
 	}
@@ -193,7 +201,7 @@ func TestRecoverStaleHandoffStalePendingEnqueues(t *testing.T) {
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 		WithHandoffStaleAfter[state, NoEffect](time.Minute),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "stale-pending-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "stale-pending-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if len(outbox.calls) != 1 {
@@ -252,25 +260,25 @@ func TestHandoffCrashBetweenPendingAndPatchRecoverable(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "crash-window-th"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "crash-window-th"); recoverErr != nil {
 		t.Fatalf("recover after crash window: %v", recoverErr)
 	}
 	assertEnqueuedHandoffSnapshot(t, cp, "crash-window-th")
 }
 
-func TestRecoverStaleHandoffLegacyPendingZeroTimestamp(t *testing.T) {
+func TestRecoverStaleHandoffZeroPendingTimestamp(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 	outbox := &stubHandoffOutbox{}
 	cp := newMemoryCP[state, NoEffect]()
 	if _, err := cp.Save(context.Background(), 0, Snapshot[state, NoEffect]{
-		ThreadID:         "legacy-zero-pending-th",
+		ThreadID:         "zero-pending-th",
 		ExecutionPointer: "work",
 		State:            state{},
 		RunMeta: RunMetadata{
 			HandoffStatus: HandoffStatusPending,
-			// HandoffPendingAt zero — legacy row, treated as stale immediately.
+			// HandoffPendingAt zero has no freshness evidence and is stale immediately.
 		},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
@@ -290,10 +298,10 @@ func TestRecoverStaleHandoffLegacyPendingZeroTimestamp(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	if recoverErr := runner.RecoverStaleHandoff(context.Background(), "legacy-zero-pending-th"); recoverErr != nil {
-		t.Fatalf("recover legacy pending: %v", recoverErr)
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "zero-pending-th"); recoverErr != nil {
+		t.Fatalf("recover zero pending timestamp: %v", recoverErr)
 	}
-	assertEnqueuedHandoffSnapshot(t, cp, "legacy-zero-pending-th")
+	assertEnqueuedHandoffSnapshot(t, cp, "zero-pending-th")
 }
 
 func TestRecoverStaleHandoffAlreadyEnqueued(t *testing.T) {
@@ -326,7 +334,7 @@ func TestRecoverStaleHandoffAlreadyEnqueued(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](&stubHandoffOutbox{}),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "already-enqueued-th")
+	_, err = runner.RecoverStaleHandoff(context.Background(), "already-enqueued-th")
 	if !errors.Is(err, ErrHandoffAlreadyEnqueued) {
 		t.Fatalf("expected ErrHandoffAlreadyEnqueued, got %v", err)
 	}
@@ -342,9 +350,15 @@ func TestRecoverStaleHandoffWithoutOutbox(t *testing.T) {
 	})
 
 	runner := newRecoverWorkRunner(t, cp, nil)
-	err := runner.RecoverStaleHandoff(context.Background(), "no-outbox-recover-th")
+	result, err := runner.RecoverStaleHandoff(context.Background(), "no-outbox-recover-th")
 	if !errors.Is(err, ErrHandoffOutboxRequired) {
 		t.Fatalf("expected ErrHandoffOutboxRequired, got %v", err)
+	}
+	if result.Decision.Status != ResumeDecisionHandoffRecoverable ||
+		result.Decision.Reason != "handoff_outbox_required" ||
+		result.Decision.ThreadID != "no-outbox-recover-th" ||
+		result.Recovered {
+		t.Fatalf("unexpected recovery result: %+v", result)
 	}
 }
 
@@ -353,7 +367,7 @@ func TestRecoverStaleHandoffEmptyThreadID(t *testing.T) {
 
 	type state struct{}
 	runner := newRecoverWorkRunner(t, newMemoryCP[state, NoEffect](), &stubHandoffOutbox{})
-	err := runner.RecoverStaleHandoff(context.Background(), "")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty threadID")
 	}
@@ -370,7 +384,7 @@ func TestRecoverStaleHandoffOnNoneStatus(t *testing.T) {
 	seedRecoverSnapshot(t, cp, "none-status-th", state{}, RunMetadata{HandoffStatus: HandoffStatusNone})
 
 	runner := newRecoverWorkRunner(t, cp, &stubHandoffOutbox{})
-	err := runner.RecoverStaleHandoff(context.Background(), "none-status-th")
+	_, err := runner.RecoverStaleHandoff(context.Background(), "none-status-th")
 	if !errors.Is(err, ErrHandoffNotRecoverable) {
 		t.Fatalf("expected ErrHandoffNotRecoverable, got %v", err)
 	}
@@ -391,12 +405,19 @@ func TestRecoverHandoffEnqueueSaveFailsAfterEnqueue(t *testing.T) {
 	})
 
 	runner := newRecoverWorkRunner(t, cp, outbox)
-	recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-patch-fail-th")
+	result, recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-patch-fail-th")
 	if recoverErr == nil {
 		t.Fatal("expected recovery patch failure")
 	}
 	if !errors.Is(recoverErr, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed, got %v", recoverErr)
+	}
+	if result.Recovered ||
+		result.HandoffStatus != HandoffStatusOrphaned ||
+		result.Decision.HandoffStatus != HandoffStatusOrphaned ||
+		result.ResumeToken.ThreadID != "recover-patch-fail-th" ||
+		result.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("unexpected partial recovery result: %+v", result)
 	}
 	if len(outbox.calls) != 1 {
 		t.Fatalf("expected enqueue before patch fail, got %d calls", len(outbox.calls))
@@ -443,9 +464,17 @@ func TestRecoverHandoffEnqueueOrphanClearsHandoffPendingAt(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-orphan-ts-th")
+	result, recoverErr := runner.RecoverStaleHandoff(context.Background(), "recover-orphan-ts-th")
 	if !errors.Is(recoverErr, ErrHandoffEnqueueFailed) {
 		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", recoverErr)
+	}
+	if result.Recovered ||
+		result.HandoffStatus != HandoffStatusOrphaned ||
+		result.Decision.HandoffStatus != HandoffStatusOrphaned ||
+		!result.Decision.RunMeta.HandoffPendingAt.IsZero() ||
+		result.ResumeToken.ThreadID != "recover-orphan-ts-th" ||
+		result.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("unexpected partial recovery result: %+v", result)
 	}
 	assertOrphanedHandoffSnapshot(t, cp, "recover-orphan-ts-th", nil, "")
 }
@@ -481,7 +510,7 @@ func TestHandoffFalseEnqueuedWithoutMessage(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "false-enqueued-th")
+	_, err = runner.RecoverStaleHandoff(context.Background(), "false-enqueued-th")
 	if !errors.Is(err, ErrHandoffAlreadyEnqueued) {
 		t.Fatalf("expected ErrHandoffAlreadyEnqueued, got %v", err)
 	}
@@ -521,7 +550,7 @@ func TestHandoffForceReenqueueFalseEnqueued(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "force-reenqueue-th",
+	_, err = runner.RecoverStaleHandoff(context.Background(), "force-reenqueue-th",
 		WithRecoverForceReenqueue(true),
 	)
 	if err != nil {
@@ -569,7 +598,8 @@ func TestRecoverStaleHandoffConcurrent(t *testing.T) {
 	errCh := make(chan error, workers)
 	for range workers {
 		go func() {
-			errCh <- runner.RecoverStaleHandoff(context.Background(), "recover-concurrent-th")
+			_, err := runner.RecoverStaleHandoff(context.Background(), "recover-concurrent-th")
+			errCh <- err
 		}()
 	}
 	var success int
@@ -626,12 +656,19 @@ func TestRecoverStaleHandoffBothPatchesFail(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []RunnerOption[state, NoEffect]{
 		WithRunnerHandoffOutbox[state, NoEffect](outbox),
 	})
-	err = runner.RecoverStaleHandoff(context.Background(), "recover-both-fail-th")
+	result, err := runner.RecoverStaleHandoff(context.Background(), "recover-both-fail-th")
 	if err == nil {
 		t.Fatal("expected recovery patch failure")
 	}
 	if !errors.Is(err, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
+	}
+	if result.Recovered ||
+		result.HandoffStatus != HandoffStatusOrphaned ||
+		result.Decision.HandoffStatus != HandoffStatusOrphaned ||
+		result.ResumeToken.ThreadID != "recover-both-fail-th" ||
+		result.ResumeToken.SnapshotRevision == 0 {
+		t.Fatalf("unexpected partial recovery result: %+v", result)
 	}
 	if len(outbox.calls) != 1 {
 		t.Fatalf("expected one enqueue before patch failures, got %d", len(outbox.calls))

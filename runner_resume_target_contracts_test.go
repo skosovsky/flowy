@@ -6,14 +6,14 @@ import (
 	"testing"
 )
 
-func TestSuspendPointerResolverRewritesSave(t *testing.T) {
+func TestSuspendResumeAtRewritesSave(t *testing.T) {
 	t.Parallel()
 
 	type state struct{ N int }
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -27,12 +27,7 @@ func TestSuspendPointerResolverRewritesSave(t *testing.T) {
 	}
 
 	cp := newMemoryCP[state, NoEffect]()
-	runner := g.NewRunner(cp)
-	_, err = runner.Start(context.Background(), "resolver-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		}),
-	)
+	_, err = g.NewRunner(cp).Start(context.Background(), "resume-at-th", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -41,14 +36,14 @@ func TestSuspendPointerResolverRewritesSave(t *testing.T) {
 	}
 }
 
-func TestSuspendPointerResolverInvalidPointer(t *testing.T) {
+func TestSuspendResumeAtInvalidPointer(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("ghost")), nil
 	})
 	b.AllowNoOutgoingRoute("wait")
 	b.SetEntryPoint("wait")
@@ -58,30 +53,26 @@ func TestSuspendPointerResolverInvalidPointer(t *testing.T) {
 	}
 
 	cp := newMemoryCP[state, NoEffect]()
-	res, err := g.NewRunner(cp).Start(context.Background(), "invalid-ptr-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "ghost", nil
-		}),
-	)
+	res, err := g.NewRunner(cp).Start(context.Background(), "invalid-resume-at-th", state{})
 	if err == nil {
-		t.Fatal("expected error for invalid suspend pointer")
+		t.Fatal("expected error for invalid suspend resume target")
 	}
 	if res == nil || res.Status != RunStatusFailed {
 		t.Fatalf("expected RunStatusFailed, got res=%+v", res)
 	}
-	if _, _, loadErr := cp.Load(context.Background(), "invalid-ptr-th"); !errors.Is(loadErr, ErrThreadNotFound) {
+	if _, _, loadErr := cp.Load(context.Background(), "invalid-resume-at-th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("snapshot must not be saved on invalid pointer, load err=%v", loadErr)
 	}
 }
 
-func TestSuspendPointerResolverOnHandoff(t *testing.T) {
+func TestHandoffResumeAtRewritesSave(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Handoff("bg"), nil
+		return s, Handoff("bg", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Completed(), nil
@@ -95,11 +86,7 @@ func TestSuspendPointerResolverOnHandoff(t *testing.T) {
 	}
 
 	cp := newMemoryCP[state, NoEffect]()
-	_, err = g.NewRunner(cp).Start(context.Background(), "handoff-resolver-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		}),
-	)
+	_, err = g.NewRunner(cp).Start(context.Background(), "handoff-resume-at-th", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -108,7 +95,7 @@ func TestSuspendPointerResolverOnHandoff(t *testing.T) {
 	}
 }
 
-func TestStreamHardFailSaveUsesResolvedPointer(t *testing.T) {
+func TestStreamHardFailSaveUsesResumeAtPointer(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -116,7 +103,7 @@ func TestStreamHardFailSaveUsesResolvedPointer(t *testing.T) {
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -129,12 +116,7 @@ func TestStreamHardFailSaveUsesResolvedPointer(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	resolver := WithSuspendPointerResolver[state, NoEffect](
-		func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		},
-	)
-	handle, err := g.NewRunner(cp).Stream(context.Background(), "stream-hardfail-ptr-th", state{}, resolver)
+	handle, err := g.NewRunner(cp).Stream(context.Background(), "stream-hardfail-ptr-th", state{})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
@@ -143,7 +125,7 @@ func TestStreamHardFailSaveUsesResolvedPointer(t *testing.T) {
 		t.Fatal("expected save failure")
 	}
 
-	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "stream-hardfail-ptr-sync-th", state{}, resolver)
+	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "stream-hardfail-ptr-sync-th", state{})
 	if syncErr == nil {
 		t.Fatalf("expected sync save failure, got %+v", syncRes)
 	}
@@ -166,43 +148,7 @@ func TestStreamHardFailSaveUsesResolvedPointer(t *testing.T) {
 	assertEventFailedReasonMatchesSync(t, events, ReasonSuspendSaveFailed)
 }
 
-func TestSuspendPointerResolverReturnsError(t *testing.T) {
-	t.Parallel()
-
-	type state struct{}
-
-	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
-	})
-	b.AllowNoOutgoingRoute("wait")
-	b.SetEntryPoint("wait")
-	g, err := b.Compile()
-	if err != nil {
-		t.Fatalf("compile: %v", err)
-	}
-
-	cp := newMemoryCP[state, NoEffect]()
-	res, err := g.NewRunner(cp).Start(context.Background(), "resolver-err-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "", errors.New("resolver rejected")
-		}),
-	)
-	if err == nil {
-		t.Fatal("expected resolver error")
-	}
-	if res == nil || res.Status != RunStatusFailed {
-		t.Fatalf("expected RunStatusFailed, got res=%+v", res)
-	}
-	if res.Reason != ReasonSuspendPointerResolveFailed {
-		t.Fatalf("expected reason %q, got %q", ReasonSuspendPointerResolveFailed, res.Reason)
-	}
-	if _, _, loadErr := cp.Load(context.Background(), "resolver-err-th"); !errors.Is(loadErr, ErrThreadNotFound) {
-		t.Fatalf("snapshot must not be saved, load err=%v", loadErr)
-	}
-}
-
-func TestSuspendSaveFailUsesResolvedPointer(t *testing.T) {
+func TestSuspendSaveFailUsesResumeAtPointer(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -210,7 +156,7 @@ func TestSuspendSaveFailUsesResolvedPointer(t *testing.T) {
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -223,11 +169,7 @@ func TestSuspendSaveFailUsesResolvedPointer(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	res, err := g.NewRunner(cp).Start(context.Background(), "suspend-ptr-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		}),
-	)
+	res, err := g.NewRunner(cp).Start(context.Background(), "suspend-ptr-th", state{})
 	if err == nil {
 		t.Fatalf("expected save failure, got %+v", res)
 	}
@@ -236,7 +178,7 @@ func TestSuspendSaveFailUsesResolvedPointer(t *testing.T) {
 	}
 }
 
-func TestContextCancelSaveIgnoresSuspendPointerResolver(t *testing.T) {
+func TestContextCancelSaveIgnoresResumeAtDirective(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -259,31 +201,27 @@ func TestContextCancelSaveIgnoresSuspendPointerResolver(t *testing.T) {
 	cp := newMemoryCP[state, NoEffect]()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	res, err := g.NewRunner(cp).Start(ctx, "cancel-resolver-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		}),
-	)
+	res, err := g.NewRunner(cp).Start(ctx, "cancel-resume-at-th", state{})
 	if err == nil {
 		t.Fatalf("expected cancel error, got res=%+v", res)
 	}
-	snap, _, loadErr := cp.Load(context.Background(), "cancel-resolver-th")
+	snap, _, loadErr := cp.Load(context.Background(), "cancel-resume-at-th")
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
 	if snap.ExecutionPointer != "loop" {
-		t.Fatalf("cancel save must keep suspend-node pointer %q, got %q", "loop", snap.ExecutionPointer)
+		t.Fatalf("cancel save must keep current pointer %q, got %q", "loop", snap.ExecutionPointer)
 	}
 }
 
-func TestCheckpointerStoresResolvedPointerOnly(t *testing.T) {
+func TestCheckpointerStoresResumeAtPointerOnly(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -297,20 +235,11 @@ func TestCheckpointerStoresResolvedPointerOnly(t *testing.T) {
 	}
 
 	cp := &pointerSpyCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
-	_, err = g.NewRunner(cp).Start(context.Background(), "spy-pointer-th", state{},
-		WithSuspendPointerResolver[state, NoEffect](
-			func(_ state, suspendNode ExecutionPointer) (ExecutionPointer, error) {
-				if suspendNode != "wait" {
-					t.Fatalf("resolver saw suspend node %q, want wait", suspendNode)
-				}
-				return "router", nil
-			},
-		),
-	)
+	_, err = g.NewRunner(cp).Start(context.Background(), "spy-pointer-th", state{})
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
 	if len(cp.savedPointers) != 1 || cp.savedPointers[0] != "router" {
-		t.Fatalf("checkpointer must receive resolved pointer only, got %+v", cp.savedPointers)
+		t.Fatalf("checkpointer must receive ResumeAt pointer only, got %+v", cp.savedPointers)
 	}
 }

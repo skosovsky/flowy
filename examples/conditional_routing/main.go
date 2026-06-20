@@ -20,17 +20,21 @@ type routeState struct {
 	PrepareRuns  int
 }
 
-func (s *routeState) ReconcileResume(currentPtr flowy.ExecutionPointer) (flowy.ExecutionPointer, error) {
-	if slices.Contains(s.AllowedTools, "") {
-		return currentPtr, errors.New("empty tool name")
+func routeResumeTargetPolicy(
+	_ context.Context,
+	state routeState,
+	currentPtr flowy.ExecutionPointer,
+) (routeState, flowy.ExecutionPointer, error) {
+	if slices.Contains(state.AllowedTools, "") {
+		return state, "", errors.New("empty tool name")
 	}
-	if len(s.AllowedTools) > 0 {
-		s.AllowedTools = append([]string(nil), s.AllowedTools...)
+	if len(state.AllowedTools) > 0 {
+		state.AllowedTools = append([]string(nil), state.AllowedTools...)
 	}
-	if currentPtr == "prepare" && s.SkipPrepare {
-		return "check_cache", nil
+	if currentPtr == "prepare" && state.SkipPrepare {
+		return state, "check_cache", nil
 	}
-	return currentPtr, nil
+	return state, currentPtr, nil
 }
 
 func main() {
@@ -80,6 +84,7 @@ func main() {
 				return base
 			},
 		),
+		flowy.WithResumeTargetPolicy[routeState, flowy.NoEffect](routeResumeTargetPolicy),
 	)
 	if err != nil {
 		log.Fatal(err)
@@ -110,6 +115,7 @@ func main() {
 				return base
 			},
 		),
+		flowy.WithResumeTargetPolicy[routeState, flowy.NoEffect](routeResumeTargetPolicy),
 	)
 	if err != nil {
 		log.Fatal(err)

@@ -571,7 +571,7 @@ func TestSkipOnSaveErrorCheckpointFailedUsesResolvedPointer(t *testing.T) {
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("wait", func(_ context.Context, s state) (state, Directive, error) {
-		return s, Suspend("hold"), nil
+		return s, Suspend("hold", ResumeAt("router")), nil
 	})
 	b.AddNode("router", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Suspend("hold"), nil
@@ -584,15 +584,10 @@ func TestSkipOnSaveErrorCheckpointFailedUsesResolvedPointer(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
-	resolver := WithSuspendPointerResolver[state, NoEffect](
-		func(_ state, _ ExecutionPointer) (ExecutionPointer, error) {
-			return "router", nil
-		},
-	)
 	skipOnSave := WithCheckpointErrorPolicy[state, NoEffect](CheckpointPolicySkipOnSaveError)
 
 	handle, err := g.NewRunner(cp).Stream(
-		context.Background(), "soft-ptr-th", state{}, resolver, skipOnSave,
+		context.Background(), "soft-ptr-th", state{}, skipOnSave,
 	)
 	if err != nil {
 		t.Fatalf("stream: %v", err)

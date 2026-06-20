@@ -13,6 +13,9 @@ import (
 // ErrNoSnapshot is returned when thread snapshot is absent.
 var ErrNoSnapshot = errors.New("checkpoint: no snapshot")
 
+// ErrInvalidStoredSnapshot is returned when checkpoint envelope metadata is incomplete.
+var ErrInvalidStoredSnapshot = errors.New("checkpoint: invalid stored snapshot")
+
 // JSONSerializer is the default JSON serializer for state T.
 type JSONSerializer[T any] struct{}
 
@@ -105,18 +108,27 @@ func DecodeStoredSnapshot[T, E any](
 	stored StoredSnapshot,
 	serializer flowy.StateSerializer[T],
 ) (flowy.Snapshot[T, E], error) {
+	if stored.ThreadID == "" {
+		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("empty thread_id")
+	}
+	if stored.Revision == 0 {
+		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("zero revision")
+	}
+	if stored.NodeID == "" {
+		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("empty node_id")
+	}
 	state, err := serializer.Unmarshal(stored.StatePayload)
 	if err != nil {
-		return flowy.Snapshot[T, E]{}, fmt.Errorf("checkpoint: unmarshal state: %w", err)
+		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal state", err)
 	}
 	var meta flowy.RunMetadata
 	if err := json.Unmarshal(stored.RunMeta, &meta); err != nil {
-		return flowy.Snapshot[T, E]{}, fmt.Errorf("checkpoint: unmarshal run meta: %w", err)
+		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal run meta", err)
 	}
 	var effects []E
 	if len(stored.Effects) > 0 {
 		if err := json.Unmarshal(stored.Effects, &effects); err != nil {
-			return flowy.Snapshot[T, E]{}, fmt.Errorf("checkpoint: unmarshal effects: %w", err)
+			return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal effects", err)
 		}
 	}
 
@@ -128,4 +140,12 @@ func DecodeStoredSnapshot[T, E any](
 		RunMeta:          meta,
 		Effects:          effects,
 	}, nil
+}
+
+func invalidStoredSnapshotError(reason string) error {
+	return fmt.Errorf("%w: %w: %s", flowy.ErrSnapshotEnvelopeInvalid, ErrInvalidStoredSnapshot, reason)
+}
+
+func invalidStoredSnapshotCauseError(reason string, err error) error {
+	return fmt.Errorf("%w: checkpoint: %s: %w", flowy.ErrSnapshotEnvelopeInvalid, reason, err)
 }

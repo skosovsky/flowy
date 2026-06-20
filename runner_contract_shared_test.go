@@ -31,6 +31,10 @@ func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, token ResumeToken) 
 	return s.err
 }
 
+func (s *stubHandoffOutbox) EnqueueIntentTx(ctx context.Context, _ TransactionHandle, token ResumeToken) error {
+	return s.EnqueueIntent(ctx, token)
+}
+
 func (s *stubHandoffOutbox) lastToken() ResumeToken {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -74,12 +78,12 @@ type infraTestState struct{}
 
 func infraFailureHandoffResolveGraph(
 	t *testing.T,
-) (*Graph[infraTestState, NoEffect], Checkpointer[infraTestState, NoEffect], []RunOption[infraTestState, NoEffect]) {
+) (*Graph[infraTestState, NoEffect], Checkpointer[infraTestState, NoEffect]) {
 	t.Helper()
 	cp := newMemoryCP[infraTestState, NoEffect]()
 	b := NewGraph[infraTestState, NoEffect](func(_ infraTestState, u infraTestState) infraTestState { return u })
 	b.AddNode("work", func(_ context.Context, s infraTestState) (infraTestState, Directive, error) {
-		return s, Handoff("bg"), nil
+		return s, Handoff("bg", ResumeAt("ghost")), nil
 	})
 	b.AllowNoOutgoingRoute("work")
 	b.SetEntryPoint("work")
@@ -87,19 +91,12 @@ func infraFailureHandoffResolveGraph(
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	opts := []RunOption[infraTestState, NoEffect]{
-		WithSuspendPointerResolver[infraTestState, NoEffect](
-			func(_ infraTestState, _ ExecutionPointer) (ExecutionPointer, error) {
-				return "", errors.New("invalid pointer")
-			},
-		),
-	}
-	return g, cp, opts
+	return g, cp
 }
 
 func infraFailureHandoffSaveGraph(
 	t *testing.T,
-) (*Graph[infraTestState, NoEffect], Checkpointer[infraTestState, NoEffect], []RunOption[infraTestState, NoEffect]) {
+) (*Graph[infraTestState, NoEffect], Checkpointer[infraTestState, NoEffect]) {
 	t.Helper()
 	cp := &failingMemoryCP[infraTestState, NoEffect]{failSave: true}
 	b := NewGraph[infraTestState, NoEffect](func(_ infraTestState, u infraTestState) infraTestState { return u })
@@ -107,7 +104,7 @@ func infraFailureHandoffSaveGraph(
 		return s, Handoff("bg"), nil
 	})
 	b.AddNode("work", func(_ context.Context, s infraTestState) (infraTestState, Directive, error) {
-		return s, Handoff("bg"), nil
+		return s, Handoff("bg", ResumeAt("router")), nil
 	})
 	b.AllowNoOutgoingRoute("work")
 	b.AllowNoOutgoingRoute("router")
@@ -116,14 +113,7 @@ func infraFailureHandoffSaveGraph(
 	if err != nil {
 		t.Fatalf("compile: %v", err)
 	}
-	opts := []RunOption[infraTestState, NoEffect]{
-		WithSuspendPointerResolver[infraTestState, NoEffect](
-			func(_ infraTestState, _ ExecutionPointer) (ExecutionPointer, error) {
-				return "router", nil
-			},
-		),
-	}
-	return g, cp, opts
+	return g, cp
 }
 
 func assertInfraFailureStreamSync[T, E any](
