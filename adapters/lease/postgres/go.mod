@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/jackc/pgx/v5 v5.8.0
-	github.com/skosovsky/flowy v0.0.0
+	github.com/skosovsky/flowy v0.10.0
 )
 
 require (
@@ -12,5 +12,3 @@ require (
 	github.com/jackc/pgservicefile v0.0.0-20240606120523-5a60cdf6a761 // indirect
 	golang.org/x/text v0.34.0 // indirect
 )
-
-replace github.com/skosovsky/flowy => ../../..
