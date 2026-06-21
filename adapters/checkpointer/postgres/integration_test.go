@@ -22,9 +22,14 @@ type intState struct {
 	Value int `json:"value"`
 }
 
-func testSnapshot(revision uint64, value int) flowy.Snapshot[intState, string] {
+func testThreadID(t *testing.T) string {
+	t.Helper()
+	return t.Name() + "-" + time.Now().UTC().Format("20060102150405.000000000")
+}
+
+func testSnapshot(threadID string, revision uint64, value int) flowy.Snapshot[intState, string] {
 	return flowy.Snapshot[intState, string]{
-		ThreadID:         "t1",
+		ThreadID:         threadID,
 		Revision:         revision,
 		ExecutionPointer: "n1",
 		State:            intState{Value: value},
@@ -51,20 +56,21 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	leaseMgr := pglease.NewLeaseManager(pool)
+	threadID := testThreadID(t)
 
-	if _, err := cp.Save(ctx, 0, testSnapshot(1, 1)); err != nil {
+	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := leaseMgr.Acquire(ctx, "t1", "worker", time.Minute); err != nil {
+	if err := leaseMgr.Acquire(ctx, threadID, "worker", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	if err := cp.DeleteIfIdle(ctx, "t1"); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
+	if err := cp.DeleteIfIdle(ctx, threadID); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
-	if err := leaseMgr.Release(ctx, "t1", "worker"); err != nil {
+	if err := leaseMgr.Release(ctx, threadID, "worker"); err != nil {
 		t.Fatalf("release: %v", err)
 	}
-	if err := cp.DeleteIfIdle(ctx, "t1"); err != nil {
+	if err := cp.DeleteIfIdle(ctx, threadID); err != nil {
 		t.Fatalf("delete after release: %v", err)
 	}
 }
@@ -87,10 +93,11 @@ func TestOCCConcurrencyConflict(t *testing.T) {
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	if _, err := cp.Save(ctx, 0, testSnapshot(1, 1)); err != nil {
+	threadID := testThreadID(t)
+	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
-	_, err = cp.Save(ctx, 0, testSnapshot(2, 2))
+	_, err = cp.Save(ctx, 0, testSnapshot(threadID, 2, 2))
 	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
 		t.Fatalf("expected ErrConcurrencyConflict, got %v", err)
 	}
@@ -114,7 +121,8 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	snap := testSnapshot(1, 1)
+	threadID := testThreadID(t)
+	snap := testSnapshot(threadID, 1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		context.Context,
@@ -126,7 +134,7 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected enqueue failure")
 	}
-	_, _, loadErr := cp.Load(ctx, "t1")
+	_, _, loadErr := cp.Load(ctx, threadID)
 	if !errors.Is(loadErr, flowy.ErrThreadNotFound) {
 		t.Fatalf("expected no checkpoint after rollback, got %v", loadErr)
 	}
@@ -153,7 +161,8 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	snap := testSnapshot(1, 42)
+	threadID := testThreadID(t)
+	snap := testSnapshot(threadID, 1, 42)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
 	var sawTx bool
 	rev, err := cp.SaveWithOutbox(ctx, 0, snap, func(
@@ -181,7 +190,7 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	if rev != 1 {
 		t.Fatalf("expected revision 1, got %d", rev)
 	}
-	loaded, loadedRev, err := cp.Load(ctx, "t1")
+	loaded, loadedRev, err := cp.Load(ctx, threadID)
 	if err != nil {
 		t.Fatalf("load checkpoint: %v", err)
 	}
@@ -191,7 +200,7 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	var outboxCount int
 	if err := pool.QueryRow(ctx,
 		`SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1 AND snapshot_revision = $2`,
-		"t1", int64(1),
+		threadID, int64(1),
 	).Scan(&outboxCount); err != nil {
 		t.Fatalf("count outbox: %v", err)
 	}
@@ -221,10 +230,11 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	if _, err := cp.Save(ctx, 0, testSnapshot(1, 1)); err != nil {
+	threadID := testThreadID(t)
+	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}
-	snap := testSnapshot(2, 2)
+	snap := testSnapshot(threadID, 2, 2)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		context.Context,
@@ -236,7 +246,7 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
 		t.Fatalf("expected ErrConcurrencyConflict, got %v", err)
 	}
-	loaded, loadedRev, loadErr := cp.Load(ctx, "t1")
+	loaded, loadedRev, loadErr := cp.Load(ctx, threadID)
 	if loadErr != nil {
 		t.Fatalf("load after OCC conflict: %v", loadErr)
 	}
@@ -266,7 +276,8 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	snap := testSnapshot(1, 1)
+	threadID := testThreadID(t)
+	snap := testSnapshot(threadID, 1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		enqueueCtx context.Context,
@@ -286,12 +297,12 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected outbox insert failure")
 	}
-	_, _, loadErr := cp.Load(ctx, "t1")
+	_, _, loadErr := cp.Load(ctx, threadID)
 	if !errors.Is(loadErr, flowy.ErrThreadNotFound) {
 		t.Fatalf("expected no checkpoint after outbox rollback, got %v", loadErr)
 	}
 	var outboxCount int
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1`, "t1").Scan(&outboxCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1`, threadID).Scan(&outboxCount)
 	if outboxCount != 0 {
 		t.Fatalf("expected no outbox rows after rollback, got %d", outboxCount)
 	}
@@ -373,8 +384,9 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	pool, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	g := pgHandoffGraph(t)
+	threadID := testThreadID(t)
 
-	res, err := g.NewRunner(cp).Start(context.Background(), "pg-tx-handoff-ok", runnerHandoffState{},
+	res, err := g.NewRunner(cp).Start(context.Background(), threadID, runnerHandoffState{},
 		flowy.WithHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 	)
 	if err != nil {
@@ -383,7 +395,7 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	if res.Status != flowy.RunStatusHandoff {
 		t.Fatalf("expected handoff, got %s", res.Status)
 	}
-	snap, rev, loadErr := cp.Load(context.Background(), "pg-tx-handoff-ok")
+	snap, rev, loadErr := cp.Load(context.Background(), threadID)
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
@@ -402,7 +414,7 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	var outboxRows int
 	if err := pool.QueryRow(context.Background(),
 		`SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1 AND snapshot_revision = $2`,
-		"pg-tx-handoff-ok", int64(rev),
+		threadID, int64(rev),
 	).Scan(&outboxRows); err != nil {
 		t.Fatalf("count outbox: %v", err)
 	}
@@ -421,8 +433,9 @@ func TestRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	g := pgHandoffGraph(t)
+	threadID := testThreadID(t)
 
-	res, err := g.NewRunner(cp).Start(context.Background(), "pg-tx-handoff-fail", runnerHandoffState{},
+	res, err := g.NewRunner(cp).Start(context.Background(), threadID, runnerHandoffState{},
 		flowy.WithHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 	)
 	if err == nil {
@@ -440,7 +453,7 @@ func TestRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
 	if len(outbox.calls) != 0 {
 		t.Fatalf("expected no non-transactional enqueue, got %d", len(outbox.calls))
 	}
-	_, _, loadErr := cp.Load(context.Background(), "pg-tx-handoff-fail")
+	_, _, loadErr := cp.Load(context.Background(), threadID)
 	if !errors.Is(loadErr, flowy.ErrThreadNotFound) {
 		t.Fatalf("expected missing checkpoint after rollback, got %v", loadErr)
 	}
@@ -450,8 +463,9 @@ func TestRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	now := time.Now().UTC().Add(-time.Hour)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-orphan-recover",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta: flowy.RunMetadata{
@@ -466,13 +480,13 @@ func TestRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 	})
-	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-orphan-recover"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), threadID); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if len(outbox.calls) != 1 {
 		t.Fatalf("expected one enqueue, got %d", len(outbox.calls))
 	}
-	snap, _, err := cp.Load(context.Background(), "pg-orphan-recover")
+	snap, _, err := cp.Load(context.Background(), threadID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -485,8 +499,9 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	staleAt := time.Now().UTC().Add(-10 * time.Minute)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-stale-pending-recover",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta: flowy.RunMetadata{
@@ -502,13 +517,13 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](outbox),
 		flowy.WithHandoffStaleAfter[runnerHandoffState, flowy.NoEffect](time.Minute),
 	})
-	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "pg-stale-pending-recover"); recoverErr != nil {
+	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), threadID); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
 	if len(outbox.calls) != 1 {
 		t.Fatalf("expected one enqueue after stale pending, got %d", len(outbox.calls))
 	}
-	snap, rev, err := cp.Load(context.Background(), "pg-stale-pending-recover")
+	snap, rev, err := cp.Load(context.Background(), threadID)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
@@ -523,8 +538,9 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 
 func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-fresh-pending-reject",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta: flowy.RunMetadata{
@@ -540,7 +556,7 @@ func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 		flowy.WithHandoffStaleAfter[runnerHandoffState, flowy.NoEffect](5 * time.Minute),
 	})
-	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-fresh-pending-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), threadID)
 	if !errors.Is(err, flowy.ErrHandoffPending) {
 		t.Fatalf("expected ErrHandoffPending, got %v", err)
 	}
@@ -548,8 +564,9 @@ func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 
 func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 	_, cp := pgRunnerPool(t)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-no-outbox-recover",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta: flowy.RunMetadata{
@@ -561,7 +578,7 @@ func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 
 	g := pgHandoffGraph(t)
 	runner := g.NewRunner(cp)
-	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-no-outbox-recover")
+	_, err := runner.RecoverStaleHandoff(context.Background(), threadID)
 	if !errors.Is(err, flowy.ErrHandoffOutboxRequired) {
 		t.Fatalf("expected ErrHandoffOutboxRequired, got %v", err)
 	}
@@ -569,8 +586,9 @@ func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 
 func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-already-enqueued-reject",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta: flowy.RunMetadata{
@@ -584,7 +602,7 @@ func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 	})
-	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-already-enqueued-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), threadID)
 	if !errors.Is(err, flowy.ErrHandoffAlreadyEnqueued) {
 		t.Fatalf("expected ErrHandoffAlreadyEnqueued, got %v", err)
 	}
@@ -592,8 +610,9 @@ func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 
 func TestRecoverStaleHandoffPostgresNoneStatusRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
+	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
-		ThreadID:         "pg-none-status-reject",
+		ThreadID:         threadID,
 		ExecutionPointer: "work",
 		State:            runnerHandoffState{},
 		RunMeta:          flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusNone},
@@ -605,7 +624,7 @@ func TestRecoverStaleHandoffPostgresNoneStatusRejected(t *testing.T) {
 	runner := g.NewRunnerWithOptions(cp, []flowy.RunnerOption[runnerHandoffState, flowy.NoEffect]{
 		flowy.WithRunnerHandoffOutbox[runnerHandoffState, flowy.NoEffect](&stubHandoffOutbox{}),
 	})
-	_, err := runner.RecoverStaleHandoff(context.Background(), "pg-none-status-reject")
+	_, err := runner.RecoverStaleHandoff(context.Background(), threadID)
 	if !errors.Is(err, flowy.ErrHandoffNotRecoverable) {
 		t.Fatalf("expected ErrHandoffNotRecoverable, got %v", err)
 	}
