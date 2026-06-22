@@ -29,10 +29,10 @@ b := flowy.NewGraph[MyState, flowy.NoEffect](reducer)
 | `Effect(base, any)`               | `Effect[E](base, payload E)`                                                            |
 | `RunEvent.Metrics map[string]any` | `RunEvent.Effect E` + `HasEffect bool`                                                  |
 | string bindings `Set("k", v)`     | `BindingKey[T]` + `Bind` / `BindingFromContext`                                         |
-| implicit state resume hook        | explicit `WithResumeTargetPolicy` run option                                            |
+| implicit state resume hook        | explicit `WithResumeTargetPolicy` returning `ResumePlan`                                |
 | `Runner.Resume(ctx, threadID)`    | `Runner.Resume(ctx, flowy.ResumeToken{ThreadID, SnapshotRevision})`                     |
 | Checkpointer pointer rewrite      | `Suspend(..., ResumeAt(node))` / `Handoff(..., ResumeAt(node))`                         |
-| Manual handoff queue + rollback   | `WithHandoffOutbox` (save → `EnqueueIntent`; snapshot сохраняется, `HandoffStatus` FSM) |
+| Manual handoff queue + rollback   | `WithHandoffOutbox` with canonical `HandoffIntent`                                      |
 | context error collectors          | `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` + `EventCheckpointFailed`  |
 | ad-hoc resume mutations           | `WithStateOverlay` + `WithBindings` + `WithRunMetadata`                                 |
 | Manual checkpoint cleanup         | `WithDeleteOnSuccess`, `WithRetentionLimit` на `Compile()`                              |
@@ -64,7 +64,7 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 4. `WithStateOverlay` (optional, deterministic merge)
 5. `resetSegmentCounters` — новый segment, `BudgetCounts` из snapshot сохраняются
 6. `WithRunMetadata` merge (optional)
-7. `WithResumeTargetPolicy` (optional explicit state-aware target после overlay)
+7. `WithResumeTargetPolicy` (optional explicit state-aware `ResumePlan` после overlay)
 8. validate active `ExecutionPointer` (non-empty, узел в графе)
 9. `execute` с активного `ExecutionPointer`
 
@@ -72,17 +72,17 @@ b.AddConditionalEdge("check_cache", func(_ context.Context, s State) (string, er
 
 ### State-aware resume target
 
-Когда overlay делает сохранённый wait-узел stale (например, HITL: вместо ответа пользователя пришёл новый маршрут), передайте явную `WithResumeTargetPolicy`. Движок валидирует, что узел существует в графе, и стартует execute с возвращённого pointer.
+Когда overlay делает сохранённый wait-узел stale (например, HITL: вместо ответа пользователя пришёл новый маршрут), передайте явную `WithResumeTargetPolicy`. Policy возвращает typed `ResumePlan`; движок валидирует, что target существует в графе, и стартует execute с выбранной точки.
 
 ```go
 res, err := runner.Resume(ctx, token,
     flowy.WithStateOverlay[State, Effect](overlay, mergeFn),
     flowy.WithResumeTargetPolicy[State, Effect](
-        func(ctx context.Context, state State, current flowy.ExecutionPointer) (State, flowy.ExecutionPointer, error) {
+        func(ctx context.Context, state State, current flowy.ExecutionPointer) (State, flowy.ResumePlan, error) {
             if current == "wait_user" && state.RouteReady {
-                return state, "router", nil
+                return state, flowy.ResumeTo("router"), nil
             }
-            return state, current, nil
+            return state, flowy.ResumeCurrent(), nil
         },
     ),
 )
@@ -134,14 +134,16 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 )
 ```
 
-### Lifecycle contracts (Task20)
+### Lifecycle Contracts
 
 - **Resume target:** `ResumeAt(node)` на `Suspend`/`Handoff` задает persisted `ExecutionPointer` до `Save`; target валидируется ядром.
+- **Resume planning:** `WithResumeTargetPolicy` возвращает `ResumePlan` (`ResumeCurrent()` или `ResumeTo(node)`), а не raw pointer. Пустой plan отклоняется как `ErrInvalidResumePlan`; unknown node отклоняется до execute.
 - **Strict OCC Checkpointer:** `Save(ctx, expectedRevision, snapshot) (newRevision, error)` и `Load(ctx, threadID) (snapshot, revision, error)`. Конфликт Save или несовпадение `ResumeToken.SnapshotRevision` при `Resume` → `ErrConcurrencyConflict`; orchestration code вызывает `EvaluateResume` и получает typed decision с текущим core-issued token, когда snapshot уже продвинулся.
 - **Resume preflight:** `EvaluateResume` и `EvaluateHandoffRecovery` возвращают typed `ResumeDecision`; `Resume`, `ResumeStream` и `RecoverStaleHandoff` используют тот же normalized path.
-- **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → `EnqueueIntent` (pending token) → patch `enqueued` / `orphaned`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, snapshot может остаться `pending`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). Transactional path требует `TransactionalCheckpointer.SaveWithOutbox` и `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, token)`: checkpointer передает authoritative token в callback вместе с explicit transaction handle; context-carried transaction state не используется. Lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе используется 3-phase FSM. At-least-once consumer начинает с `EvaluateResume`: stale-token decision возвращает текущий core-issued token, pending/orphaned уводит в recovery contract.
+- **Checkpoint record envelope:** adapters use `checkpoint.Record`, `checkpoint.EncodeRecord`, and `checkpoint.DecodeRecord` with `DecodeRecordOptions`. Decode returns a validated `Snapshot` or `ErrSnapshotEnvelopeInvalid`; applications should not compare storage metadata and payload envelope by hand.
+- **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → patch `enqueued` → `EnqueueIntent(HandoffIntent)`; если enqueue падает, core патчит `orphaned`. `HandoffIntent` carries `PendingSnapshotRevision`, `CommittedSnapshotRevision`, `SnapshotRevision`, `ResumeToken`, `HandoffStatus`, reason, and execution pointer; normal consumers receive the committed enqueued revision and do not guess `revision` vs `revision+1`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, snapshot может остаться `enqueued`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). Transactional path требует `TransactionalCheckpointer.SaveWithOutbox` и `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, intent)`: checkpointer callback передает explicit transaction handle и saved revision, а core строит authoritative enqueued `HandoffIntent`; context-carried transaction state не используется. Lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе используется 3-phase FSM. At-least-once consumer начинает с `EvaluateResume`: stale-token decision возвращает текущий core-issued token, pending/orphaned уводит в recovery contract.
 - **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM. Возвращает `HandoffRecoveryResult` + error; result содержит typed `Decision`, `ResumeToken`, snapshot revision, recovered status и persisted handoff status. `WithRecoverForceReenqueue(true)` — force re-enqueue для `enqueued` без сообщения в outbox. Cron recovery должен быть **single-leader** или защищен external lock; `RecoverStaleHandoff` сам не берет run lease. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` считается stale сразу.
-- **Worst-case runbook:** enqueue OK + оба patch fail → snapshot `pending@N`, сообщение в outbox; consumer получает `handoff_pending` decision и не вызывает `Resume` до `RecoverStaleHandoff` после TTL. Recovery scanner берет checkpoints со статусом `orphaned` или `pending` старше configured stale window.
+- **Worst-case runbook:** patch `enqueued` OK + enqueue fail + orphan patch fail → snapshot остается `enqueued`, но outbox message отсутствует. Recovery scanner can use `RecoverStaleHandoff(..., WithRecoverForceReenqueue(true))` for known false-enqueued rows. Pending checkpoints remain recoverable after TTL when the run crashed before the enqueued patch.
 - **LifecycleObserver:** process-wide hook (`SetLifecycleObserver`) receives handoff/recovery/checkpoint-soft events. Метрики `handoff_enqueued_total{status}`: `success`, `enqueue_failed`, `patch_enqueued_failed`, `patch_orphan_failed`, `save_failed`, `commit_failed`.
 - **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с persisted pointer в snapshot, как и terminal events.
 - **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
@@ -188,6 +190,8 @@ type Checkpointer[T, E any] interface {
     DeleteIfIdle(ctx context.Context, threadID string) error // ErrThreadLeaseBusy when lease held by another owner
 }
 ```
+
+Adapters should persist `checkpoint.Record` values through `checkpoint.EncodeRecord`. On load, call `checkpoint.DecodeRecord` with the expected thread id, revision, or execution pointer when those values came from storage columns. A mismatch is a typed envelope error; do not duplicate split-brain checks in application code.
 
 Compile-time policies: `WithDeleteOnSuccess(true)` (использует `DeleteIfIdle`), `WithRetentionLimit(n)`.
 

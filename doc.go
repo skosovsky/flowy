@@ -17,19 +17,22 @@
 //  4. WithStateOverlay (optional)
 //  5. resetSegmentCounters (StepCount/Segment; BudgetCounts preserved)
 //  6. WithRunMetadata merge (optional)
-//  7. WithResumeTargetPolicy (optional explicit state-aware target)
+//  7. WithResumeTargetPolicy (optional explicit state-aware ResumePlan)
 //  8. validate active ExecutionPointer (non-empty, node exists in graph)
 //  9. execute from active ExecutionPointer
 //
 // Suspend/Handoff save path: flowy.ResumeAt(node) on the directive declares the persisted resume point.
-// Handoff Outbox: WithHandoffOutbox runs a 3-phase FSM — Save(pending) → EnqueueIntent(pending token)
-// → patch enqueued/orphaned. EnqueueIntent uses the pending snapshot revision; RunResult.ResumeToken
-// uses the post-patch revision. Workers consuming outbox messages should call EvaluateResume first:
-// stale-token decisions return the current core-issued ResumeToken after normalized load.
+// Handoff Outbox: WithHandoffOutbox passes HandoffIntent to EnqueueIntent.
+// The intent carries pending, committed, and canonical resume-token revision fields, so consumers do not
+// infer generation semantics from raw revision arithmetic. Workers consuming outbox messages should call
+// EvaluateResume first: stale-token decisions return the current core-issued ResumeToken after normalized load.
 // When the checkpointer implements TransactionalCheckpointer, handoff uses SaveWithOutbox:
 // one TX for checkpoint + EnqueueIntentTx with an explicit transaction handle and
-// the checkpointer-issued ResumeToken.
-// Otherwise the 3-phase FSM applies (Save pending → EnqueueIntent → patch enqueued/orphaned).
+// a core-built HandoffIntent from the checkpointer-reported saved revision.
+// Otherwise the 3-phase FSM applies (Save pending → patch enqueued → EnqueueIntent; enqueue
+// failure patches orphaned). Normal outbox intents carry the committed enqueued revision.
+// checkpoint.Record plus DecodeRecordOptions is the storage-facing envelope contract for adapters:
+// decode returns a validated Snapshot or ErrSnapshotEnvelopeInvalid.
 // EvaluateResume and EvaluateHandoffRecovery expose the same normalized preflight decisions used by Resume,
 // ResumeStream, and RecoverStaleHandoff.
 // RecoverStaleHandoff re-enqueues orphaned or stale-pending checkpoints and returns

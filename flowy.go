@@ -217,6 +217,32 @@ type SegmentInfo struct {
 // ExecutionPointer is the persisted resume point (current graph node id).
 type ExecutionPointer string
 
+// ResumePlan is the typed output of a resume target policy.
+type ResumePlan struct {
+	target     ExecutionPointer
+	useCurrent bool
+}
+
+// ResumeCurrent keeps the execution pointer loaded from the snapshot.
+func ResumeCurrent() ResumePlan {
+	return ResumePlan{target: "", useCurrent: true}
+}
+
+// ResumeTo declares the graph node where the resumed run should continue.
+func ResumeTo(pointer ExecutionPointer) ResumePlan {
+	return ResumePlan{target: pointer, useCurrent: false}
+}
+
+func (p ResumePlan) resolve(current ExecutionPointer) (ExecutionPointer, error) {
+	if p.useCurrent {
+		return current, nil
+	}
+	if p.target == "" {
+		return "", ErrInvalidResumePlan
+	}
+	return p.target, nil
+}
+
 // RunMetadataInput is injectable run metadata for a single Start/Resume/Stream invocation.
 type RunMetadataInput struct {
 	BudgetCounts     map[string]int
@@ -274,7 +300,7 @@ type TransactionHandle any
 
 // TransactionalCheckpointer saves a snapshot and runs enqueueFn in one storage transaction.
 // When enqueueFn fails the save is rolled back. enqueueFn receives the explicit transaction handle
-// and the authoritative ResumeToken for the snapshot saved in that transaction.
+// and the revision saved in that transaction; core builds the authoritative HandoffIntent.
 // Optional — runner falls back to 3-phase FSM when the checkpointer does not implement this interface.
 type TransactionalCheckpointer[T, E any] interface {
 	Checkpointer[T, E]
@@ -282,7 +308,7 @@ type TransactionalCheckpointer[T, E any] interface {
 		ctx context.Context,
 		expectedRevision uint64,
 		snapshot Snapshot[T, E],
-		enqueueFn func(ctx context.Context, tx TransactionHandle, token ResumeToken) error,
+		enqueueFn func(ctx context.Context, tx TransactionHandle, savedRevision uint64) error,
 	) (uint64, error)
 }
 
@@ -316,6 +342,106 @@ type StateInterceptor[T any] interface {
 type ResumeToken struct {
 	ThreadID         string
 	SnapshotRevision uint64
+}
+
+// HandoffIntent is the canonical continuation payload passed to handoff outboxes.
+type HandoffIntent struct {
+	ThreadID                  string
+	ExecutionPointer          ExecutionPointer
+	Reason                    string
+	HandoffStatus             HandoffStatus
+	PendingSnapshotRevision   uint64
+	CommittedSnapshotRevision uint64
+	SnapshotRevision          uint64
+	ResumeToken               ResumeToken
+}
+
+// NewHandoffIntent builds the canonical continuation payload for a handoff outbox enqueue.
+func NewHandoffIntent(
+	threadID string,
+	pointer ExecutionPointer,
+	reason string,
+	status HandoffStatus,
+	pendingRevision uint64,
+	committedRevision uint64,
+) (HandoffIntent, error) {
+	intent := buildHandoffIntent(threadID, pointer, reason, status, pendingRevision, committedRevision)
+	if err := validateHandoffIntent(intent); err != nil {
+		return HandoffIntent{}, err
+	}
+	return intent, nil
+}
+
+func buildHandoffIntent(
+	threadID string,
+	pointer ExecutionPointer,
+	reason string,
+	status HandoffStatus,
+	pendingRevision uint64,
+	committedRevision uint64,
+) HandoffIntent {
+	return HandoffIntent{
+		ThreadID:                  threadID,
+		ExecutionPointer:          pointer,
+		Reason:                    reason,
+		HandoffStatus:             status,
+		PendingSnapshotRevision:   pendingRevision,
+		CommittedSnapshotRevision: committedRevision,
+		SnapshotRevision:          committedRevision,
+		ResumeToken: ResumeToken{
+			ThreadID:         threadID,
+			SnapshotRevision: committedRevision,
+		},
+	}
+}
+
+func newHandoffIntent(
+	threadID string,
+	pointer ExecutionPointer,
+	reason string,
+	status HandoffStatus,
+	pendingRevision uint64,
+	committedRevision uint64,
+) HandoffIntent {
+	intent, err := NewHandoffIntent(threadID, pointer, reason, status, pendingRevision, committedRevision)
+	if err != nil {
+		panic(err)
+	}
+	return intent
+}
+
+func validateHandoffIntent(intent HandoffIntent) error {
+	if intent.ThreadID == "" {
+		return fmt.Errorf("%w: empty thread ID", ErrInvalidHandoffIntent)
+	}
+	if intent.ExecutionPointer == "" {
+		return fmt.Errorf("%w: empty execution pointer", ErrInvalidHandoffIntent)
+	}
+	if intent.HandoffStatus != HandoffStatusEnqueued {
+		return fmt.Errorf("%w: handoff intent status must be enqueued", ErrInvalidHandoffIntent)
+	}
+	if intent.PendingSnapshotRevision == 0 {
+		return fmt.Errorf("%w: zero pending snapshot revision", ErrInvalidHandoffIntent)
+	}
+	if intent.CommittedSnapshotRevision == 0 {
+		return fmt.Errorf("%w: zero committed snapshot revision", ErrInvalidHandoffIntent)
+	}
+	if intent.SnapshotRevision == 0 {
+		return fmt.Errorf("%w: zero snapshot revision", ErrInvalidHandoffIntent)
+	}
+	if intent.ResumeToken.ThreadID != intent.ThreadID {
+		return fmt.Errorf("%w: resume token thread mismatch", ErrInvalidHandoffIntent)
+	}
+	if intent.ResumeToken.SnapshotRevision != intent.SnapshotRevision {
+		return fmt.Errorf("%w: resume token revision mismatch", ErrInvalidHandoffIntent)
+	}
+	if intent.SnapshotRevision != intent.CommittedSnapshotRevision {
+		return fmt.Errorf("%w: snapshot revision does not match committed revision", ErrInvalidHandoffIntent)
+	}
+	if intent.PendingSnapshotRevision > intent.CommittedSnapshotRevision {
+		return fmt.Errorf("%w: pending revision is after committed revision", ErrInvalidHandoffIntent)
+	}
+	return nil
 }
 
 // ResumeDecisionStatus describes the preflight decision for resume or handoff recovery.
@@ -468,6 +594,7 @@ var (
 	ErrRetryBudgetExceeded              = errors.New("flowy: per-node retry budget exceeded")
 	ErrInvalidSnapshot                  = errors.New("flowy: snapshot has invalid or empty execution pointer")
 	ErrSnapshotEnvelopeInvalid          = fmt.Errorf("%w: snapshot envelope invalid", ErrInvalidSnapshot)
+	ErrInvalidResumePlan                = errors.New("flowy: invalid resume plan")
 	ErrResumeTargetPolicyFailed         = errors.New("flowy: resume target policy failed")
 	ErrResumeStartNodeNotFound          = errors.New("flowy: resume start node not found")
 	ErrConcurrencyConflict              = errors.New("flowy: concurrency conflict")
@@ -478,6 +605,7 @@ var (
 	ErrHandoffAlreadyEnqueued           = errors.New("flowy: handoff already enqueued")
 	ErrHandoffNotRecoverable            = errors.New("flowy: handoff status not recoverable")
 	ErrHandoffOutboxRequired            = errors.New("flowy: handoff outbox is required for recovery")
+	ErrInvalidHandoffIntent             = errors.New("flowy: invalid handoff intent")
 	ErrTransactionalOutboxUnsupported   = errors.New("flowy: checkpointer does not support SaveWithOutbox")
 	ErrTransactionalHandoffCommitFailed = errors.New("flowy: transactional handoff commit failed")
 	ErrInvalidResumeToken               = errors.New("flowy: invalid resume token")

@@ -23,13 +23,13 @@ func TestLeaseGuardCheckpointerDelegatesSaveWithOutbox(t *testing.T) {
 		ExecutionPointer: "work",
 		State:            state{},
 		RunMeta:          RunMetadata{HandoffStatus: HandoffStatusEnqueued},
-	}, func(_ context.Context, tx TransactionHandle, token ResumeToken) error {
+	}, func(_ context.Context, tx TransactionHandle, savedRevision uint64) error {
 		enqueueCalled = true
 		if tx == nil {
 			return errors.New("missing outbox tx token")
 		}
-		if token.ThreadID != "lease-tx-th" || token.SnapshotRevision != 1 {
-			return errors.New("unexpected outbox token")
+		if savedRevision != 1 {
+			return errors.New("unexpected saved revision")
 		}
 		return nil
 	})

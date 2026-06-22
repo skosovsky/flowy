@@ -13,8 +13,8 @@ import (
 // ErrNoSnapshot is returned when thread snapshot is absent.
 var ErrNoSnapshot = errors.New("checkpoint: no snapshot")
 
-// ErrInvalidStoredSnapshot is returned when checkpoint envelope metadata is incomplete.
-var ErrInvalidStoredSnapshot = errors.New("checkpoint: invalid stored snapshot")
+// ErrInvalidRecord is returned when checkpoint record metadata is incomplete or inconsistent.
+var ErrInvalidRecord = errors.New("checkpoint: invalid record")
 
 // JSONSerializer is the default JSON serializer for state T.
 type JSONSerializer[T any] struct{}
@@ -63,8 +63,8 @@ func (s *sanitizingSerializer[T]) Unmarshal(data []byte) (T, error) {
 	return state, nil
 }
 
-// StoredSnapshot is persistence payload used by adapters.
-type StoredSnapshot struct {
+// Record is the storage-facing checkpoint envelope used by adapters.
+type Record struct {
 	ThreadID     string          `json:"thread_id"`
 	Revision     uint64          `json:"revision"`
 	NodeID       string          `json:"node_id"`
@@ -74,25 +74,32 @@ type StoredSnapshot struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
-// EncodeStoredSnapshot converts typed snapshot to serialized DB payload.
-func EncodeStoredSnapshot[T, E any](
+// DecodeRecordOptions validates storage metadata against the checkpoint envelope.
+type DecodeRecordOptions struct {
+	ExpectedThreadID         string
+	ExpectedRevision         uint64
+	ExpectedExecutionPointer flowy.ExecutionPointer
+}
+
+// EncodeRecord converts typed snapshot to a storage checkpoint record.
+func EncodeRecord[T, E any](
 	snapshot flowy.Snapshot[T, E],
 	serializer flowy.StateSerializer[T],
-) (StoredSnapshot, error) {
+) (Record, error) {
 	statePayload, err := serializer.Marshal(snapshot.State)
 	if err != nil {
-		return StoredSnapshot{}, fmt.Errorf("checkpoint: marshal state: %w", err)
+		return Record{}, fmt.Errorf("checkpoint: marshal state: %w", err)
 	}
 	metaPayload, err := json.Marshal(snapshot.RunMeta)
 	if err != nil {
-		return StoredSnapshot{}, fmt.Errorf("checkpoint: marshal run meta: %w", err)
+		return Record{}, fmt.Errorf("checkpoint: marshal run meta: %w", err)
 	}
 	effectsPayload, err := json.Marshal(snapshot.Effects)
 	if err != nil {
-		return StoredSnapshot{}, fmt.Errorf("checkpoint: marshal effects: %w", err)
+		return Record{}, fmt.Errorf("checkpoint: marshal effects: %w", err)
 	}
 
-	return StoredSnapshot{
+	return Record{
 		ThreadID:     snapshot.ThreadID,
 		Revision:     snapshot.Revision,
 		NodeID:       string(snapshot.ExecutionPointer),
@@ -103,49 +110,72 @@ func EncodeStoredSnapshot[T, E any](
 	}, nil
 }
 
-// DecodeStoredSnapshot converts DB payload to typed snapshot.
-func DecodeStoredSnapshot[T, E any](
-	stored StoredSnapshot,
+// DecodeRecord converts a storage checkpoint record to a typed snapshot.
+func DecodeRecord[T, E any](
+	record Record,
 	serializer flowy.StateSerializer[T],
+	opts DecodeRecordOptions,
 ) (flowy.Snapshot[T, E], error) {
-	if stored.ThreadID == "" {
-		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("empty thread_id")
+	if record.ThreadID == "" {
+		return flowy.Snapshot[T, E]{}, invalidRecordError("empty thread_id")
 	}
-	if stored.Revision == 0 {
-		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("zero revision")
+	if record.Revision == 0 {
+		return flowy.Snapshot[T, E]{}, invalidRecordError("zero revision")
 	}
-	if stored.NodeID == "" {
-		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotError("empty node_id")
+	if record.NodeID == "" {
+		return flowy.Snapshot[T, E]{}, invalidRecordError("empty node_id")
 	}
-	state, err := serializer.Unmarshal(stored.StatePayload)
+	if opts.ExpectedThreadID != "" && record.ThreadID != opts.ExpectedThreadID {
+		return flowy.Snapshot[T, E]{}, invalidRecordError(fmt.Sprintf(
+			"thread_id mismatch: record=%q expected=%q",
+			record.ThreadID,
+			opts.ExpectedThreadID,
+		))
+	}
+	if opts.ExpectedRevision != 0 && record.Revision != opts.ExpectedRevision {
+		return flowy.Snapshot[T, E]{}, invalidRecordError(fmt.Sprintf(
+			"revision mismatch: record=%d expected=%d",
+			record.Revision,
+			opts.ExpectedRevision,
+		))
+	}
+	if opts.ExpectedExecutionPointer != "" &&
+		flowy.ExecutionPointer(record.NodeID) != opts.ExpectedExecutionPointer {
+		return flowy.Snapshot[T, E]{}, invalidRecordError(fmt.Sprintf(
+			"execution pointer mismatch: record=%q expected=%q",
+			record.NodeID,
+			opts.ExpectedExecutionPointer,
+		))
+	}
+	state, err := serializer.Unmarshal(record.StatePayload)
 	if err != nil {
-		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal state", err)
+		return flowy.Snapshot[T, E]{}, invalidRecordCauseError("unmarshal state", err)
 	}
 	var meta flowy.RunMetadata
-	if err := json.Unmarshal(stored.RunMeta, &meta); err != nil {
-		return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal run meta", err)
+	if err := json.Unmarshal(record.RunMeta, &meta); err != nil {
+		return flowy.Snapshot[T, E]{}, invalidRecordCauseError("unmarshal run meta", err)
 	}
 	var effects []E
-	if len(stored.Effects) > 0 {
-		if err := json.Unmarshal(stored.Effects, &effects); err != nil {
-			return flowy.Snapshot[T, E]{}, invalidStoredSnapshotCauseError("unmarshal effects", err)
+	if len(record.Effects) > 0 {
+		if err := json.Unmarshal(record.Effects, &effects); err != nil {
+			return flowy.Snapshot[T, E]{}, invalidRecordCauseError("unmarshal effects", err)
 		}
 	}
 
 	return flowy.Snapshot[T, E]{
-		ThreadID:         stored.ThreadID,
-		Revision:         stored.Revision,
-		ExecutionPointer: flowy.ExecutionPointer(stored.NodeID),
+		ThreadID:         record.ThreadID,
+		Revision:         record.Revision,
+		ExecutionPointer: flowy.ExecutionPointer(record.NodeID),
 		State:            state,
 		RunMeta:          meta,
 		Effects:          effects,
 	}, nil
 }
 
-func invalidStoredSnapshotError(reason string) error {
-	return fmt.Errorf("%w: %w: %s", flowy.ErrSnapshotEnvelopeInvalid, ErrInvalidStoredSnapshot, reason)
+func invalidRecordError(reason string) error {
+	return fmt.Errorf("%w: %w: %s", flowy.ErrSnapshotEnvelopeInvalid, ErrInvalidRecord, reason)
 }
 
-func invalidStoredSnapshotCauseError(reason string, err error) error {
+func invalidRecordCauseError(reason string, err error) error {
 	return fmt.Errorf("%w: checkpoint: %s: %w", flowy.ErrSnapshotEnvelopeInvalid, reason, err)
 }

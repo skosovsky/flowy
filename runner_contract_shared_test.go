@@ -14,25 +14,25 @@ import (
 
 type stubHandoffOutbox struct {
 	mu        sync.Mutex
-	calls     []ResumeToken
+	calls     []HandoffIntent
 	err       error
-	onEnqueue func(token ResumeToken) error
+	onEnqueue func(intent HandoffIntent) error
 }
 
-func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, token ResumeToken) error {
+func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, intent HandoffIntent) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.calls = append(s.calls, token)
+	s.calls = append(s.calls, intent)
 	if s.onEnqueue != nil {
-		if err := s.onEnqueue(token); err != nil {
+		if err := s.onEnqueue(intent); err != nil {
 			return err
 		}
 	}
 	return s.err
 }
 
-func (s *stubHandoffOutbox) EnqueueIntentTx(ctx context.Context, _ TransactionHandle, token ResumeToken) error {
-	return s.EnqueueIntent(ctx, token)
+func (s *stubHandoffOutbox) EnqueueIntentTx(ctx context.Context, _ TransactionHandle, intent HandoffIntent) error {
+	return s.EnqueueIntent(ctx, intent)
 }
 
 func (s *stubHandoffOutbox) lastToken() ResumeToken {
@@ -40,6 +40,15 @@ func (s *stubHandoffOutbox) lastToken() ResumeToken {
 	defer s.mu.Unlock()
 	if len(s.calls) == 0 {
 		return ResumeToken{}
+	}
+	return s.calls[len(s.calls)-1].ResumeToken
+}
+
+func (s *stubHandoffOutbox) lastIntent() HandoffIntent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.calls) == 0 {
+		return HandoffIntent{}
 	}
 	return s.calls[len(s.calls)-1]
 }

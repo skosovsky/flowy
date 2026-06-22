@@ -484,12 +484,8 @@ func TestInstallLifecycleObserverWithTracingHandoffPatchOrphanFailed(t *testing.
 	}
 
 	type state struct{}
-	cp := &otelHandoffPatchFailCP[state, flowy.NoEffect]{
-		failOnStatuses: map[flowy.HandoffStatus]struct{}{ //nolint:exhaustive // patch statuses under test
-			flowy.HandoffStatusEnqueued: {},
-			flowy.HandoffStatusOrphaned: {},
-		},
-	}
+	outbox := &testHandoffOutbox{err: errors.New("broker down")}
+	cp := &otelHandoffPatchFailCP[state, flowy.NoEffect]{failOn: flowy.HandoffStatusOrphaned}
 	b := flowy.NewGraph[state, flowy.NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Handoff("bg"), nil
@@ -500,7 +496,7 @@ func TestInstallLifecycleObserverWithTracingHandoffPatchOrphanFailed(t *testing.
 		t.Fatalf("compile: %v", err)
 	}
 	_, _ = g.NewRunner(cp).Start(context.Background(), "trace-patch-orphan-th", state{},
-		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
+		flowy.WithHandoffOutbox[state, flowy.NoEffect](outbox),
 	)
 
 	spans := sr.Ended()

@@ -46,14 +46,14 @@ type testHandoffOutbox struct {
 	err error
 }
 
-func (o *testHandoffOutbox) EnqueueIntent(_ context.Context, _ flowy.ResumeToken) error {
+func (o *testHandoffOutbox) EnqueueIntent(_ context.Context, _ flowy.HandoffIntent) error {
 	return o.err
 }
 
 func (o *testHandoffOutbox) EnqueueIntentTx(
 	_ context.Context,
 	_ flowy.TransactionHandle,
-	_ flowy.ResumeToken,
+	_ flowy.HandoffIntent,
 ) error {
 	return o.err
 }
@@ -719,12 +719,8 @@ func TestLifecycleObserverHandoffPatchOrphanFailed(t *testing.T) {
 	mustInstallLifecycleObserver(t)
 
 	type state struct{}
-	cp := &otelHandoffPatchFailCP[state, flowy.NoEffect]{
-		failOnStatuses: map[flowy.HandoffStatus]struct{}{ //nolint:exhaustive // patch statuses under test
-			flowy.HandoffStatusEnqueued: {},
-			flowy.HandoffStatusOrphaned: {},
-		},
-	}
+	outbox := &testHandoffOutbox{err: errors.New("broker down")}
+	cp := &otelHandoffPatchFailCP[state, flowy.NoEffect]{failOn: flowy.HandoffStatusOrphaned}
 	b := flowy.NewGraph[state, flowy.NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Handoff("bg"), nil
@@ -736,7 +732,7 @@ func TestLifecycleObserverHandoffPatchOrphanFailed(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	_, _ = g.NewRunner(cp).Start(context.Background(), "otel-patch-orphan-th", state{},
-		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
+		flowy.WithHandoffOutbox[state, flowy.NoEffect](outbox),
 	)
 	if got := counterAttributeValue(
 		t, reader, "flowy.handoff_enqueued_total", "status", "patch_orphan_failed",
@@ -1152,7 +1148,7 @@ func (c *otelTxErrCP[T, E]) DeleteIfIdle(ctx context.Context, threadID string) e
 
 func (c *otelTxErrCP[T, E]) SaveWithOutbox(
 	_ context.Context, _ uint64, _ flowy.Snapshot[T, E],
-	_ func(context.Context, flowy.TransactionHandle, flowy.ResumeToken) error,
+	_ func(context.Context, flowy.TransactionHandle, uint64) error,
 ) (uint64, error) {
 	return 0, c.err
 }

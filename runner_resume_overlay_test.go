@@ -61,14 +61,14 @@ func TestResumeTargetPolicyRewritesPointer(t *testing.T) {
 		WithResumeTargetPolicy[rewindOverlayState, NoEffect](
 			func(_ context.Context, state rewindOverlayState, current ExecutionPointer) (
 				rewindOverlayState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
 				if current == "wait_user" {
 					state.Rewound = true
-					return state, "router", nil
+					return state, ResumeTo("router"), nil
 				}
-				return state, current, nil
+				return state, ResumeCurrent(), nil
 			},
 		),
 	)
@@ -118,10 +118,10 @@ func TestResumeTargetPolicyInvalidPointer(t *testing.T) {
 		WithResumeTargetPolicy[invalidPtrState, NoEffect](
 			func(_ context.Context, state invalidPtrState, _ ExecutionPointer) (
 				invalidPtrState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
-				return state, "ghost", nil
+				return state, ResumeTo("ghost"), nil
 			},
 		),
 	)
@@ -165,14 +165,14 @@ func TestResumeTargetPolicyEmptyPointer(t *testing.T) {
 		WithResumeTargetPolicy[emptyTargetPolicyPtrState, NoEffect](
 			func(_ context.Context, state emptyTargetPolicyPtrState, _ ExecutionPointer) (
 				emptyTargetPolicyPtrState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
-				return state, "", nil
+				return state, ResumePlan{}, nil
 			},
 		),
 	)
-	if !errors.Is(err, ErrInvalidSnapshot) {
-		t.Fatalf("expected ErrInvalidSnapshot, got %v", err)
+	if !errors.Is(err, ErrInvalidResumePlan) {
+		t.Fatalf("expected ErrInvalidResumePlan, got %v", err)
 	}
 }

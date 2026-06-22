@@ -2,6 +2,7 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -122,6 +123,116 @@ func TestLoadNoSnapshot(t *testing.T) {
 	_, _, err := cp.Load(context.Background(), "missing")
 	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
+	}
+}
+
+func TestLoadRejectsRecordThreadMismatch(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
+		ThreadID:         "thread-b",
+		Revision:         1,
+		ExecutionPointer: "n1",
+		State:            state{Value: "wrong"},
+	}, checkpoint.JSONSerializer[state]{})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	seedErr := client.LPush(context.Background(), cp.historyKey("thread-a"), string(payload)).Err()
+	if seedErr != nil {
+		t.Fatalf("seed raw record: %v", seedErr)
+	}
+
+	_, _, err = cp.Load(context.Background(), "thread-a")
+	if !errors.Is(err, checkpoint.ErrInvalidRecord) ||
+		!errors.Is(err, flowy.ErrSnapshotEnvelopeInvalid) {
+		t.Fatalf("expected invalid record envelope, got %v", err)
+	}
+}
+
+func TestGetHistoryRejectsRecordThreadMismatch(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
+		ThreadID:         "thread-b",
+		Revision:         1,
+		ExecutionPointer: "n1",
+		State:            state{Value: "wrong"},
+	}, checkpoint.JSONSerializer[state]{})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	seedErr := client.LPush(context.Background(), cp.historyKey("thread-a"), string(payload)).Err()
+	if seedErr != nil {
+		t.Fatalf("seed raw record: %v", seedErr)
+	}
+
+	_, err = cp.GetHistory(context.Background(), "thread-a", 10)
+	if !errors.Is(err, checkpoint.ErrInvalidRecord) ||
+		!errors.Is(err, flowy.ErrSnapshotEnvelopeInvalid) {
+		t.Fatalf("expected invalid record envelope, got %v", err)
+	}
+}
+
+func TestSaveAfterLargeRevision(t *testing.T) {
+	t.Parallel()
+	mr := miniredis.RunT(t)
+	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
+	defer func() { _ = client.Close() }()
+
+	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	const largeRevision = uint64(3_000_000_000)
+	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
+		ThreadID:         "t1",
+		Revision:         largeRevision,
+		ExecutionPointer: "n1",
+		State:            state{Value: "large"},
+	}, checkpoint.JSONSerializer[state]{})
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	payload, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	seedErr := client.LPush(context.Background(), cp.historyKey("t1"), string(payload)).Err()
+	if seedErr != nil {
+		t.Fatalf("seed raw record: %v", seedErr)
+	}
+
+	newRev, err := cp.Save(context.Background(), largeRevision, flowy.Snapshot[state, string]{
+		ThreadID:         "t1",
+		ExecutionPointer: "n2",
+		State:            state{Value: "next"},
+	})
+	if err != nil {
+		t.Fatalf("save after large revision: %v", err)
+	}
+	if newRev != largeRevision+1 {
+		t.Fatalf("new revision: got %d want %d", newRev, largeRevision+1)
+	}
+	loaded, _, err := cp.Load(context.Background(), "t1")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if loaded.Revision != largeRevision+1 {
+		t.Fatalf("loaded revision: got %d want %d", loaded.Revision, largeRevision+1)
 	}
 }
 

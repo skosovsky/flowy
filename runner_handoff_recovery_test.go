@@ -212,9 +212,11 @@ func TestRecoverStaleHandoffStalePendingEnqueues(t *testing.T) {
 		t.Fatalf("load: %v", err)
 	}
 	assertEnqueuedHandoffSnapshot(t, cp, "stale-pending-th")
-	if outbox.calls[0].SnapshotRevision >= rev {
-		t.Fatalf("enqueue token revision %d should be before status patch revision %d",
-			outbox.calls[0].SnapshotRevision, rev)
+	if outbox.calls[0].SnapshotRevision != rev ||
+		outbox.calls[0].CommittedSnapshotRevision != rev ||
+		outbox.calls[0].ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("enqueue intent revision should match committed snapshot revision %d, got %+v",
+			rev, outbox.calls[0])
 	}
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
@@ -419,10 +421,22 @@ func TestRecoverHandoffEnqueueSaveFailsAfterEnqueue(t *testing.T) {
 		result.ResumeToken.SnapshotRevision == 0 {
 		t.Fatalf("unexpected partial recovery result: %+v", result)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected enqueue before patch fail, got %d calls", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf(
+			"outbox must not receive recovery intent before enqueued patch succeeds, got %d calls",
+			len(outbox.calls),
+		)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "recover-patch-fail-th", nil, "")
+	snap, _, loadErr := cp.Load(context.Background(), "recover-patch-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected unchanged orphaned status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if snap.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatal("expected original HandoffPendingAt retained when recovery patch fails")
+	}
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	last := obs.enqueued[len(obs.enqueued)-1]
@@ -670,14 +684,23 @@ func TestRecoverStaleHandoffBothPatchesFail(t *testing.T) {
 		result.ResumeToken.SnapshotRevision == 0 {
 		t.Fatalf("unexpected partial recovery result: %+v", result)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one enqueue before patch failures, got %d", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf(
+			"outbox must not receive recovery intent before enqueued patch succeeds, got %d calls",
+			len(outbox.calls),
+		)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "recover-both-fail-th", nil, "")
+	snap, _, loadErr := cp.Load(context.Background(), "recover-both-fail-th")
+	if loadErr != nil {
+		t.Fatalf("load: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
+		t.Fatalf("expected unchanged orphaned status, got %q", snap.RunMeta.HandoffStatus)
+	}
 	obs.mu.Lock()
 	defer obs.mu.Unlock()
 	last := obs.enqueued[len(obs.enqueued)-1]
-	if last != "patch_orphan_failed" {
-		t.Fatalf("expected patch_orphan_failed metric, got %+v", obs.enqueued)
+	if last != "patch_enqueued_failed" {
+		t.Fatalf("expected patch_enqueued_failed metric, got %+v", obs.enqueued)
 	}
 }

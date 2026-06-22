@@ -1,6 +1,6 @@
 CREATE TABLE IF NOT EXISTS flowy_checkpoints (
     thread_id VARCHAR(255) NOT NULL,
-    revision INT NOT NULL,
+    revision BIGINT NOT NULL,
     node_id VARCHAR(255) NOT NULL,
     state_payload JSONB NOT NULL,
     run_meta JSONB NOT NULL,

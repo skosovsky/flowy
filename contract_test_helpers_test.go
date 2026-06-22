@@ -434,6 +434,24 @@ func assertOrphanedHandoffSnapshot[T, E any](
 	}
 }
 
+func assertPendingHandoffSnapshot[T, E any](
+	t *testing.T,
+	cp Checkpointer[T, E],
+	threadID string,
+) {
+	t.Helper()
+	snap, _, loadErr := cp.Load(context.Background(), threadID)
+	if loadErr != nil {
+		t.Fatalf("load snapshot after handoff patch failure: %v", loadErr)
+	}
+	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
+		t.Fatalf("expected pending handoff status, got %q", snap.RunMeta.HandoffStatus)
+	}
+	if snap.RunMeta.HandoffPendingAt.IsZero() {
+		t.Fatal("expected HandoffPendingAt retained on pending snapshot")
+	}
+}
+
 // handoffPatchFailCP fails Save when snapshot carries the configured HandoffStatus.
 type handoffPatchFailCP[T, E any] struct {
 	*memoryCP[T, E]
@@ -516,9 +534,8 @@ func assertHandoffTokenRevisionContract[T, E any](
 		t.Fatal("expected outbox enqueue call")
 	}
 	token := outbox.calls[len(outbox.calls)-1]
-	pendingRev := requireHandoffStatusRevision(t, cp, threadID, HandoffStatusPending)
-	if token.SnapshotRevision != pendingRev {
-		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
+	if token.SnapshotRevision != rev {
+		t.Fatalf("outbox intent revision %d != snapshot revision %d", token.SnapshotRevision, rev)
 	}
 	_ = snap
 }
@@ -580,7 +597,7 @@ func (t *transactionalMemoryCP[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
-	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
 ) (uint64, error) {
 	t.ensureMemoryCP()
 	pending := snapshot
@@ -590,8 +607,7 @@ func (t *transactionalMemoryCP[T, E]) SaveWithOutbox(
 		return 0, err
 	}
 	if enqueueFn != nil {
-		token := ResumeToken{ThreadID: pending.ThreadID, SnapshotRevision: pending.Revision}
-		if err := enqueueFn(ctx, txToken, token); err != nil {
+		if err := enqueueFn(ctx, txToken, pending.Revision); err != nil {
 			_ = t.memoryCP.Delete(ctx, snapshot.ThreadID)
 			return 0, err
 		}

@@ -1755,23 +1755,17 @@ func TestStreamHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if !errors.Is(waitErr, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed from Wait, got %v", waitErr)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one enqueue before patch fail, got %d", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not receive intent before enqueued patch succeeds, got %d calls", len(outbox.calls))
 	}
-	snap, _, loadErr := cp.Load(context.Background(), "stream-patch-enqueued-fail-th")
-	if loadErr != nil {
-		t.Fatalf("load: %v", loadErr)
-	}
-	if snap.RunMeta.HandoffStatus != HandoffStatusOrphaned {
-		t.Fatalf("expected orphaned handoff status, got %q", snap.RunMeta.HandoffStatus)
-	}
+	assertPendingHandoffSnapshot(t, cp, "stream-patch-enqueued-fail-th")
 	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "stream-patch-enqueued-sync-th", state{},
 		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	if syncErr == nil {
 		t.Fatalf("expected sync patch failure, got %+v", syncRes)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "stream-patch-enqueued-fail-th", syncRes, "bg")
+	assertPendingHandoffSnapshot(t, cp, "stream-patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "stream-patch-enqueued-sync-th")
 	assertHandoffReasonMatchesStatus(t, syncRes, cp, "stream-patch-enqueued-sync-th", "bg")
 	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
@@ -1809,8 +1803,8 @@ func TestStreamHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
-	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
-		t.Fatalf("expected pending when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
 	}
 	syncRes, syncErr := g.NewRunner(cp).Start(context.Background(), "stream-patch-orphan-sync-th", state{},
 		WithHandoffOutbox[state, NoEffect](outbox),
@@ -1899,8 +1893,8 @@ func TestStreamHandoffEnqueueOkBothPatchesFail(t *testing.T) {
 	if !errors.Is(waitErr, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed from Wait, got %v", waitErr)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one enqueue before patch failures, got %d", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not receive intent before enqueued patch succeeds, got %d calls", len(outbox.calls))
 	}
 	snap, _, loadErr := cp.Load(context.Background(), "stream-both-patch-fail-th")
 	if loadErr != nil {

@@ -59,17 +59,20 @@ func (r *graphRunner[T, E]) persistSnapshot(
 func (r *graphRunner[T, E]) enqueueHandoffIntent(
 	runCtx context.Context,
 	outbox HandoffOutbox,
-	token ResumeToken,
+	intent HandoffIntent,
 ) error {
 	if outbox == nil {
 		return nil
+	}
+	if err := validateHandoffIntent(intent); err != nil {
+		return err
 	}
 	enqueueCtx, cancelEnqueue := context.WithTimeout(
 		context.WithoutCancel(runCtx),
 		handoffEnqueueTimeout,
 	)
 	defer cancelEnqueue()
-	if err := outbox.EnqueueIntent(enqueueCtx, token); err != nil {
+	if err := outbox.EnqueueIntent(enqueueCtx, intent); err != nil {
 		return fmt.Errorf("%w: %w", ErrHandoffEnqueueFailed, err)
 	}
 	return nil

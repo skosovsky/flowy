@@ -73,7 +73,7 @@ func (c *leaseGuardCheckpointer[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
-	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
 ) (uint64, error) {
 	txCP, ok := c.transactionalCheckpointerInner()
 	if !ok {

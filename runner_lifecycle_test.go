@@ -95,15 +95,15 @@ func TestResumeOverlayThenTargetPolicyOrder(t *testing.T) {
 			},
 		),
 		WithResumeTargetPolicy[targetPolicyOverlayState, NoEffect](
-			func(_ context.Context, state targetPolicyOverlayState, current ExecutionPointer) (
+			func(_ context.Context, state targetPolicyOverlayState, _ ExecutionPointer) (
 				targetPolicyOverlayState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
 				state.seenBase = state.Base
 				state.seenOver = state.Overlay
 				state.Derived = state.Base + ":" + state.Overlay
-				return state, current, nil
+				return state, ResumeCurrent(), nil
 			},
 		),
 	)
@@ -163,15 +163,15 @@ func TestResumeTargetPolicyAfterOverlay(t *testing.T) {
 			},
 		),
 		WithResumeTargetPolicy[targetPolicyOverlayState, NoEffect](
-			func(_ context.Context, state targetPolicyOverlayState, current ExecutionPointer) (
+			func(_ context.Context, state targetPolicyOverlayState, _ ExecutionPointer) (
 				targetPolicyOverlayState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
 				state.seenBase = state.Base
 				state.seenOver = state.Overlay
 				state.Derived = state.Base + ":" + state.Overlay
-				return state, current, nil
+				return state, ResumeCurrent(), nil
 			},
 		),
 	)
@@ -1666,10 +1666,10 @@ func TestResumeTargetPolicyError(t *testing.T) {
 		WithResumeTargetPolicy[failTargetPolicyState, NoEffect](
 			func(_ context.Context, state failTargetPolicyState, _ ExecutionPointer) (
 				failTargetPolicyState,
-				ExecutionPointer,
+				ResumePlan,
 				error,
 			) {
-				return state, "", errors.New("target policy failed")
+				return state, ResumeCurrent(), errors.New("target policy failed")
 			},
 		),
 	)

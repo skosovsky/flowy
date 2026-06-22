@@ -3,7 +3,6 @@ package main
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log"
 	"sync"
@@ -19,26 +18,27 @@ type jobState struct {
 
 type memoryOutbox struct {
 	mu    sync.Mutex
-	queue []flowy.ResumeToken
+	queue []flowy.HandoffIntent
 }
 
-func (o *memoryOutbox) EnqueueIntent(_ context.Context, token flowy.ResumeToken) error {
+func (o *memoryOutbox) EnqueueIntent(_ context.Context, intent flowy.HandoffIntent) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.queue = append(o.queue, token)
-	fmt.Printf("outbox enqueue thread=%s rev=%d\n", token.ThreadID, token.SnapshotRevision)
+	o.queue = append(o.queue, intent)
+	fmt.Printf("outbox enqueue thread=%s rev=%d status=%s\n",
+		intent.ThreadID, intent.SnapshotRevision, intent.HandoffStatus)
 	return nil
 }
 
-func (o *memoryOutbox) pop() (flowy.ResumeToken, bool) {
+func (o *memoryOutbox) pop() (flowy.HandoffIntent, bool) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if len(o.queue) == 0 {
-		return flowy.ResumeToken{}, false
+		return flowy.HandoffIntent{}, false
 	}
-	token := o.queue[0]
+	intent := o.queue[0]
 	o.queue = o.queue[1:]
-	return token, true
+	return intent, true
 }
 
 func runStaleRecoveryDemo(
@@ -69,7 +69,7 @@ func runStaleRecoveryDemo(
 	if recoverErr != nil {
 		log.Fatalf("recover stale pending: %v", recoverErr)
 	}
-	staleToken, ok := outbox.pop()
+	staleIntent, ok := outbox.pop()
 	if !ok {
 		log.Fatal("expected outbox message after stale recovery")
 	}
@@ -83,9 +83,9 @@ func runStaleRecoveryDemo(
 	if recovery.ResumeToken.SnapshotRevision != staleRev {
 		log.Fatalf("recovery token rev %d != snapshot rev %d", recovery.ResumeToken.SnapshotRevision, staleRev)
 	}
-	decision, err := bgRunner.EvaluateResume(context.Background(), staleToken)
-	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
-		log.Fatalf("expected stale recovery outbox token, got decision=%+v err=%v", decision, err)
+	decision, err := bgRunner.EvaluateResume(context.Background(), staleIntent.ResumeToken)
+	if err != nil {
+		log.Fatalf("evaluate recovered outbox intent: decision=%+v err=%v", decision, err)
 	}
 	if decision.ResumeToken != recovery.ResumeToken {
 		log.Fatalf("decision token %+v != recovery token %+v", decision.ResumeToken, recovery.ResumeToken)
@@ -129,7 +129,7 @@ func main() {
 	}
 	fmt.Printf("foreground handoff status=%s token_rev=%d\n", res.Status, res.ResumeToken.SnapshotRevision)
 
-	outboxToken, ok := outbox.pop()
+	outboxIntent, ok := outbox.pop()
 	if !ok {
 		log.Fatal("expected outbox message")
 	}
@@ -149,9 +149,9 @@ func main() {
 	}
 
 	bgRunner := graph.NewRunner(cp)
-	decision, err := bgRunner.EvaluateResume(context.Background(), outboxToken)
-	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
-		log.Fatalf("expected stale outbox token decision, got decision=%+v err=%v", decision, err)
+	decision, err := bgRunner.EvaluateResume(context.Background(), outboxIntent.ResumeToken)
+	if err != nil {
+		log.Fatalf("evaluate outbox intent: decision=%+v err=%v", decision, err)
 	}
 	if decision.ResumeToken != res.ResumeToken {
 		log.Fatalf("decision token %+v != result token %+v", decision.ResumeToken, res.ResumeToken)

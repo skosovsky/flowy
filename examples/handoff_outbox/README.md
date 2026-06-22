@@ -4,16 +4,16 @@
 
 ## Сценарий 1 — happy path
 
-- Foreground: `Handoff()` → Save `pending` → `EnqueueIntent` → patch `enqueued`.
-- Outbox-токен несёт revision pending-снимка; `RunResult.ResumeToken` — revision после patch.
-- Worker: использует core-generated `ResumeToken` из terminal/recovery result → `Resume`.
+- Foreground: `Handoff()` → Save `pending` → patch `enqueued` → `EnqueueIntent`.
+- Outbox получает `HandoffIntent`: pending revision, committed revision, canonical resume revision, status, reason и execution pointer.
+- Worker начинает с `EvaluateResume(intent.ResumeToken)` и использует decision/result token, если snapshot уже продвинулся.
 
 ## Сценарий 2 — stale pending recovery
 
 `main.go` также показывает crash-window recovery:
 
 1. Seed stale `pending` (`HandoffPendingAt` в прошлом).
-2. `RecoverStaleHandoff` с `WithRecoverStaleAfter` → enqueue + patch `enqueued`.
+2. `RecoverStaleHandoff` с `WithRecoverStaleAfter` → patch `enqueued` + enqueue.
 3. Background `Resume` по `ResumeToken` из `HandoffRecoveryResult`.
 
 `RecoverStaleHandoff` возвращает `HandoffRecoveryResult` + error. Result всегда несет typed `Decision`:
@@ -51,7 +51,7 @@ if err != nil {
     case errors.Is(err, flowy.ErrHandoffOutboxRequired):
         // configure WithRunnerHandoffOutbox or WithRecoverOutbox
     case errors.Is(err, flowy.ErrHandoffPatchFailed):
-        // enqueue OK but status patch failed — inspect cause
+        // status patch failed — inspect cause
         if errors.Is(err, flowy.ErrConcurrencyConflict) {
             // cron retry: another worker won the OCC race
         }
@@ -67,7 +67,7 @@ Recovery cron should retry on `ErrHandoffPatchFailed` when the cause is `ErrConc
 
 ## Production notes
 
-- Transactional adapters: используйте `TransactionalCheckpointer.SaveWithOutbox` + `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, token)`; callback получает explicit transaction handle и authoritative token от checkpointer.
+- Transactional adapters: используйте `TransactionalCheckpointer.SaveWithOutbox` + `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, intent)`; callback получает explicit transaction handle и saved revision, а core строит authoritative `HandoffIntent`.
 - Non-transactional adapters: 3-phase FSM + `RecoverStaleHandoff` cron (single-leader или external lock).
 - False `enqueued`: `RecoverStaleHandoff(..., WithRecoverForceReenqueue(true))`.
 

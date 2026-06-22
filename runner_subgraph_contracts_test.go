@@ -118,7 +118,7 @@ func TestSubgraphDoesNotInheritHandoffOutbox(t *testing.T) {
 		t.Fatalf("outbox must run once at parent handoff, not on inner runner, calls=%d", len(outbox.calls))
 	}
 	if outbox.calls[0].ThreadID != "sub-outbox-th" {
-		t.Fatalf("expected parent thread in outbox token, got %+v", outbox.calls[0])
+		t.Fatalf("expected parent thread in outbox intent, got %+v", outbox.calls[0])
 	}
 	snap, _, loadErr := cp.Load(context.Background(), "sub-outbox-th")
 	if loadErr != nil {
@@ -240,8 +240,8 @@ func TestSubgraphHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
-	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
-		t.Fatalf("expected pending when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
 	}
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-patch-orphan-fail-th")
 	assertHandoffReasonMatchesStatus(t, res, cp, "sub-patch-orphan-fail-th", "inner-bg")
@@ -299,7 +299,7 @@ func TestSubgraphHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if !errors.Is(err, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "sub-patch-enqueued-fail-th", res, "inner-bg")
+	assertPendingHandoffSnapshot(t, cp, "sub-patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "sub-patch-enqueued-fail-th")
 	assertHandoffReasonMatchesStatus(t, res, cp, "sub-patch-enqueued-fail-th", "inner-bg")
 }
@@ -512,7 +512,7 @@ func TestSubgraphStreamHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if syncErr == nil {
 		t.Fatalf("expected sync patch failure, got %+v", syncRes)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "sub-stream-patch-enqueued-fail-th", syncRes, "inner-bg")
+	assertPendingHandoffSnapshot(t, cp, "sub-stream-patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "sub-stream-patch-enqueued-sync-th")
 	assertHandoffReasonMatchesStatus(t, syncRes, cp, "sub-stream-patch-enqueued-sync-th", "inner-bg")
 	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)
@@ -664,9 +664,19 @@ func TestSubgraphInnerHandoffParentOutboxRunsAtParentLevel(t *testing.T) {
 	if res.ResumeToken.SnapshotRevision != snap.Revision {
 		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
-	pendingRev := requireHandoffStatusRevision(t, cp, "parent-outbox-th", HandoffStatusPending)
-	if token.SnapshotRevision != pendingRev {
-		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
+	snap, rev, err := cp.Load(context.Background(), "parent-outbox-th")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if token.SnapshotRevision != rev ||
+		token.CommittedSnapshotRevision != rev ||
+		token.ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("outbox intent revision should match committed snapshot revision %d, got %+v",
+			rev, token)
+	}
+	if token.PendingSnapshotRevision == 0 || token.PendingSnapshotRevision >= rev {
+		t.Fatalf("expected non-zero pending revision before committed rev %d, got %+v snap=%+v",
+			rev, token, snap)
 	}
 	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued handoff status on parent snap, got %q", snap.RunMeta.HandoffStatus)

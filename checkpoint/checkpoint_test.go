@@ -12,7 +12,7 @@ type state struct {
 	Value string `json:"value"`
 }
 
-func TestEncodeDecodeStoredSnapshot(t *testing.T) {
+func TestEncodeDecodeRecord(t *testing.T) {
 	t.Parallel()
 	snapshot := flowy.Snapshot[state, string]{
 		ThreadID:         "thread-1",
@@ -28,11 +28,15 @@ func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	}
 	serializer := JSONSerializer[state]{}
 
-	stored, err := EncodeStoredSnapshot(snapshot, serializer)
+	record, err := EncodeRecord(snapshot, serializer)
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	decoded, err := DecodeStoredSnapshot[state, string](stored, serializer)
+	decoded, err := DecodeRecord[state, string](record, serializer, DecodeRecordOptions{
+		ExpectedThreadID:         "thread-1",
+		ExpectedRevision:         2,
+		ExpectedExecutionPointer: "n1",
+	})
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
@@ -47,11 +51,11 @@ func TestEncodeDecodeStoredSnapshot(t *testing.T) {
 	}
 }
 
-func TestDecodeStoredSnapshotRejectsInvalidEnvelope(t *testing.T) {
+func TestDecodeRecordRejectsInvalidEnvelope(t *testing.T) {
 	t.Parallel()
 
 	serializer := JSONSerializer[state]{}
-	valid, err := EncodeStoredSnapshot(flowy.Snapshot[state, string]{
+	valid, err := EncodeRecord(flowy.Snapshot[state, string]{
 		ThreadID:         "thread-1",
 		Revision:         1,
 		ExecutionPointer: "work",
@@ -63,23 +67,23 @@ func TestDecodeStoredSnapshotRejectsInvalidEnvelope(t *testing.T) {
 
 	tests := []struct {
 		name   string
-		mutate func(*StoredSnapshot)
+		mutate func(*Record)
 	}{
 		{
 			name: "empty thread",
-			mutate: func(s *StoredSnapshot) {
+			mutate: func(s *Record) {
 				s.ThreadID = ""
 			},
 		},
 		{
 			name: "zero revision",
-			mutate: func(s *StoredSnapshot) {
+			mutate: func(s *Record) {
 				s.Revision = 0
 			},
 		},
 		{
 			name: "empty node",
-			mutate: func(s *StoredSnapshot) {
+			mutate: func(s *Record) {
 				s.NodeID = ""
 			},
 		},
@@ -92,9 +96,54 @@ func TestDecodeStoredSnapshotRejectsInvalidEnvelope(t *testing.T) {
 			stored := valid
 			tc.mutate(&stored)
 
-			_, err := DecodeStoredSnapshot[state, string](stored, serializer)
-			if !errors.Is(err, ErrInvalidStoredSnapshot) {
-				t.Fatalf("expected ErrInvalidStoredSnapshot, got %v", err)
+			_, err := DecodeRecord[state, string](stored, serializer, DecodeRecordOptions{})
+			if !errors.Is(err, ErrInvalidRecord) {
+				t.Fatalf("expected ErrInvalidRecord, got %v", err)
+			}
+		})
+	}
+}
+
+func TestDecodeRecordRejectsExpectedMetadataMismatch(t *testing.T) {
+	t.Parallel()
+
+	serializer := JSONSerializer[state]{}
+	record, err := EncodeRecord(flowy.Snapshot[state, string]{
+		ThreadID:         "thread-1",
+		Revision:         7,
+		ExecutionPointer: "work",
+		State:            state{Value: "ok"},
+	}, serializer)
+	if err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+
+	tests := []struct {
+		name string
+		opts DecodeRecordOptions
+	}{
+		{
+			name: "thread id",
+			opts: DecodeRecordOptions{ExpectedThreadID: "other"},
+		},
+		{
+			name: "revision",
+			opts: DecodeRecordOptions{ExpectedRevision: 8},
+		},
+		{
+			name: "execution pointer",
+			opts: DecodeRecordOptions{ExpectedExecutionPointer: "router"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := DecodeRecord[state, string](record, serializer, tc.opts)
+			if !errors.Is(err, ErrInvalidRecord) ||
+				!errors.Is(err, flowy.ErrSnapshotEnvelopeInvalid) {
+				t.Fatalf("expected invalid envelope error, got %v", err)
 			}
 		})
 	}

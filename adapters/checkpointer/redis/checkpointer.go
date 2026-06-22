@@ -86,7 +86,7 @@ func (c *Checkpointer[T, E]) Save(
 ) (uint64, error) {
 	newRevision := expectedRevision + 1
 	snapshot.Revision = newRevision
-	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
+	stored, err := checkpoint.EncodeRecord(snapshot, c.serializer)
 	if err != nil {
 		return 0, err
 	}
@@ -119,7 +119,7 @@ func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.S
 	if len(values) == 0 {
 		return flowy.Snapshot[T, E]{}, 0, fmt.Errorf("%w: %w", flowy.ErrThreadNotFound, checkpoint.ErrNoSnapshot)
 	}
-	snapshot, err := c.decode(values[0])
+	snapshot, err := c.decode(threadID, values[0])
 	if err != nil {
 		return flowy.Snapshot[T, E]{}, 0, err
 	}
@@ -141,7 +141,7 @@ func (c *Checkpointer[T, E]) GetHistory(
 	}
 	out := make([]flowy.Snapshot[T, E], 0, len(values))
 	for _, item := range values {
-		snapshot, decodeErr := c.decode(item)
+		snapshot, decodeErr := c.decode(threadID, item)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -186,12 +186,20 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 	return nil
 }
 
-func (c *Checkpointer[T, E]) decode(raw string) (flowy.Snapshot[T, E], error) {
-	var stored checkpoint.StoredSnapshot
+func (c *Checkpointer[T, E]) decode(threadID string, raw string) (flowy.Snapshot[T, E], error) {
+	var stored checkpoint.Record
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return flowy.Snapshot[T, E]{}, fmt.Errorf("redis checkpoint unmarshal: %w", err)
 	}
-	snapshot, err := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
+	snapshot, err := checkpoint.DecodeRecord[T, E](
+		stored,
+		c.serializer,
+		checkpoint.DecodeRecordOptions{
+			ExpectedThreadID:         threadID,
+			ExpectedRevision:         0,
+			ExpectedExecutionPointer: "",
+		},
+	)
 	if err != nil {
 		return flowy.Snapshot[T, E]{}, err
 	}

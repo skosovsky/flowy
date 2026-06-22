@@ -22,7 +22,7 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot flowy.Snapshot[T, E],
-	enqueueFn func(ctx context.Context, tx flowy.TransactionHandle, token flowy.ResumeToken) error,
+	enqueueFn func(ctx context.Context, tx flowy.TransactionHandle, savedRevision uint64) error,
 ) (uint64, error) {
 	beginner, ok := c.db.(TxBeginner)
 	if !ok {
@@ -36,7 +36,7 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 
 	newRevision := expectedRevision + 1
 	snapshot.Revision = newRevision
-	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
+	stored, err := checkpoint.EncodeRecord(snapshot, c.serializer)
 	if err != nil {
 		return 0, err
 	}
@@ -57,8 +57,7 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 		return 0, err
 	}
 	if enqueueFn != nil {
-		token := flowy.ResumeToken{ThreadID: snapshot.ThreadID, SnapshotRevision: inserted}
-		if err := enqueueFn(ctx, tx, token); err != nil {
+		if err := enqueueFn(ctx, tx, inserted); err != nil {
 			return 0, err
 		}
 	}

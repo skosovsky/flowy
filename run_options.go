@@ -17,7 +17,7 @@ type ResumeTargetPolicy[T any] func(
 	ctx context.Context,
 	state T,
 	current ExecutionPointer,
-) (T, ExecutionPointer, error)
+) (T, ResumePlan, error)
 
 // InvariantValidator validates state after reducer and before checkpoint save.
 type InvariantValidator[T any] func(state T) error
@@ -183,7 +183,11 @@ func applyResumeTargetPolicy[T, E any](
 	if inv.resumeTargetPolicy == nil {
 		return state, currentPtr, nil
 	}
-	nextState, newPtr, err := inv.resumeTargetPolicy(ctx, state, currentPtr)
+	nextState, plan, err := inv.resumeTargetPolicy(ctx, state, currentPtr)
+	if err != nil {
+		return state, "", fmt.Errorf("%w: %w", ErrResumeTargetPolicyFailed, err)
+	}
+	newPtr, err := plan.resolve(currentPtr)
 	if err != nil {
 		return state, "", fmt.Errorf("%w: %w", ErrResumeTargetPolicyFailed, err)
 	}

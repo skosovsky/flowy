@@ -24,6 +24,23 @@ type fakeDB struct {
 	rows           pgx.Rows
 }
 
+func TestRevisionSchemaUsesBigint(t *testing.T) {
+	t.Parallel()
+
+	if !strings.Contains(SchemaSQL(), "revision BIGINT NOT NULL") {
+		t.Fatalf("checkpoint revision column must be BIGINT:\n%s", SchemaSQL())
+	}
+	if strings.Contains(SchemaSQL(), "revision INT NOT NULL") {
+		t.Fatalf("checkpoint revision column must not use INT:\n%s", SchemaSQL())
+	}
+	if !strings.Contains(saveOccSQL, "@expected_revision::bigint") {
+		t.Fatalf("save OCC SQL must cast expected revision to bigint:\n%s", saveOccSQL)
+	}
+	if strings.Contains(saveOccSQL, "@expected_revision::int") {
+		t.Fatalf("save OCC SQL must not cast expected revision to int:\n%s", saveOccSQL)
+	}
+}
+
 func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag, error) {
 	f.execCalled = true
 	return pgconn.CommandTag{}, nil

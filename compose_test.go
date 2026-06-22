@@ -61,7 +61,7 @@ func TestSubgraphHandoffPropagates(t *testing.T) {
 		t.Fatalf("expected single parent-level outbox call after inner handoff, got %d", len(outbox.calls))
 	}
 	if outbox.calls[0].ThreadID != "sub-handoff" {
-		t.Fatalf("expected parent thread in outbox token, got %+v", outbox.calls[0])
+		t.Fatalf("expected parent thread in outbox intent, got %+v", outbox.calls[0])
 	}
 	assertHandoffTokenRevisionContract(t, outbox, res, cp, "sub-handoff")
 }
@@ -166,8 +166,8 @@ func TestComposeHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
-	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
-		t.Fatalf("expected pending when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
 	}
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "compose-patch-orphan-fail-th")
 	assertHandoffReasonMatchesStatus(t, res, cp, "compose-patch-orphan-fail-th", "child_to_background")
@@ -220,7 +220,7 @@ func TestComposeHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if !errors.Is(err, ErrHandoffPatchFailed) {
 		t.Fatalf("expected ErrHandoffPatchFailed, got %v", err)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "compose-patch-enqueued-fail-th", res, "child_to_background")
+	assertPendingHandoffSnapshot(t, cp, "compose-patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "compose-patch-enqueued-fail-th")
 	assertHandoffReasonMatchesStatus(t, res, cp, "compose-patch-enqueued-fail-th", "child_to_background")
 }
@@ -469,7 +469,7 @@ func TestComposeStreamHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if syncErr == nil {
 		t.Fatalf("expected sync patch failure, got %+v", syncRes)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "compose-stream-patch-enqueued-fail-th", syncRes, "child_to_background")
+	assertPendingHandoffSnapshot(t, cp, "compose-stream-patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, syncRes, cp, "compose-stream-patch-enqueued-sync-th")
 	assertHandoffReasonMatchesStatus(t, syncRes, cp, "compose-stream-patch-enqueued-sync-th", "child_to_background")
 	assertTerminalEventReasonMatchesSync(t, events, EventHandoff, syncRes.Reason)

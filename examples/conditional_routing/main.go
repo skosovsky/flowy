@@ -24,17 +24,17 @@ func routeResumeTargetPolicy(
 	_ context.Context,
 	state routeState,
 	currentPtr flowy.ExecutionPointer,
-) (routeState, flowy.ExecutionPointer, error) {
+) (routeState, flowy.ResumePlan, error) {
 	if slices.Contains(state.AllowedTools, "") {
-		return state, "", errors.New("empty tool name")
+		return state, flowy.ResumeCurrent(), errors.New("empty tool name")
 	}
 	if len(state.AllowedTools) > 0 {
 		state.AllowedTools = append([]string(nil), state.AllowedTools...)
 	}
 	if currentPtr == "prepare" && state.SkipPrepare {
-		return state, "check_cache", nil
+		return state, flowy.ResumeTo("check_cache"), nil
 	}
-	return state, currentPtr, nil
+	return state, flowy.ResumeCurrent(), nil
 }
 
 func main() {

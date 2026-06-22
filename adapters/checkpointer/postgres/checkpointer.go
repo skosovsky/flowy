@@ -70,7 +70,7 @@ func (c *Checkpointer[T, E]) Save(
 ) (uint64, error) {
 	newRevision := expectedRevision + 1
 	snapshot.Revision = newRevision
-	stored, err := checkpoint.EncodeStoredSnapshot(snapshot, c.serializer)
+	stored, err := checkpoint.EncodeRecord(snapshot, c.serializer)
 	if err != nil {
 		return 0, err
 	}
@@ -94,14 +94,22 @@ func (c *Checkpointer[T, E]) Save(
 }
 
 func (c *Checkpointer[T, E]) Load(ctx context.Context, threadID string) (flowy.Snapshot[T, E], uint64, error) {
-	stored, err := scanStoredSnapshot(c.db.QueryRow(ctx, loadLatestSQL, pgx.NamedArgs{"thread_id": threadID}))
+	stored, err := scanRecord(c.db.QueryRow(ctx, loadLatestSQL, pgx.NamedArgs{"thread_id": threadID}))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flowy.Snapshot[T, E]{}, 0, fmt.Errorf("%w: %w", flowy.ErrThreadNotFound, checkpoint.ErrNoSnapshot)
 		}
 		return flowy.Snapshot[T, E]{}, 0, err
 	}
-	snapshot, err := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
+	snapshot, err := checkpoint.DecodeRecord[T, E](
+		stored,
+		c.serializer,
+		checkpoint.DecodeRecordOptions{
+			ExpectedThreadID:         threadID,
+			ExpectedRevision:         0,
+			ExpectedExecutionPointer: "",
+		},
+	)
 	if err != nil {
 		return flowy.Snapshot[T, E]{}, 0, err
 	}
@@ -124,11 +132,19 @@ func (c *Checkpointer[T, E]) GetHistory(
 
 	out := make([]flowy.Snapshot[T, E], 0)
 	for rows.Next() {
-		stored, scanErr := scanStoredSnapshot(rows)
+		stored, scanErr := scanRecord(rows)
 		if scanErr != nil {
 			return nil, scanErr
 		}
-		snapshot, decodeErr := checkpoint.DecodeStoredSnapshot[T, E](stored, c.serializer)
+		snapshot, decodeErr := checkpoint.DecodeRecord[T, E](
+			stored,
+			c.serializer,
+			checkpoint.DecodeRecordOptions{
+				ExpectedThreadID:         threadID,
+				ExpectedRevision:         0,
+				ExpectedExecutionPointer: "",
+			},
+		)
 		if decodeErr != nil {
 			return nil, decodeErr
 		}
@@ -183,9 +199,9 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 	return nil
 }
 
-func scanStoredSnapshot(row interface{ Scan(dest ...any) error }) (checkpoint.StoredSnapshot, error) {
+func scanRecord(row interface{ Scan(dest ...any) error }) (checkpoint.Record, error) {
 	var (
-		stored checkpoint.StoredSnapshot
+		stored checkpoint.Record
 	)
 
 	err := row.Scan(
@@ -198,7 +214,7 @@ func scanStoredSnapshot(row interface{ Scan(dest ...any) error }) (checkpoint.St
 		&stored.UpdatedAt,
 	)
 	if err != nil {
-		return checkpoint.StoredSnapshot{}, fmt.Errorf("postgres checkpoint scan: %w", err)
+		return checkpoint.Record{}, fmt.Errorf("postgres checkpoint scan: %w", err)
 	}
 	return stored, nil
 }

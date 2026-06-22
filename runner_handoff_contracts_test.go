@@ -20,7 +20,7 @@ func (c *txContextCheckCP[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
-	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
 ) (uint64, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, fmt.Errorf("transactional save context is canceled: %w", err)
@@ -39,7 +39,7 @@ func (c *arbitraryRevisionTxCP[T, E]) SaveWithOutbox(
 	ctx context.Context,
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
-	enqueueFn func(context.Context, TransactionHandle, ResumeToken) error,
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
 ) (uint64, error) {
 	if c.memoryCP == nil {
 		c.memoryCP = newMemoryCP[T, E]()
@@ -52,9 +52,8 @@ func (c *arbitraryRevisionTxCP[T, E]) SaveWithOutbox(
 		return 0, ErrConcurrencyConflict
 	}
 	snapshot.Revision = c.revision
-	token := ResumeToken{ThreadID: snapshot.ThreadID, SnapshotRevision: c.revision}
 	if enqueueFn != nil {
-		if err := enqueueFn(ctx, struct{}{}, token); err != nil {
+		if err := enqueueFn(ctx, struct{}{}, c.revision); err != nil {
 			return 0, err
 		}
 	}
@@ -62,6 +61,48 @@ func (c *arbitraryRevisionTxCP[T, E]) SaveWithOutbox(
 	c.reads[snapshot.ThreadID] = snapshot
 	c.hist[snapshot.ThreadID] = append(c.hist[snapshot.ThreadID], snapshot)
 	return c.revision, nil
+}
+
+type zeroIntentState struct{}
+
+type zeroIntentTxCP struct {
+	*memoryCP[zeroIntentState, NoEffect]
+}
+
+func (c *zeroIntentTxCP) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[zeroIntentState, NoEffect],
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
+) (uint64, error) {
+	if enqueueFn != nil {
+		if err := enqueueFn(ctx, struct{}{}, 0); err != nil {
+			return 0, err
+		}
+	}
+	return c.memoryCP.Save(ctx, expectedRevision, snapshot)
+}
+
+type divergentReturnTxCP struct {
+	*memoryCP[zeroIntentState, NoEffect]
+}
+
+func (c *divergentReturnTxCP) SaveWithOutbox(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[zeroIntentState, NoEffect],
+	enqueueFn func(context.Context, TransactionHandle, uint64) error,
+) (uint64, error) {
+	savedRevision, err := c.memoryCP.Save(ctx, expectedRevision, snapshot)
+	if err != nil {
+		return 0, err
+	}
+	if enqueueFn != nil {
+		if err := enqueueFn(ctx, struct{}{}, savedRevision); err != nil {
+			return 0, err
+		}
+	}
+	return savedRevision + 998, nil
 }
 
 func TestHandoffOutboxFailurePreservesSnapshot(t *testing.T) {
@@ -136,7 +177,7 @@ func TestHandoffOutboxSuccess(t *testing.T) {
 	}
 	token := outbox.lastToken()
 	if token.ThreadID != "outbox-ok-th" {
-		t.Fatalf("outbox token thread mismatch: got %+v", token)
+		t.Fatalf("outbox intent thread mismatch: got %+v", token)
 	}
 	snap, _, err := cp.Load(context.Background(), "outbox-ok-th")
 	if err != nil {
@@ -146,8 +187,20 @@ func TestHandoffOutboxSuccess(t *testing.T) {
 		t.Fatalf("result token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, snap.Revision)
 	}
 	pendingRev := requireHandoffStatusRevision(t, cp, "outbox-ok-th", HandoffStatusPending)
-	if token.SnapshotRevision != pendingRev {
-		t.Fatalf("outbox token revision %d != pending snapshot revision %d", token.SnapshotRevision, pendingRev)
+	if token.SnapshotRevision != snap.Revision {
+		t.Fatalf("outbox intent revision %d != committed snapshot revision %d", token.SnapshotRevision, snap.Revision)
+	}
+	intent := outbox.lastIntent()
+	if intent.HandoffStatus != HandoffStatusEnqueued || intent.Reason != "bg" ||
+		intent.ExecutionPointer != "work" {
+		t.Fatalf("unexpected handoff intent metadata: %+v", intent)
+	}
+	if intent.PendingSnapshotRevision != pendingRev ||
+		intent.CommittedSnapshotRevision != snap.Revision ||
+		intent.SnapshotRevision != snap.Revision ||
+		intent.ResumeToken.SnapshotRevision != snap.Revision {
+		t.Fatalf("unexpected handoff intent revisions: %+v pending=%d committed=%d",
+			intent, pendingRev, snap.Revision)
 	}
 	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued handoff status, got %q", snap.RunMeta.HandoffStatus)
@@ -158,20 +211,179 @@ func TestHandoffOutboxSuccess(t *testing.T) {
 	}
 }
 
-func TestHandoffEnqueueWhileStatusPending(t *testing.T) {
+func TestTransactionalOutboxRejectsZeroCallbackRevision(t *testing.T) {
+	t.Parallel()
+
+	cp := &zeroIntentTxCP{memoryCP: newMemoryCP[zeroIntentState, NoEffect]()}
+	outbox := &stubHandoffOutbox{}
+	b := NewGraph[zeroIntentState, NoEffect](func(_ zeroIntentState, u zeroIntentState) zeroIntentState { return u })
+	b.AddNode("work", func(_ context.Context, s zeroIntentState) (zeroIntentState, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunnerWithOptions(cp, []RunnerOption[zeroIntentState, NoEffect]{
+		WithRunnerHandoffOutbox[zeroIntentState, NoEffect](outbox),
+	}).Start(context.Background(), "tx-zero-intent-th", zeroIntentState{})
+	if !errors.Is(err, ErrInvalidHandoffIntent) {
+		t.Fatalf("expected ErrInvalidHandoffIntent, got err=%v res=%+v", err, res)
+	}
+	if len(outbox.calls) != 0 {
+		t.Fatalf("invalid handoff intent must not reach outbox, calls=%d", len(outbox.calls))
+	}
+}
+
+func TestTransactionalOutboxRejectsDivergentReturnedRevision(t *testing.T) {
+	t.Parallel()
+
+	cp := &divergentReturnTxCP{memoryCP: newMemoryCP[zeroIntentState, NoEffect]()}
+	outbox := &stubHandoffOutbox{}
+	b := NewGraph[zeroIntentState, NoEffect](func(_ zeroIntentState, u zeroIntentState) zeroIntentState { return u })
+	b.AddNode("work", func(_ context.Context, s zeroIntentState) (zeroIntentState, Directive, error) {
+		return s, Handoff("bg"), nil
+	})
+	b.AllowNoOutgoingRoute("work")
+	b.SetEntryPoint("work")
+	g, err := b.Compile()
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	res, err := g.NewRunnerWithOptions(cp, []RunnerOption[zeroIntentState, NoEffect]{
+		WithRunnerHandoffOutbox[zeroIntentState, NoEffect](outbox),
+	}).Start(context.Background(), "tx-divergent-return-th", zeroIntentState{})
+	if !errors.Is(err, ErrInvalidHandoffIntent) {
+		t.Fatalf("expected ErrInvalidHandoffIntent, got err=%v res=%+v", err, res)
+	}
+	if len(outbox.calls) != 1 {
+		t.Fatalf("expected one canonical outbox intent before return mismatch, got %d", len(outbox.calls))
+	}
+	if outbox.calls[0].SnapshotRevision != 1 {
+		t.Fatalf("outbox intent should use callback revision 1, got %+v", outbox.calls[0])
+	}
+	if res != nil && res.ResumeToken.SnapshotRevision == 999 {
+		t.Fatalf("runner must not expose divergent adapter revision, got %+v", res)
+	}
+}
+
+func TestNewHandoffIntentRejectsInvalidRevisionSemantics(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		status            HandoffStatus
+		pendingRevision   uint64
+		committedRevision uint64
+	}{
+		{
+			name:              "zero committed",
+			status:            HandoffStatusEnqueued,
+			pendingRevision:   1,
+			committedRevision: 0,
+		},
+		{
+			name:              "pending after committed",
+			status:            HandoffStatusEnqueued,
+			pendingRevision:   2,
+			committedRevision: 1,
+		},
+		{
+			name:              "pending status",
+			status:            HandoffStatusPending,
+			pendingRevision:   1,
+			committedRevision: 1,
+		},
+		{
+			name:              "orphaned status",
+			status:            HandoffStatusOrphaned,
+			pendingRevision:   1,
+			committedRevision: 1,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NewHandoffIntent(
+				"intent-th",
+				"work",
+				"bg",
+				tc.status,
+				tc.pendingRevision,
+				tc.committedRevision,
+			)
+			if !errors.Is(err, ErrInvalidHandoffIntent) {
+				t.Fatalf("expected ErrInvalidHandoffIntent, got %v", err)
+			}
+		})
+	}
+
+	intent, err := NewHandoffIntent("intent-th", "work", "bg", HandoffStatusEnqueued, 1, 2)
+	if err != nil {
+		t.Fatalf("NewHandoffIntent: %v", err)
+	}
+	if intent.SnapshotRevision != 2 || intent.ResumeToken.SnapshotRevision != 2 {
+		t.Fatalf("expected canonical committed revision, got %+v", intent)
+	}
+}
+
+func TestTransactionalSaveWithOutboxReportsSavedRevision(t *testing.T) {
+	t.Parallel()
+
+	type state struct{}
+
+	cp := &transactionalMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
+	snapshot := Snapshot[state, NoEffect]{
+		ThreadID:         "tx-canonical-intent-th",
+		ExecutionPointer: "work",
+		State:            state{},
+		RunMeta:          RunMetadata{HandoffStatus: HandoffStatusEnqueued},
+	}
+	var gotRevision uint64
+	rev, err := cp.SaveWithOutbox(
+		context.Background(),
+		0,
+		snapshot,
+		func(_ context.Context, _ TransactionHandle, savedRevision uint64) error {
+			gotRevision = savedRevision
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("SaveWithOutbox: %v", err)
+	}
+	if rev != 1 {
+		t.Fatalf("revision=%d want 1", rev)
+	}
+	if gotRevision != rev {
+		t.Fatalf("callback revision %d != saved revision %d", gotRevision, rev)
+	}
+}
+
+func TestHandoffEnqueueUsesCommittedStatus(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
 
 	cp := newMemoryCP[state, NoEffect]()
 	outbox := &stubHandoffOutbox{
-		onEnqueue: func(token ResumeToken) error {
-			snap, _, loadErr := cp.Load(context.Background(), token.ThreadID)
+		onEnqueue: func(intent HandoffIntent) error {
+			snap, _, loadErr := cp.Load(context.Background(), intent.ThreadID)
 			if loadErr != nil {
 				return loadErr
 			}
-			if snap.RunMeta.HandoffStatus != HandoffStatusPending {
-				return fmt.Errorf("expected pending during enqueue, got %q", snap.RunMeta.HandoffStatus)
+			if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+				return fmt.Errorf("expected enqueued during enqueue, got %q", snap.RunMeta.HandoffStatus)
+			}
+			if intent.SnapshotRevision != snap.Revision ||
+				intent.CommittedSnapshotRevision != snap.Revision ||
+				intent.ResumeToken.SnapshotRevision != snap.Revision {
+				return fmt.Errorf("intent revision mismatch: intent=%+v snap=%d", intent, snap.Revision)
 			}
 			return nil
 		},
@@ -775,11 +987,11 @@ func TestRequestLocalHandoffTransactionalSaveUsesUncanceledContext(t *testing.T)
 		t.Fatalf("expected enqueued status, got %q", snap.RunMeta.HandoffStatus)
 	}
 	if token := outbox.lastToken(); token.ThreadID != "tx-local-handoff-th" || token.SnapshotRevision == 0 {
-		t.Fatalf("expected transactional outbox token, got %+v", token)
+		t.Fatalf("expected transactional outbox intent, got %+v", token)
 	}
 }
 
-func TestRequestLocalHandoffTransactionalOutboxUsesAuthoritativeRevision(t *testing.T) {
+func TestRequestLocalHandoffTransactionalOutboxRejectsMismatchedRevision(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -804,19 +1016,16 @@ func TestRequestLocalHandoffTransactionalOutboxUsesAuthoritativeRevision(t *test
 	}()
 
 	<-ready
-	if err := runner.RequestLocalHandoff(context.Background(), "tx-authoritative-rev-th"); err != nil {
-		t.Fatalf("RequestLocalHandoff: %v", err)
+	handoffErr := runner.RequestLocalHandoff(context.Background(), "tx-authoritative-rev-th")
+	if !errors.Is(handoffErr, ErrInvalidHandoffIntent) {
+		t.Fatalf("expected ErrInvalidHandoffIntent, got %v", handoffErr)
 	}
 	start := <-startDone
-	if start.err != nil {
-		t.Fatalf("Start: %v", start.err)
+	if !errors.Is(start.err, ErrInvalidHandoffIntent) {
+		t.Fatalf("Start expected ErrInvalidHandoffIntent, got err=%v result=%+v", start.err, start.result)
 	}
-	if start.result == nil || start.result.ResumeToken.SnapshotRevision != 42 {
-		t.Fatalf("expected result token rev 42, got %+v", start.result)
-	}
-	if token := outbox.lastToken(); token.ThreadID != "tx-authoritative-rev-th" ||
-		token.SnapshotRevision != 42 {
-		t.Fatalf("expected transactional outbox token rev 42, got %+v", token)
+	if len(outbox.calls) != 0 {
+		t.Fatalf("mismatched transactional revision must not reach outbox, calls=%d", len(outbox.calls))
 	}
 }
 
@@ -1067,13 +1276,13 @@ func TestHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	if res == nil || res.Status != RunStatusHandoff {
 		t.Fatalf("expected RunStatusHandoff on patch fail after enqueue, got %+v", res)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one successful enqueue before patch fail, got %d", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not receive intent before enqueued patch succeeds, got %d calls", len(outbox.calls))
 	}
 	if res.ResumeToken.ThreadID == "" {
 		t.Fatalf("expected populated ResumeToken, got %+v", res.ResumeToken)
 	}
-	assertOrphanedHandoffSnapshot(t, cp, "patch-enqueued-fail-th", res, "bg")
+	assertPendingHandoffSnapshot(t, cp, "patch-enqueued-fail-th")
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "patch-enqueued-fail-th")
 	assertHandoffReasonMatchesStatus(t, res, cp, "patch-enqueued-fail-th", "bg")
 }
@@ -1112,8 +1321,8 @@ func TestHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	if loadErr != nil {
 		t.Fatalf("load: %v", loadErr)
 	}
-	if snap.RunMeta.HandoffStatus != HandoffStatusPending {
-		t.Fatalf("expected pending status when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
+	if snap.RunMeta.HandoffStatus != HandoffStatusEnqueued {
+		t.Fatalf("expected enqueued status when orphan patch fails, got %q", snap.RunMeta.HandoffStatus)
 	}
 	if res.ResumeToken.SnapshotRevision != rev {
 		t.Fatalf("token revision %d != snapshot revision %d", res.ResumeToken.SnapshotRevision, rev)
@@ -1157,8 +1366,8 @@ func TestHandoffEnqueueOkBothPatchesFail(t *testing.T) {
 	if res == nil || res.Status != RunStatusHandoff {
 		t.Fatalf("expected RunStatusHandoff, got %+v", res)
 	}
-	if len(outbox.calls) != 1 {
-		t.Fatalf("expected one enqueue before patch failures, got %d", len(outbox.calls))
+	if len(outbox.calls) != 0 {
+		t.Fatalf("outbox must not receive intent before enqueued patch succeeds, got %d calls", len(outbox.calls))
 	}
 	snap, _, loadErr := cp.Load(context.Background(), "both-patch-fail-th")
 	if loadErr != nil {
@@ -1450,7 +1659,7 @@ func TestTransactionalHandoffSuccess(t *testing.T) {
 		t.Fatalf("expected one enqueue, got %d", len(outbox.calls))
 	}
 	if outbox.calls[0].SnapshotRevision != rev {
-		t.Fatalf("outbox token rev %d != snapshot rev %d", outbox.calls[0].SnapshotRevision, rev)
+		t.Fatalf("outbox intent rev %d != snapshot rev %d", outbox.calls[0].SnapshotRevision, rev)
 	}
 	assertRunMetaHandoffStatusMatchesSnapshot(t, res, cp, "tx-handoff-ok-th")
 }

@@ -117,12 +117,8 @@ func TestLifecycleObserverHandoffPatchOrphanFailed(t *testing.T) {
 	t.Cleanup(func() { SetLifecycleObserver(nil) })
 
 	type state struct{}
-	cp := &handoffPatchFailCP[state, NoEffect]{
-		failOnStatuses: map[HandoffStatus]struct{}{ //nolint:exhaustive // patch statuses only
-			HandoffStatusEnqueued: {},
-			HandoffStatusOrphaned: {},
-		},
-	}
+	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
+	cp := &handoffPatchFailCP[state, NoEffect]{failOnStatus: HandoffStatusOrphaned}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(_ context.Context, s state) (state, Directive, error) {
 		return s, Handoff("bg"), nil
@@ -134,7 +130,7 @@ func TestLifecycleObserverHandoffPatchOrphanFailed(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	_, _ = g.NewRunner(cp).Start(context.Background(), "obs-patch-orphan-th", state{},
-		WithHandoffOutbox[state, NoEffect](&stubHandoffOutbox{}),
+		WithHandoffOutbox[state, NoEffect](outbox),
 	)
 	obs.mu.Lock()
 	defer obs.mu.Unlock()

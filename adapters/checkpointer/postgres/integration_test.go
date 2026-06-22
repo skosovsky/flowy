@@ -5,6 +5,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"testing"
 	"time"
@@ -127,7 +128,7 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		context.Context,
 		flowy.TransactionHandle,
-		flowy.ResumeToken,
+		uint64,
 	) error {
 		return errors.New("enqueue failed")
 	})
@@ -168,16 +169,19 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	rev, err := cp.SaveWithOutbox(ctx, 0, snap, func(
 		enqueueCtx context.Context,
 		txHandle flowy.TransactionHandle,
-		token flowy.ResumeToken,
+		savedRevision uint64,
 	) error {
 		tx, ok := PgxTxFromHandle(txHandle)
 		if !ok {
 			return errors.New("expected pgx.Tx transaction handle")
 		}
+		if savedRevision != 1 {
+			return fmt.Errorf("unexpected saved revision: %d", savedRevision)
+		}
 		sawTx = true
 		_, execErr := tx.Exec(enqueueCtx,
 			`INSERT INTO flowy_handoff_outbox (thread_id, snapshot_revision) VALUES ($1, $2)`,
-			token.ThreadID, token.SnapshotRevision,
+			threadID, savedRevision,
 		)
 		return execErr
 	})
@@ -239,7 +243,7 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		context.Context,
 		flowy.TransactionHandle,
-		flowy.ResumeToken,
+		uint64,
 	) error {
 		return nil
 	})
@@ -282,7 +286,7 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 	_, err = cp.SaveWithOutbox(ctx, 0, snap, func(
 		enqueueCtx context.Context,
 		txHandle flowy.TransactionHandle,
-		token flowy.ResumeToken,
+		_ uint64,
 	) error {
 		tx, ok := PgxTxFromHandle(txHandle)
 		if !ok {
@@ -290,7 +294,7 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 		}
 		_, execErr := tx.Exec(enqueueCtx,
 			`INSERT INTO flowy_handoff_outbox_nonexistent (thread_id) VALUES ($1)`,
-			token.ThreadID,
+			threadID,
 		)
 		return execErr
 	})
@@ -313,22 +317,22 @@ type runnerHandoffState struct {
 }
 
 type stubHandoffOutbox struct {
-	calls   []flowy.ResumeToken
-	txCalls []flowy.ResumeToken
+	calls   []flowy.HandoffIntent
+	txCalls []flowy.HandoffIntent
 	err     error
 }
 
-func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, token flowy.ResumeToken) error {
-	s.calls = append(s.calls, token)
+func (s *stubHandoffOutbox) EnqueueIntent(_ context.Context, intent flowy.HandoffIntent) error {
+	s.calls = append(s.calls, intent)
 	return s.err
 }
 
 func (s *stubHandoffOutbox) EnqueueIntentTx(
 	ctx context.Context,
 	tx flowy.TransactionHandle,
-	token flowy.ResumeToken,
+	intent flowy.HandoffIntent,
 ) error {
-	s.txCalls = append(s.txCalls, token)
+	s.txCalls = append(s.txCalls, intent)
 	if s.err != nil {
 		return s.err
 	}
@@ -338,7 +342,7 @@ func (s *stubHandoffOutbox) EnqueueIntentTx(
 	}
 	_, err := pgxTx.Exec(ctx,
 		`INSERT INTO flowy_handoff_outbox (thread_id, snapshot_revision) VALUES ($1, $2)`,
-		token.ThreadID, int64(token.SnapshotRevision),
+		intent.ThreadID, int64(intent.SnapshotRevision),
 	)
 	return err
 }
@@ -409,7 +413,7 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 		t.Fatalf("expected no non-transactional enqueue, got %d", len(outbox.calls))
 	}
 	if outbox.txCalls[0].SnapshotRevision != rev {
-		t.Fatalf("outbox token rev %d != snapshot rev %d", outbox.txCalls[0].SnapshotRevision, rev)
+		t.Fatalf("outbox intent rev %d != snapshot rev %d", outbox.txCalls[0].SnapshotRevision, rev)
 	}
 	var outboxRows int
 	if err := pool.QueryRow(context.Background(),
@@ -530,9 +534,11 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 	if snap.RunMeta.HandoffStatus != flowy.HandoffStatusEnqueued {
 		t.Fatalf("expected enqueued, got %q", snap.RunMeta.HandoffStatus)
 	}
-	if outbox.calls[0].SnapshotRevision >= rev {
-		t.Fatalf("enqueue token revision %d should be before status patch revision %d",
-			outbox.calls[0].SnapshotRevision, rev)
+	if outbox.calls[0].SnapshotRevision != rev ||
+		outbox.calls[0].CommittedSnapshotRevision != rev ||
+		outbox.calls[0].ResumeToken.SnapshotRevision != rev {
+		t.Fatalf("enqueue intent revision should match committed snapshot revision %d, got %+v",
+			rev, outbox.calls[0])
 	}
 }
 
