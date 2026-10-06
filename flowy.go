@@ -344,7 +344,12 @@ type StateSerializer[T any] interface {
 	Unmarshal(data []byte) (T, error)
 }
 
-// StateInterceptor can mutate state before save and after load.
+// StateInterceptor converts between runtime/domain state and its persisted representation.
+// BeforeSave runs once per state preparation, after domain invariant validation,
+// on both Save and SaveWithOutbox paths. Metadata-only handoff patches reuse the
+// persisted state. AfterLoad restores domain state before resume validation.
+// Reference-backed BYOT state is value-copied: hooks must replace shared state with
+// detached representations instead of mutating resources owned by the caller.
 type StateInterceptor[T any] interface {
 	BeforeSave(ctx context.Context, state *T) error
 	AfterLoad(ctx context.Context, state *T) error

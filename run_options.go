@@ -41,6 +41,7 @@ type runInvocationOptions[T, E any] struct {
 	leaseTTL           time.Duration
 	lease              ExecutionLease
 	handoffOutbox      HandoffOutbox
+	atomicHandoff      bool
 	checkpointPolicy   CheckpointFailurePolicy
 }
 
@@ -104,11 +105,37 @@ func WithHandoffOutbox[T, E any](outbox HandoffOutbox) RunOption[T, E] {
 	})
 }
 
+// WithAtomicHandoff requires transactional snapshot/outbox publication for this
+// invocation. Missing capabilities reject admission before lease/node/save work.
+// Attach a transactional outbox with WithHandoffOutbox or WithRunnerHandoffOutbox.
+func WithAtomicHandoff[T, E any]() RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.atomicHandoff = true
+	})
+}
+
+func (r *graphRunner[T, E]) resolveRunOptions(opts ...RunOption[T, E]) (runInvocationOptions[T, E], error) {
+	inv, err := applyRunOptions(opts...)
+	if err != nil || !inv.atomicHandoff {
+		return inv, err
+	}
+	_, transactional := resolveTransactionalCheckpointer(r.checkpointer)
+	_, transactionalOutbox := r.resolveHandoffOutbox(inv).(TransactionalHandoffOutbox)
+	if !transactional || !transactionalOutbox {
+		return inv, ErrTransactionalOutboxUnsupported
+	}
+	return inv, nil
+}
+
 // WithCheckpointErrorPolicy sets behavior when Checkpointer.Save fails during terminal saves.
 // CheckpointPolicySkipOnSaveError emits EventCheckpointFailed on Stream/ResumeStream only; sync Start/Resume swallow
 // the save error without observable signal and do not populate ResumeToken. Terminal flow
 // continues with reason suffixes suspended_checkpoint_skipped, handoff_checkpoint_skipped, or
 // context_canceled_checkpoint_skipped when the checkpoint was not persisted.
+// Invariant/interceptor rejection and known structural/OCC/lease/capability
+// errors are always hard failures. Other adapter Save errors can be suppressed;
+// arbitrary Checkpointer errors are not necessarily infrastructure failures.
+// SaveWithOutbox errors remain hard failures regardless of this policy.
 func WithCheckpointErrorPolicy[T, E any](policy CheckpointFailurePolicy) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
 		opts.checkpointPolicy = policy

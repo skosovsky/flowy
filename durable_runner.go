@@ -396,6 +396,10 @@ func (*DurableRunner[T, E]) validateRunOptions(opts ...RunOption[T, E]) error {
 	if err != nil {
 		return err
 	}
+	if inv.atomicHandoff {
+		// The durable ExecutionStore profile has no ordinary transactional outbox.
+		return ErrTransactionalOutboxUnsupported
+	}
 	if inv.checkpointPolicy == CheckpointPolicySkipOnSaveError || inv.leaseOwner != "" {
 		return ErrExecutionCapability
 	}

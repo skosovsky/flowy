@@ -70,4 +70,63 @@ installability gate; fixture success is not a real release.
 - Primary final checks: 16 release fixtures PASS (29.388s), shell syntax,
   Python compile and `git diff --check` PASS. All release origins were disposable
   local repositories; no real release/push performed. Commit SHA follows in task 02.
-- Tasks 02–13 pending.
+- Task 02 accepted below; tasks 03–13 pending.
+
+## Task 02 contract (before implementation)
+
+Task 01 commit: `b2935d8` (`fix: release recovery`).
+
+Ordinary Save and transactional SaveWithOutbox share one preparation function:
+validate the runtime/domain state, then run BeforeSave once in registration order
+to produce persisted state. Runtime results retain domain state; persisted state
+is not revalidated as domain state after redaction/encoding. A metadata-only
+handoff status patch reuses the prepared/persisted snapshot, including recovery
+from Load; it does not run BeforeSave or domain validation again.
+
+BYOT copies remain value copies: an interceptor must replace reference-backed
+state with detached storage representation rather than mutate shared domain
+resources. Flowy cannot generically deep-copy arbitrary host resources.
+
+Preparation rejection is a hard error with the original cause, before Save,
+SaveWithOutbox or enqueue. SkipOnSaveError applies only to adapter Save failures;
+known structural/OCC/lease/capability rejections are hard errors. Other arbitrary
+adapter errors remain opt-in degradation (the Checkpointer interface cannot prove
+they are infrastructure errors); this is explicitly documented, never resumable
+without a successful commit. Transactional handoff errors are always hard errors.
+
+Default outbox behavior retains the documented non-atomic multi-phase FSM when
+transactional capability is absent. `WithAtomicHandoff` requires both a
+TransactionalCheckpointer and TransactionalHandoffOutbox, rejecting unsupported
+invocations before lease acquisition, node dispatch, preparation or persistence.
+This checks capability, not whether arbitrary host implementations honour it.
+DurableRunner explicitly rejects this ordinary snapshot/outbox option before
+session acquisition or initial commit, rather than silently accepting it.
+
+Acceptance: transform/reject/invariant parity; non-idempotent encoding exactly
+once across successful/orphaned/recovered metadata patches; unchanged history
+and outbox on rejection; fail-closed skip policy for contract errors; atomic
+preflight across entry points and positive transaction coverage.
+
+Task 02 dispositions:
+
+- F03: implemented shared preparation before both Save and SaveWithOutbox;
+  fallback/recovery metadata patches retain prepared storage state.
+- D05: implemented explicit WithAtomicHandoff capability preflight; documented
+  multi-phase default and durable-profile rejection.
+- D08: tightened policy to reject preparation and known contract errors; retained
+  explicitly opted-in suppression of other adapter Save errors because their
+  arbitrary BYOT error values cannot prove an infrastructure classification.
+- D09: clarified domain/persisted state and value-copy ownership; hooks run after
+  domain validation and metadata changes cannot re-encode persisted state.
+- Before-fix regression overlay at task 01 HEAD: expected FAIL for ordinary hook
+  count 2 and transactional hook count 0, including rejecting interceptor bypass.
+  `/tmp/flowy-task28-preparation-before.log`.
+- Initial targeted race PASS (1.884s). Initial lint had 10 formatting/test-structure
+  findings; all corrected. Final lint PASS, 0 issues; full root race PASS, exit 0
+  (root 11.338s), `git diff --check` PASS.
+- Task 02 accepted: `/root/task02_completeness` 100%, 10/10; correctness reviewer
+  `/root/task02_correctness` found an atomic admission bypass in DurableRunner,
+  fixed with explicit rejection and four-entrypoint regression. Final correctness
+  PASS, no open findings; independent targeted race PASS (1.747s).
+  Reports: `reviews/task02-completeness.md`, `reviews/task02-correctness.md`.
+  Commit SHA follows in task 03. No live adapters were claimed as verified.

@@ -1,5 +1,46 @@
 # Durable execution design
 
+## Ordinary snapshot preparation and atomic handoff
+
+Save and SaveWithOutbox use the same state preparation: validate domain state,
+then invoke StateInterceptor.BeforeSave once in registration order. The prepared
+representation belongs to persistence; RunResult retains runtime/domain state.
+An encoded/redacted representation need not satisfy the domain invariant.
+AfterLoad restores the domain representation before resume validation/overlay.
+For reference-backed BYOT values, hooks must replace shared state with detached
+representations: Flowy cannot generically roll back in-place host mutations.
+
+Non-atomic handoff commits pending, patches enqueued, then enqueues the intent;
+enqueue failure attempts an orphaned patch. These metadata-only patches reuse
+the exact prepared state, including recovery from Load. They do not invoke
+BeforeSave or domain validation again. Non-idempotent encoding is therefore
+applied once to each prepared checkpoint state, not once per metadata revision.
+OCC and adapter-native fencing still apply to every write.
+
+WithHandoffOutbox uses transactional snapshot/outbox commit when both collaborators
+support it, otherwise the documented multi-phase protocol. To require atomic
+publication, add `WithAtomicHandoff[T, E]()` to Start/Resume/Stream/ResumeStream
+options, with a transactional outbox (invocation or runner default). Missing
+TransactionalCheckpointer or TransactionalHandoffOutbox returns
+ErrTransactionalOutboxUnsupported before lease acquisition, node callbacks or
+persistence. Capability declarations do not verify arbitrary host implementations.
+DurableRunner uses the ExecutionStore profile and rejects WithAtomicHandoff with
+ErrTransactionalOutboxUnsupported before acquiring its execution session or
+committing initial state; this option applies to the ordinary snapshot/outbox profile.
+
+CheckpointPolicySkipOnSaveError is explicit degradation for adapter Save errors.
+Invariant/interceptor rejection is always returned before persistence. Known
+ErrInvalidSnapshot (including envelope errors), ErrConcurrencyConflict,
+ErrLeaseLost, ErrThreadLeaseBusy, ErrExecutionCapability, ErrInvalidHandoffIntent
+and ErrTransactionalOutboxUnsupported are never suppressed. Other arbitrary
+adapter errors may be suppressed: BYOT Checkpointer errors do not provide a
+universal infrastructure classification. SaveWithOutbox errors always fail.
+Suppression yields no new ResumeToken and never asserts resumability; streams
+emit EventCheckpointFailed and terminal reasons carry checkpoint_skipped.
+Sync callers must inspect the terminal reason. No suppressed save enqueues an
+outbox intent. Hook rejection preserves its cause through errors.Is; it does not
+publish a snapshot or outbox entry.
+
 ## Scope and ownership
 
 Implement BUG-01–04, then FLW-003/001/002/004/005. Core owns execution consistency; host owns domain types, codecs, permissions and transport. No stage is deferred. Clear break is allowed and required where existing API cannot express the contract.

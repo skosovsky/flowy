@@ -141,7 +141,7 @@ func (r *graphRunner[T, E]) Start(
 	if threadID == "" {
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
-	inv, optErr := applyRunOptions(opts...)
+	inv, optErr := r.resolveRunOptions(opts...)
 	if optErr != nil {
 		return nil, optErr
 	}
@@ -179,7 +179,7 @@ func (r *graphRunner[T, E]) Resume(
 		emitResumeRejected(ctx, token.ThreadID, "", "empty_token")
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
-	inv, optErr := applyRunOptions(opts...)
+	inv, optErr := r.resolveRunOptions(opts...)
 	if optErr != nil {
 		return nil, optErr
 	}
@@ -221,7 +221,7 @@ func (r *graphRunner[T, E]) Stream(
 	if threadID == "" {
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
-	inv, optErr := applyRunOptions(opts...)
+	inv, optErr := r.resolveRunOptions(opts...)
 	if optErr != nil {
 		return nil, optErr
 	}
@@ -263,7 +263,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 		emitResumeRejected(ctx, token.ThreadID, "", "empty_token")
 		return nil, fmt.Errorf("%w: empty thread ID", ErrInvalidResumeToken)
 	}
-	inv, optErr := applyRunOptions(opts...)
+	inv, optErr := r.resolveRunOptions(opts...)
 	if optErr != nil {
 		return nil, optErr
 	}
@@ -343,7 +343,7 @@ func (r *graphRunner[T, E]) EvaluateResume(
 		var zero ResumeDecision[T, E]
 		return zero, errors.New("flowy: checkpointer is required for EvaluateResume")
 	}
-	inv, optErr := applyRunOptions(opts...)
+	inv, optErr := r.resolveRunOptions(opts...)
 	if optErr != nil {
 		var zero ResumeDecision[T, E]
 		return zero, optErr
@@ -1438,7 +1438,15 @@ func (r *graphRunner[T, E]) completeHandoffTerminal(
 			)
 		}
 	}
-	newRev, persisted, saveErr := r.persistSnapshot(runCtx, revision, snapshot, sink, current, state, inv)
+	snapshot, newRev, persisted, saveErr := r.persistSnapshotPrepared(
+		runCtx,
+		revision,
+		snapshot,
+		sink,
+		current,
+		state,
+		inv,
+	)
 	if saveErr != nil {
 		handoffErr := fmt.Errorf("flowy: handoff save failed: %w", saveErr)
 		emitTerminalEvent(
