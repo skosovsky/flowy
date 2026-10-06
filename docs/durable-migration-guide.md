@@ -16,7 +16,7 @@ Remove replaced wrappers, deprecated branches and hidden fallback implementation
 
 Bind DurableRunner to a compiled BYOT graph, ExecutionStore, state/effect codecs and explicit ExecutionDescriptor. Assign graph identity/revision, state codec, execution contract and a named replay-safe step policy. Labels express semantic compatibility; the content digest does not substitute for them. Identity/compatibility strings are valid UTF-8 text; opaque payload bytes remain unrestricted.
 
-Declare node computations/routing replay-safe and put durable external effects through CallActivity. Arbitrary node I/O is not intercepted. Host codecs, transforms, projections and merges must be pure and support the required concurrency. A successful preparation may decode again; do not make decoding a side effect. Do not enable automatic durable delete/prune until a dependency-safe retention contract can preserve retained snapshots, decisions and lineage.
+Declare node computations/routing replay-safe and put durable external effects through CallActivity. Arbitrary node I/O is not intercepted. Host codecs, transforms, projections and merges must be pure and support the required concurrency. A successful preparation may decode again; do not make decoding a side effect. Core runs no automatic durable maintenance. Explicit retention/rollover use the implemented dependency-safe [lifecycle contract](durable-lifecycle.md); ordinary snapshot cleanup is a separate capability.
 
 Treat interrupted durable node output as uncommitted: cancellation/deadline/consumer stop or context-requested handoff retains the last committed entry state/effects/cursor with already committed activity outcomes. Resume may recompute the pure node from that entry; it must not repeat an external dispatch. Use the returned latest token, not partial local handler output. Explicit Suspend/Handoff directives remain separately selected continuation boundaries.
 
@@ -48,8 +48,32 @@ Use Await for a saved armed boundary, not an implicit timer interpretation of Su
 
 Use exact historical references with revision and expected seal; an absent/pruned source never falls back to latest. Inspection is raw and read-only. Fork creates a new target with immutable lineage and reset journals/effects/waits/children/handles/counters, leaving source unchanged. Unresolved source activities or unjoined descendants must be settled explicitly first.
 
-Default fork mode is fake/read-only. Supply a named fake activity dispatcher and, for child graphs, fake child dispatcher; there is no live fallback. Live fork requires explicit current host authorization and a separately named projection removing/rebinding opaque approvals/reservations/continuations. Core cannot sanitize unknown business references inside BYOT state. Sibling forks use new operation identities; a source result never authorizes a new external write.
+Default fork mode is fake; a supplied fake policy may execute pure steps and simulated activity/child dispatch. Creation without an executable policy remains inspectable but cannot Resume. Supply a named fake activity dispatcher and, for child graphs, fake child dispatcher; there is no live fallback. Live fork requires explicit current host authorization and a separately named projection removing/rebinding opaque approvals/reservations/continuations. Core cannot sanitize unknown business references inside BYOT state. Sibling forks use new operation identities; a source result never authorizes a new external write.
 
-## Delivery status
+## Current consumer changes and validation
 
-All BUG and FLW stages remain in scope. Current evidence and unresolved audit items are tracked in task22-progress.md and task22-requirements.json. This guide is prepared consumer guidance, not an actual GitHub closing comment or proof that release has occurred. Run all module gates plus explicit persistent integration suites; skipped backend tests do not count as passed. Publish substantial runtime/persistence changes with make release-break only after the prescribed readiness checks, and close the issue after implementation, verification, merge and release with concrete consumer changes.
+Historical task22–27 files retain their original evidence/status; current contracts
+are [runtime](runtime-contract.md), [lifecycle](durable-lifecycle.md),
+[storage](storage-adapter-contract.md) and [validation](validation.md).
+No real release is implied by a passing local test or this guide.
+
+Current clean breaks: BuildDispatchGraph replaces BuildSupervisor; stateless
+inline composition uses AsStatelessNode/StatelessSubgraphNode, while slot adapters
+retain the cursor in parent state. NewAdvisoryLeaseGuardCheckpointer declares its
+best-effort precheck; it is not native atomic fencing. ExecutionProgress replaces
+MigrationState, ErrChildInvalid replaces ErrChildJoinInvalid, and
+ComputeChildBudgetReturn is pure arithmetic; ReturnChildBudget persists it.
+Shared exact-history/lifecycle errors use ErrExecutionHistoryUnsupported,
+ErrExecutionCheckpointUnavailable, ErrExecutionLifecycleInvalid and
+ErrExecutionSourceDigest. TelemetryBridge.Capture/Restore replace Extract/Inject;
+WithLifecycleObserver/WithTelemetryBridge provide run-scoped defaults.
+Handle constructors that now return errors; do not install nil collaborators.
+MigrationProvenance retains source revision/digest/chain under the envelope seal;
+the removed inner Digest requires drain/archive or explicit offline conversion
+for old migrated records, not blanket JSON relabeling.
+
+Use [canonical ownership and recovery recipes](runtime-contract.md) for unknown
+ACK, duplicate decisions, callbacks and postcommit decoding. Run all six module
+gates plus explicit persistent backend/blueprint tests; skipped backend tests do
+not count as passed. Real publishing is a separate authorized release operation
+following [release runbook](release.md).

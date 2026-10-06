@@ -12,6 +12,7 @@ func TestExamplesSmoke(t *testing.T) {
 	t.Parallel()
 
 	dirs := []string{
+		"hello",
 		"react_agent",
 		"streaming_agent",
 		"stream_request_stop",

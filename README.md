@@ -14,12 +14,97 @@ Flowy — BYOT-библиотека исполнения графов состо
 | Structured children | Отдельные execution identities, BYOT input/result, persisted launch/outcome/join/cancellation; host выполняет child dispatch и подтверждает unknown outcomes |
 | Stream | События исполнения и typed effects; terminal authority — `WaitResult()`. Token/chunk streaming model provider реализует host |
 | Budget | `UseBudget` учитывает заявленные host units; declared limits проверяются до следующего dispatch. Это не резервирование денег или downstream resources |
-| Supervisor helper | Supervisor выбирает route; worker с `Completed()` завершает граф. Planner, автоматический возврат к supervisor и агентный scheduler не встроены |
+| Dispatch helper | `BuildDispatchGraph` выбирает route; worker с `Completed()` завершает граф. Planner, автоматический возврат к supervisor и агентный scheduler не встроены |
 
 Host задаёт state/effects, model/tool adapters, авторизацию, правдивость usage,
 downstream idempotency, transport и scheduling. Lease expiry и timeout не
 доказывают отсутствие внешнего действия. Telemetry не является journal или
 подтверждением commit.
+
+## Установка и первый граф
+
+Требуется Go **1.27.1 или новее**. Для опубликованной версии:
+
+```sh
+go mod init example.com/hello-flowy
+go get github.com/skosovsky/flowy@latest
+```
+
+`@latest` устанавливает последнюю опубликованную версию; локальные изменения HEAD
+до release в неё не входят. Текущие module paths не имеют `/v2`; переход к v2
+требует отдельного изменения semantic import paths и проверки consumers.
+
+| Module | Import path |
+| --- | --- |
+| Core | `github.com/skosovsky/flowy` |
+| PostgreSQL snapshots / durable store | `github.com/skosovsky/flowy/adapters/checkpointer/postgres` |
+| Redis snapshots | `github.com/skosovsky/flowy/adapters/checkpointer/redis` |
+| PostgreSQL leases | `github.com/skosovsky/flowy/adapters/lease/postgres` |
+| Redis leases | `github.com/skosovsky/flowy/adapters/lease/redis` |
+| PostgreSQL agent blueprint | `github.com/skosovsky/flowy/examples/durable_agent` (example executable) |
+
+Adapters устанавливаются отдельно через `go get <module-path>@<version>`.
+Host определяет State и Effect, reducer выбирает способ применения update:
+
+```go
+// Package main demonstrates a complete graph using host-owned state and effects.
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+
+	"github.com/skosovsky/flowy"
+)
+
+type State struct {
+	Name     string
+	Greeting string
+}
+type Effect struct{ Message string }
+
+func run() error {
+	builder := flowy.NewGraph[State, Effect](func(_, update State) State { return update })
+	builder.AddNode("greet", func(_ context.Context, state State) (State, flowy.Directive, error) {
+		state.Greeting = "Hello, " + state.Name
+		return state, flowy.Effect(flowy.End(), Effect{Message: state.Greeting}), nil
+	}).AllowNoOutgoingRoute("greet").SetEntryPoint("greet")
+	graph, err := builder.Compile()
+	if err != nil {
+		return err
+	}
+	result, err := graph.NewRunner(nil).Start(context.Background(), "hello", State{Name: "Sergey"})
+	if err != nil {
+		return err
+	}
+	fmt.Println(result.State.Greeting)
+	for _, effect := range result.Effects {
+		fmt.Println(effect.Message)
+	}
+	return nil
+}
+
+func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+Сохраните код в `main.go`, выполните `go run .`. Вывод:
+
+```text
+Hello, Sergey
+Hello, Sergey
+```
+
+Первый вывод — итоговый state, второй — накопленный typed effect. Этот ordinary
+пример не подключает storage, внешние модели или tools. Из checkout:
+`go run ./examples/hello`. [Cookbook](examples/README.md),
+[canonical runtime contract](docs/runtime-contract.md) и
+[подробный durable migration guide](docs/durable-migration-guide.md) описывают
+persistence, ownership и recovery.
 
 ## Core Concept: `[T, E]` Generics
 
@@ -164,10 +249,10 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 - **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → patch `enqueued` → `EnqueueIntent(HandoffIntent)`; если enqueue падает, core патчит `orphaned`. `HandoffIntent` carries `PendingSnapshotRevision`, `CommittedSnapshotRevision`, `SnapshotRevision`, `ResumeToken`, `HandoffStatus`, reason, and execution pointer; normal consumers receive the committed enqueued revision and do not guess `revision` vs `revision+1`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, snapshot может остаться `enqueued`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). Transactional path требует `TransactionalCheckpointer.SaveWithOutbox` и `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, intent)`: checkpointer callback передает explicit transaction handle и saved revision, а core строит authoritative enqueued `HandoffIntent`; context-carried transaction state не используется. Lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе используется 3-phase FSM. At-least-once consumer начинает с `EvaluateResume`: stale-token decision возвращает текущий core-issued token, pending/orphaned уводит в recovery contract.
 - **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM. Возвращает `HandoffRecoveryResult` + error; result содержит typed `Decision`, `ResumeToken`, snapshot revision, recovered status и persisted handoff status. `WithRecoverForceReenqueue(true)` — force re-enqueue для `enqueued` без сообщения в outbox. Cron recovery должен быть **single-leader** или защищен external lock; `RecoverStaleHandoff` сам не берет run lease. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` считается stale сразу.
 - **Worst-case runbook:** patch `enqueued` OK + enqueue fail + orphan patch fail → snapshot остается `enqueued`, но outbox message отсутствует. Recovery scanner can use `RecoverStaleHandoff(..., WithRecoverForceReenqueue(true))` for known false-enqueued rows. Pending checkpoints remain recoverable after TTL when the run crashed before the enqueued patch.
-- **LifecycleObserver:** `SetLifecycleObserver` installs one synchronous `ObserveLifecycle` callback receiving value-only operation/stage observations. Panic is contained; blocking callbacks block their caller. Default OTel metrics use `flowy.lifecycle_total{operation,stage}` with bounded dimensions; runtime IDs and diagnostic codes belong to traces. See [observation contract](docs/runtime-observation-contract.md).
+- **LifecycleObserver:** `WithLifecycleObserver` scopes a synchronous `ObserveLifecycle` callback to the run context; `SetLifecycleObserver` sets the synchronized default receiving value-only operation/stage observations. Panic is contained; blocking callbacks block their caller. Default OTel metrics use `flowy.lifecycle_total{operation,stage}` with bounded dimensions; runtime IDs and diagnostic codes belong to traces. See [observation contract](docs/runtime-observation-contract.md).
 - **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с persisted pointer в snapshot, как и terminal events.
 - **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
-- **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune (Completed/Failed) — log only.
+- **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune/Delete/Release (Completed/Failed) возвращает `ErrRunCleanup` с исходной причиной; committed result сохраняется.
 - **Event==Result invariant:** на Stream terminal `Event.Reason` и sync `RunResult.Reason` совпадают (включая retention suffix до emit). `StreamHandle.WaitResult()` возвращает terminal `RunResult` + error; `Wait()` оставлен как error-only helper.
 - **RequestLocalHandoff return matrix:** `nil` = persisted handoff; `ErrCheckpointSkipped` = SkipOnSaveError skip (no snapshot); `ErrHandoffEnqueueFailed` = enqueue fail after persist (snapshot + `ResumeToken` for Outbox retry); wrapped retention/save errors otherwise. Stream `RequestLocalHandoff` mirrors the same errors on `Wait()`.
 - **Persist-vs-event / consumer stop:** terminal event может не дойти до consumer; terminal `RunResult` из `WaitResult()` остается source of truth для run outcome, а checkpoint нужен для durable resume/recovery. Не вызывайте `RequestLocalHandoff` после `RequestStop` (`ErrNoActiveExecution`).
@@ -335,7 +420,7 @@ See [consumer migration guide](docs/durable-migration-guide.md) for replacing ow
 
 ## Quality Gates
 
-Проект содержит несколько Go-модулей (корень + adapters). Корневой `go test ./...` не покрывает adapter submodules.
+Проект содержит шесть Go-модулей: core, четыре adapters и `examples/durable_agent`. Корневой `go test ./...` не покрывает пять submodules. Команды, backend environment, fuzz и benchmark limits: [validation contract](docs/validation.md).
 
 ```bash
 make test          # все go.mod modules (рекомендуется)

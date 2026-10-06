@@ -13,7 +13,9 @@ cd examples/react_agent && go run main.go
 - **react_reason** — добавляет thought, выставляет `Done`, возвращает `Completed()`.
 - **react_action** — симулирует tool call, возвращает `Completed()`.
 - Conditional edge после reason: пока `!Done` → `react_action`, иначе `EndNode`.
-- Wrapper **react_action** преобразует `Completed()` в `Retry(maxReActSteps)` и направляет исполнение через `AddRetryRoute("react_action", "react_reason")`. При исчерпании retry budget выполнение завершается с `ErrRetryBudgetExceeded`; fallback не вызывается.
+- Wrapper **react_action** преобразует `Completed()` в `Retry(maxActionRetries)` и направляет исполнение через `AddRetryRoute("react_action", "react_reason")`. При исчерпании retry budget выполнение завершается с `ErrRetryBudgetExceeded`; fallback не вызывается.
+
+maxActionRetries ограничивает повторные action attempts: максимум maxActionRetries+1 вызовов action, включая первую попытку. Это не total graph-step limit.
 
 Лимит вызовов handler на один compute segment: `flowy.WithMaxSteps` на `Compile()` (по умолчанию 1000; Resume начинает новый segment).
 

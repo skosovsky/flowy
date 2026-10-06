@@ -11,14 +11,17 @@
 //
 // # Durable execution
 //
-// [DurableRunner] is an explicit synchronous durable profile, separate from the
-// ordinary Runner semantics below. Bind a compiled BYOT graph, [ExecutionStore],
+// [DurableRunner] supports synchronous Start/Resume and asynchronous Stream/ResumeStream,
+// separate from ordinary Runner semantics below. Bind a compiled BYOT graph, [ExecutionStore],
 // host state/effect codecs, an [ExecutionDescriptor] and [DurableOptions]. The
 // descriptor requires explicit graph, codec and execution-contract labels and a
 // named replay-safe step policy. Core has no mandatory infrastructure or domain
 // model. The host owns authentication, domain permissions, payloads and codecs.
 //
-// Durable execution commits the initial boundary before node calls, each step
+// Durable Stream returns a handle only after its initial boundary commits;
+// WaitResult is authoritative, while events remain best-effort. Start also commits
+// the initial boundary before node calls. Resume entry points validate the saved
+// boundary before starting continuation. Durable execution commits each step
 // before the next node, and terminal outcomes before announcing completion.
 // Every aggregate write checks OCC and a live lease incarnation. A stale owner
 // cannot write simply because its expected revision still matches. Resume checks
@@ -88,7 +91,8 @@
 // Recovery cron should be single-leader or protected by an external lock.
 // RecoverStaleHandoff itself does not acquire run leases.
 // Checkpointer Save/Load use strict OCC (expectedRevision uint64); ErrConcurrencyConflict on conflict.
-// LifecycleObserver (SetLifecycleObserver) receives value-only runtime observations through ObserveLifecycle.
+// WithLifecycleObserver scopes value-only runtime observations through ObserveLifecycle;
+// SetLifecycleObserver installs a synchronized default.
 // Soft checkpoint: WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError) emits EventCheckpointFailed on
 // Stream/ResumeStream without aborting terminal flow; sync Start/Resume have no event sink.
 // ResumeToken is set only after a persisted Suspend/Handoff terminal save. When skip-on-save-error

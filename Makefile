@@ -50,16 +50,7 @@ bench:
 	done
 
 fuzz:
-	@for dir in $(MODULES); do \
-		echo "fuzz - $$dir"; \
-		(cd "$$dir" && \
-			for pkg in $$($(GO) list -tags=fuzz ./...); do \
-				if $(GO) test -tags=fuzz -list . "$$pkg" 2>/dev/null | grep -q '^Fuzz'; then \
-					$(GO) test -tags=fuzz -fuzz=. -fuzztime=30s "$$pkg" || exit 1; \
-				fi; \
-			done \
-		) || exit 1; \
-	done
+	@python3 scripts/run_fuzz.py
 
 cover:
 	@for dir in $(MODULES); do \

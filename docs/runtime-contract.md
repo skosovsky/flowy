@@ -1,4 +1,65 @@
-# Durable execution design
+# Runtime ownership and recovery contract
+
+This is the canonical ordinary/durable ownership, callback and error/recovery
+index. Detailed capability contracts linked here refine these rules; historical
+task22–27 records are evidence archives, not current API specifications.
+
+## Ownership and concurrency matrix
+
+| Resource or callback | Owner and required behavior |
+| --- | --- |
+| GraphBuilder, routes, pattern registrations | Host constructs before Compile; callbacks/host objects must be frozen before concurrent runs. Pattern constructors reject missing callbacks/config and capture routes. |
+| Ordinary state updates/reducer/overlay/hooks | Host owns BYOT aliasing; replace shared maps/slices/resources with detached values before mutation. Reducer/overlay/invariants/codecs are synchronous, may repeat, and are outside node RecoverMiddleware unless invoked within that node chain. |
+| Durable codecs/transforms/projections/merges | Pure host work on detached representations; may repeat after uncommitted preparation. Labels must change when compatibility changes. No external effect or inferred permission. |
+| StreamHandle/context/session | Handle owns its run context; stale handles cannot cancel another session. WaitResult owns terminal outcome; events are best-effort. Early collection return does not join a running host consumer callback; returned slices are detached. |
+| RunBindings | One slot per type, build/freeze before sharing; concurrent reads only. Resources remain host-owned, unpersisted and are not cloned by reflection. |
+| Activity Dispatch/Classify/Reconcile | Dispatch uses persisted identity/downstream idempotency. Reconcile is read-only/idempotent/concurrency-safe; overlapping probes are possible. Unknown and panics never prove no remote effect. Nested CallActivity inside callbacks is prohibited. |
+| Child dispatcher/cancel/usage | Host owns worker pool/quota/termination and truthful usage evidence. Group concurrency bounds dispatch admission; cancellation notification does not stop noncooperative work. Serialize shared parent UseBudget accounting. |
+| Wait Match/Apply/clock/transport | Pure labelled callbacks; may repeat before commit. Host authenticates inputs, bounds unique delivery IDs and owns clock/business cutoff/scheduler liveness. First valid committed decision wins. |
+| Store/lease/outbox | Capability implementation owns atomic OCC/fence/anchors and transaction publication. Native paired stores share coordination. Advisory precheck cannot upgrade an arbitrary store to native fencing. |
+| Observer/telemetry bridge | Synchronous bounded host callbacks; observer panic is contained, blocking blocks caller. Context-scoped observer/bridge or synchronized default; carrier copied. Telemetry is not a commit journal. |
+
+Callback purity is a host contract, not generic Go enforcement. Freeze registrations
+and make shared callbacks concurrency-safe across runners. Host code must honor
+context cancellation; lease expiry cannot prove it stopped. Node RecoverMiddleware
+has the exact boundary described below; surrounding reducer/router/codec/storage
+work has no blanket recovery. See [observations](runtime-observation-contract.md),
+[children](typed-child-contract.md), [waits](durable-wait-contract.md) and
+[storage admission](storage-admission.md).
+
+## Typed errors and recovery recipes
+
+| Error/result | Meaning and next action |
+| --- | --- |
+| ErrInvalidSnapshot / ErrSnapshotEnvelopeInvalid / ErrExecutionCorrupt | Invalid header/wire/address/seal; reject and inspect source. Never treat as absent or Start a replacement under the same identity. Ordinary StateSerializer requires JSON, with PostgreSQL JSONB's narrower domain. |
+| ErrThreadNotFound / ErrExecutionCheckpointUnavailable | Unknown identity or future revision versus known pruned/deleted exact payload; no fallback to latest. Durable IDs/fences/anchors survive deletion. |
+| ErrExecutionIncompatible / ErrMigrationInvalid / ErrMigrationMissing | Labels/source/chain/target do not meet the selected contract. Route to compatible code, drain/archive or perform an explicit pure migration/offline conversion. No node/dispatch fallback. |
+| ErrConcurrencyConflict / ErrLeaseLost / ErrThreadLeaseBusy | OCC or ownership refusal. Reload authority and coordinate retry; no blind redispatch and no inference that old external work stopped. |
+| ErrRunCleanup / retention error with successful outcome | Outcome may already be committed. Inspect RunResult/token and joined cause; cleanup uses a detached five-second context and can fail after partial release/prune/delete. Retry only the identified safe maintenance operation. |
+| ErrCheckpointSkipped / checkpoint_skipped reason | Explicit ordinary Save degradation, no new persisted token. Invariant/interceptor/OCC/fence failures and atomic outbox failures are not suppressible. |
+| ErrActivityJournalUnavailable / ErrWaitRegistration / ambiguous store ACK | Confirmation unavailable, not rollback. Inspect sealed latest head and addressed journal/wait before recovery. Never acknowledge an unconfirmed decision or replay remote dispatch solely because ACK was lost. |
+| ErrDurableStateUnavailable | Restoring committed entry state failed. Local State/Effects/metadata are not authoritative; inspect/redecode the confirmed envelope/token. Both the original error and restore cause remain joined. |
+| ErrActivityUnknown / ErrChildrenUnresolved | Resolve using downstream read-only evidence or addressed manual decision; do not relaunch or return retained allocation on timeout alone. |
+| ErrActivityConflict | Activity DecisionID is unique, not exact-replay idempotence. After lost ACK inspect latest journal/resolution identity/evidence with current token; a repeated ID must not invent success. |
+| Wait/child cancellation replay or conflict | Identical addressed cancellation preserves recorded evidence; changed identity/reason/evidence conflicts. Wait deliveries replay their immutable decision with compatible labels, no Match/Apply. Cancellation never proves remote termination. |
+| ErrChildCodec after committed merged bytes | Inspect and decode authoritative merged result. An unhandled node failure becomes persisted ErrExecutionFailed; a new Resume cannot reenter that terminal node. In-activation handled recovery obtains a fresh assertion before cached JoinChildren. |
+| PersistedExecutionError / ErrExecutionFailed | Stored definitive failure, no host sentinel reconstructed from text. Fix graph/input through explicit new lineage or host procedure; terminal replay invokes no node. |
+| Rollover receipt token / retention receipt | Rollover replay returns original creation revision; explicitly load current target to continue. Retention counts newly deleted bytes/revisions, not exactly-once metrics after lost ACK. |
+
+An ambiguous commit recipe is: keep the execution identity and operation ID,
+load sealed current authority, verify descriptor and addressed outcome, obtain the
+current token, then choose the operation-specific replay/reconciliation/manual
+resolution path. Inspection is not a new business authorization. Activity manual
+resolution rejects duplicate IDs; wait deliveries/cancellations and immutable
+rollover receipts have their explicitly defined replay rules. Do not generalize
+one command's idempotency to another.
+
+[Executable memory recipes](../examples/durable_runtime) demonstrate unknown
+activity recovery, child resolution/cached result and waits/forks. The
+[PostgreSQL blueprint](../examples/durable_agent/README.md) demonstrates real
+lost-ACK recovery across fresh pools using deterministic external fakes.
+[Lifecycle](durable-lifecycle.md) describes retention/anchors/partial discovery
+repair; [validation](validation.md) states actual module and backend gates.
 
 ## Node panic boundary
 
@@ -61,7 +122,7 @@ publish a snapshot or outbox entry.
 
 ## Scope and ownership
 
-Implement BUG-01–04, then FLW-003/001/002/004/005. Core owns execution consistency; host owns domain types, codecs, permissions and transport. No stage is deferred. Clear break is allowed and required where existing API cannot express the contract.
+Core owns execution consistency; host owns domain types, codecs, permissions and transport. Ordinary snapshots and durable aggregates are explicit separate profiles. Historical BUG/FLW stage labels below identify origin, not a current delivery schedule.
 
 Runtime identity strings and compatibility labels are UTF-8 text, not arbitrary byte keys. Invalid UTF-8 must reject before hashing, persistence or dispatch; JSON replacement-character normalization is not an identity conversion. Valid Unicode, including the replacement character itself, is allowed unchanged. Host payload bytes remain opaque and need not be UTF-8. Address validation applies to execution/node/activity/group/child identities and their compatibility labels.
 
@@ -89,7 +150,7 @@ Redis snapshot wire revisions are canonical positive decimal strings, compared e
 
 Durable persistence uses a raw envelope. Descriptor metadata is readable before invoking a host state codec. Descriptor contains explicit graph identity, graph revision label, state codec label and execution contract label; digest is a separate integrity/provenance field. An absent descriptor never means current. Ordinary non-durable execution remains opt-in independent.
 
-The descriptor also requires a labelled StepReplayPolicy with mode replay_safe. This is the host's explicit graph-wide declaration that all node computation and routing may repeat after an uncommitted step, and that external effects use the activity boundary rather than arbitrary node I/O. Runtime does not infer purity or intercept I/O. No empty/default policy is accepted. The synchronous durable profile supports only this declared replay-safe mode: node computations may run again while completed activities replay their committed outcomes and unknown activities require recovery. This is not a second activity retry owner. Policy label/mode participate in exact descriptor compatibility and migration-chain keys; changing them rejects before codec/node calls unless an explicit pure migration commits the new target descriptor. Legacy envelopes missing the policy require explicit import, not an implicit replay-safe upgrade. Ordinary execution is unchanged.
+The descriptor also requires a labelled StepReplayPolicy with mode replay_safe. This is the host's explicit graph-wide declaration that all node computation and routing may repeat after an uncommitted step, and that external effects use the activity boundary rather than arbitrary node I/O. Runtime does not infer purity or intercept I/O. No empty/default policy is accepted. The durable profile supports only this declared replay-safe mode: node computations may run again while completed activities replay their committed outcomes and unknown activities require recovery. This is not a second activity retry owner. Policy label/mode participate in exact descriptor compatibility and migration-chain keys; changing them rejects before codec/node calls unless an explicit pure migration commits the new target descriptor. Legacy envelopes missing the policy require explicit import, not an implicit replay-safe upgrade. Ordinary execution is unchanged.
 
 The durable store atomically commits a full execution aggregate against expected revision and a live lease incarnation/fencing token. Aggregate includes cursor, state bytes, effect bytes, activity intents/outcomes, child join progress and wait decisions. No separate successful journal write is treated as a checkpoint commit. Each logical activity transition may advance aggregate revision while retaining the same step cursor until the step is committed. A crash after outcome commit replays the stored outcome and commits the step without dispatch.
 

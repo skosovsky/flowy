@@ -896,3 +896,62 @@ no runtime code changed after these gates. No aliases for removed Go names.
 Own disposable PostgreSQL17 pg11 is retained for Task13 final gates; existing
 user task22 containers were not touched. Overall tasks12/13 remain unfinished.
 Local signed commit follows; SHA recorded with next task contract.
+
+
+## Task12 contract (before implementation)
+
+Task11 committed22517a3 fix: lifecycle contracts, clean checkout verified.
+Scope7 criteria: D60/D61 and mandatory documentation2/4/5/6/7.
+D60: add bounded meaningful fuzz properties for seal/address/tamper and snapshot
+JSON/admission. Replace empty fuzz shell success with explicit module/package/probe
+discovery, one exact fuzz name per invocation, propagate discovery/run errors,
+fail if no probes. Default30s/probe, bounded worker count; report actual command
+and duration, never infer all codecs/native/concurrency coverage from fuzz.
+D61: current README/GoDoc/contracts/examples match HEAD, historical task22–27
+remain historical. README begins installation/module paths/complete executable
+BYOT hello world before API migration history; keep detailed migration guide.
+Doc2: DurableRunner describes Start/Resume and Stream/ResumeStream with initial
+commit-before-handle/node timing and WaitResult authority.
+Doc4: cookbook indexes handoff/outbox and separate durable_agent blueprint, with
+explicit fake ports, ordinary/memory smoke and actual PostgreSQL recovery gates.
+Doc5: executable hello world uses host state/effect types and checked errors,
+Go1.27.1 minimum/current unsuffixedv0/v1 module paths, no advertised unverifiedv2.
+Doc6: docs/runtime-contract.md becomes canonical ownership/concurrency/callback,
+panic and typed error/recovery index, including snapshot JSON wire, unknown ACK,
+partial cleanup and unique decision semantics. Fix stale log-only cleanup and
+pattern/observer/inline naming, old consumer guidance statuses.
+Doc7: describe exactly six modules, native integration env/tags/DB privileges,
+benchmark manifests and meaningful fuzz limits; root tests alone are insufficient.
+Fresh root lint/race, hello executable, tool rejection fixtures and bounded real
+fuzz runs precede two independent final reviews100%(7/7)/0open and signed commit.
+Task13 remains full native/all-module/installability/release/growth gates.
+
+
+### Task12 verification (acceptance pending)
+
+Hello command93621terminal0 prints exactly two Hello, Sergey lines; Python
+run_fuzz rejection/discovery fixtures4/4PASS. Full root41777terminal0 root14.466s,
+checkpoint2.132s/allpackagespassed. Initial lint6096exit1(avgcyclop) led to split
+fuzz property helpers, final91653terminal0,0issues. Addedhello to existing smoke
+matrix16examples; finalroot14648/lint11100pending after that test-only change.
+Timed fuzz65742terminal0:3s/probe,2workers, envelope1563execs and checkpoint48477,
+no failure, bothPASS. Go emitted stat-cache permission warnings while discovering
+replaced nested modules; commands still completed and both actual fuzzprobes ran.
+This is bounded property evidence, not fullnative/allmodule/hostcodec coverage.
+Both independent final reviews pending. Completeness requested removal of stale
+'synchronous durable profile' restriction in canonical contract; corrected.
+
+
+## Task12 accepted
+
+Independent final reports reviews/task12-completeness.md (100%,7/7,0gaps),
+reviews/task12-correctness.md (0open). Completeness own hello/4fixtures/actual
+6module discovery and race seeds+16smoke90030terminal0; correctness own seeds
+66601terminal0 root1.616s/checkpoint1.447s,hello/4fixtures/6moduleinventory,
+zero-durationrejectexit2. Both reviewed final durable-profile wording.
+Parent fullroot41777exit0root14.466s; finalseed/smoke14648exit0; final lint11100
+exit0,0issues after helper split and smoke addition. Timed actualfuzz65742exit0
+bothprobePASS; short duration proves executedproperties only. Whitespacecheck0.
+Task13 remains all-six fresh race/lint/native/blueprint/benchmark/releasefixtures
+and clean consumer installability; no overall/release acceptance asserted yet.
+Local signedcommit follows; SHA recorded with Task13 contract.

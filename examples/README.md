@@ -24,21 +24,23 @@ authority. Stream содержит события исполнения и effect
 
 | Сценарий                           | Каталог                | Команда                                              |
 | ---------------------------------- | ---------------------- | ---------------------------------------------------- |
+| BYOT hello world | `hello` | `go run ./examples/hello` |
 | ReAct loop                         | `react_agent`          | `cd examples/react_agent && go run main.go`          |
 | Stream + typed Effect + Suspend    | `streaming_agent`      | `cd examples/streaming_agent && go run main.go`      |
 | Stream RequestStop (anti-deadlock) | `stream_request_stop`  | `cd examples/stream_request_stop && go run main.go`  |
 | Human-in-the-Loop                  | `hitl_agent`           | `cd examples/hitl_agent && go run main.go`           |
 | Middleware + panic recovery        | `middleware_agent`     | `cd examples/middleware_agent && go run main.go`     |
-| Supervisor route → terminal worker | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
+| Dispatch route → terminal worker | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
 | Context deadline + emergency save  | `context_deadline`     | `cd examples/context_deadline && go run main.go`     |
 | Cache routing + late binding       | `conditional_routing`  | `cd examples/conditional_routing && go run main.go`  |
-| Parent + subgraph suspend/resume   | `subgraph_agent`       | `cd examples/subgraph_agent && go run main.go`       |
+| Stateless subgraph restart from entry   | `subgraph_agent`       | `cd examples/subgraph_agent && go run main.go`       |
 | Subgraph slot suspend/resume       | `subgraph_slot_agent`  | `cd examples/subgraph_slot_agent && go run main.go`  |
 | Lease + WithRunLease               | `lease_agent`          | `cd examples/lease_agent && go run main.go`          |
 | Typed BindingKey                   | `bindings_agent`       | `cd examples/bindings_agent && go run main.go`       |
 | Semantic cache routing             | `semantic_cache_agent` | `cd examples/semantic_cache_agent && go run main.go` |
 | Late prompt policy (runtime tools filter) | `late_prompt_agent` | `cd examples/late_prompt_agent && go run .` |
 | Ordinary handoff outbox + recovery | `handoff_outbox` | `cd examples/handoff_outbox && go run .` |
+| PostgreSQL durable agent, fake external ports / real DB | `durable_agent` | `cd examples/durable_agent && go run .` (requires DB) |
 | Durable activities/children/waits/fork, memory smoke | `durable_runtime` | `cd examples/durable_runtime && go run .` |
 
 `durable_runtime` использует memory storage: это исполняемый контрактный пример,
@@ -55,7 +57,7 @@ accounting/reservation описаны в [матрице возможносте�
 | Resume overlay                                 | `hitl_agent`, `conditional_routing`, `subgraph_agent`        | `runner_lifecycle_test.go`                                                                                                |
 | Stream + typed effects                         | `streaming_agent`                                            | `stream_test.go`                                                                                                          |
 | Stream consumer helpers                        | `streaming_agent`, `middleware_agent`, `stream_request_stop` | `stream_helpers_test.go`, `stream_test.go`                                                                                |
-| Handoff lifecycle                              | — (unit tests)                                               | `runner_handoff_contracts_test.go`, `compose_test.go`, `stream_test.go`                                                   |
+| Handoff lifecycle                              | `handoff_outbox`                                               | `runner_handoff_contracts_test.go`, `compose_test.go`, `stream_test.go`                                                   |
 | Lease / `WithRunLease` (in-memory happy path)  | `lease_agent`                                                | `runner_lifecycle_test.go`, `runner_reason_parity_test.go`                                                                |
 | Policies (`DeleteOnSuccess`, `RetentionLimit`) | `lease_agent` (`WithDeleteOnSuccess(true)`)                  | `runner_lifecycle_test.go`                                                                                                |
 | Typed `BindingKey` + `Bind`                    | `bindings_agent`                                             | `runner_lifecycle_test.go`                                                                                                |
@@ -65,8 +67,8 @@ accounting/reservation описаны в [матрице возможносте�
 | `DeleteIfIdle` / lease-aware delete            | `lease_agent` (`WithDeleteOnSuccess` demo)                   | `runner_lifecycle_test.go`, adapter tests                                                                                 |
 | Subgraph slot resume                           | `subgraph_slot_agent`                                        | `compose_test.go`                                                                                                         |
 | `ResumeToken` + OCC                            | `hitl_agent`, `subgraph_slot_agent`                          | `runner_lifecycle_test.go`, `runner_resume_token_contracts_test.go`                                                       |
-| `ResumeAt` on `Suspend` / `Handoff`            | —                                                            | `runner_resume_target_contracts_test.go`                                                                                  |
-| `WithHandoffOutbox` (`HandoffIntent` + status) | —                                                            | `runner_handoff_contracts_test.go`, `runner_handoff_recovery_test.go`                                                     |
+| `ResumeAt` on `Suspend` / `Handoff`            | `handoff_outbox`                                                            | `runner_resume_target_contracts_test.go`                                                                                  |
+| `WithHandoffOutbox` (`HandoffIntent` + status) | `handoff_outbox`                                                            | `runner_handoff_contracts_test.go`, `runner_handoff_recovery_test.go`                                                     |
 | `WithCheckpointErrorPolicy(SkipOnSaveError)`   | — (use Stream)                                               | `runner_checkpoint_policy_test.go`, `stream_test.go` (`TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError`) |
 | Session guard / duplicate active run           | —                                                            | `runner_session_guard_test.go`                                                                                            |
 | Reason parity (RunResult vs RunEvent)          | —                                                            | `runner_reason_parity_test.go`                                                                                            |
@@ -92,7 +94,7 @@ accounting/reservation описаны в [матрице возможносте�
 join и итоговый token на шести новых workers/pools. См.
 [blueprint](durable_agent/README.md). Он не входит в ordinary smoke matrix.
 
-[`examples_smoke_test.go`](../examples_smoke_test.go) запускает 15 ordinary examples
+[`examples_smoke_test.go`](../examples_smoke_test.go) запускает 16 ordinary examples
 через `go run .`; отдельный test в `durable_runtime` проверяет memory smoke.
 
 ```bash
