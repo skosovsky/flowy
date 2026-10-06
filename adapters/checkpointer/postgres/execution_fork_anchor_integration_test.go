@@ -15,7 +15,7 @@ import (
 func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	// Arrange: retain a later head, remove only this fixture's initial history row.
 	ctx, pool := racePool(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var nodes, live atomic.Int32
 	creation := createForkLineageFixture(ctx, t, pool, store, testThreadID(t), &nodes, &live)
 	lease, err := store.AcquireExecution(ctx, creation.ExecutionID, "advance", time.Minute)
@@ -36,7 +36,7 @@ func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	pool.Close()
 	// Act: independent recovery uses the head anchor, not revision-one fallback.
 	recoveryCtx, recoveryPool := racePool(t)
-	recovered := NewExecutionStore(recoveryPool)
+	recovered := mustExecutionStore(t, recoveryPool)
 	loaded, loadErr := recovered.LoadExecution(recoveryCtx, head.ExecutionID)
 	_, absentErr := recovered.LoadCheckpoint(recoveryCtx, head.ExecutionID, creation.Revision)
 	policy := &flowy.ForkExecutionPolicy{Label: "fake", Mode: flowy.ForkFake,
@@ -61,7 +61,7 @@ func TestForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) 
 		t.Run(name, func(t *testing.T) {
 			// Arrange: only the separate creation anchor is corrupted, envelope seal remains valid.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			base := testThreadID(t)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, base, &nodes, &live)
@@ -70,7 +70,7 @@ func TestForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) 
 			}
 			pool.Close()
 			recoveryCtx, recoveryPool := racePool(t)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			lease, err := recovered.AcquireExecution(recoveryCtx, before.ExecutionID, "writer", time.Minute)
 			if err != nil {
 				t.Fatal(err)

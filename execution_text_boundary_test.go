@@ -100,3 +100,68 @@ func TestImportInvalidTextRejectsBeforeTransform(t *testing.T) {
 		})
 	}
 }
+
+func TestInvalidDecisionReasonRejectsBeforeStore(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"bad\xff", "bad\xe2\x82"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			// Arrange: no execution exists; admission must precede even a read.
+			store := &executionTextProbeStore{
+				ExecutionStore: testutil.NewMemoryExecutionStore(nil),
+				loads:          atomic.Int32{},
+			}
+			var nodes atomic.Int32
+			runner := importRunner(t, store, &nodes)
+			token := flowy.ResumeToken{ThreadID: "run", SnapshotRevision: 1}
+			// Act.
+			_, cancelErr := runner.CancelWait(
+				context.Background(),
+				token,
+				flowy.WaitCancellation{Generation: "generation", ID: "cancel", Reason: reason, Evidence: "receipt"},
+			)
+			_, activityErr := runner.ResolveActivity(
+				context.Background(),
+				token,
+				flowy.ActivityResolution{
+					Identity:       "activity",
+					InputDigest:    "digest",
+					Implementation: "host",
+					DecisionID:     "decision",
+					Reason:         reason,
+					Evidence:       "receipt",
+				},
+			)
+			_, confirmErr := runner.ConfirmChildCancellation(
+				context.Background(),
+				token,
+				flowy.ChildCancelConfirmation{
+					Node:          "node",
+					Activation:    1,
+					GroupKey:      "group",
+					ChildID:       "child",
+					ExecutionID:   "child-execution",
+					ChildRevision: 3,
+					RequestID:     "request",
+					DecisionID:    "confirm",
+					Reason:        reason,
+					Evidence:      "receipt",
+				},
+			)
+			// Assert.
+			if !errors.Is(cancelErr, flowy.ErrWaitInvalid) || !errors.Is(activityErr, flowy.ErrActivityConflict) ||
+				!errors.Is(confirmErr, flowy.ErrChildJoinInvalid) ||
+				store.loads.Load() != 0 ||
+				nodes.Load() != 0 {
+				t.Fatalf(
+					"cancel=%v activity=%v confirm=%v loads=%d nodes=%d",
+					cancelErr,
+					activityErr,
+					confirmErr,
+					store.loads.Load(),
+					nodes.Load(),
+				)
+			}
+		})
+	}
+}

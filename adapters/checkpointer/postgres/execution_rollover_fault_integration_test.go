@@ -58,7 +58,7 @@ func TestRolloverPersistentInterruptedPairPublication(t *testing.T) {
 		},
 	}
 	descriptor := referenceDescriptor("pair-fault")
-	base := NewExecutionStore(pool)
+	base := mustExecutionStore(t, pool)
 	source, err := persistentReferenceRunner(
 		t,
 		base,
@@ -77,7 +77,7 @@ func TestRolloverPersistentInterruptedPairPublication(t *testing.T) {
 	request := lifecyclePGRequest(descriptor, id+"-next", &projections)
 	faulty := persistentReferenceRunner(
 		t,
-		NewExecutionStore(rolloverPartialFaultDB{DB: pool}),
+		mustExecutionStore(t, rolloverPartialFaultDB{DB: pool}),
 		descriptor,
 		"node",
 		activity,
@@ -90,7 +90,7 @@ func TestRolloverPersistentInterruptedPairPublication(t *testing.T) {
 	}
 	pool.Close()
 	recoveryCtx, recoveryPool := racePool(t)
-	recovery := NewExecutionStore(recoveryPool)
+	recovery := mustExecutionStore(t, recoveryPool)
 	after, loadErr := recovery.LoadExecution(recoveryCtx, id)
 	receipt, receiptErr := recovery.LoadRollover(recoveryCtx, id)
 	_, targetErr := recovery.LoadExecution(recoveryCtx, request.TargetID)

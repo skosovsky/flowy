@@ -52,7 +52,7 @@ func TestExecutionAcquireRefusedThenOwnerReleasedReturnsTypedContention(t *testi
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
 		t.Fatal(err)
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	id := testThreadID(t)
 	lease, err := store.AcquireExecution(ctx, id, "active-owner", time.Minute)
 	if err != nil {
@@ -66,7 +66,7 @@ func TestExecutionAcquireRefusedThenOwnerReleasedReturnsTypedContention(t *testi
 			close(barrier.proceed)
 		}
 	}()
-	contender := NewExecutionStore(barrier)
+	contender := mustExecutionStore(t, barrier)
 	type outcome struct {
 		lease flowy.ExecutionLease
 		err   error

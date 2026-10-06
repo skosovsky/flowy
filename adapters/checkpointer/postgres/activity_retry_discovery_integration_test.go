@@ -27,7 +27,7 @@ func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing
 	base := testThreadID(t)
 	at := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
 	var plainCalls, futureCalls, dueCalls atomic.Int32
-	if _, err = postgresRetryRunner(t, NewExecutionStore(pool), at, &plainCalls).
+	if _, err = postgresRetryRunner(t, mustExecutionStore(t, pool), at, &plainCalls).
 		Start(ctx, base+"01", persistedRetryState{}); !errors.Is(err, flowy.ErrActivityRetryPending) {
 		t.Fatalf("plain pending fixture: %v", err)
 	}

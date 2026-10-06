@@ -41,7 +41,9 @@ type ExecutionStore interface {
 }
 
 // ExecutionHistoryStore is optional exact historical loading. Missing or pruned
-// revisions return ErrThreadNotFound; zero revisions are invalid, never latest.
+// identities/future addresses return ErrThreadNotFound; known pruned/deleted payloads
+// return ErrExecutionCheckpointUnavailable. Zero revisions return ErrInvalidSnapshot,
+// never latest. Native signed-range overflow returns ErrExecutionCapability.
 // Retained envelopes must be immutable and self-contained with their blobs.
 type ExecutionHistoryStore interface {
 	LoadCheckpoint(ctx context.Context, executionID string, revision uint64) (ExecutionEnvelope, error)

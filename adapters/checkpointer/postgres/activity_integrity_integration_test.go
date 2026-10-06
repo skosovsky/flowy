@@ -20,7 +20,7 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := flowy.NewDurableRunner(graph, NewExecutionStore(restartedPool), descriptor,
+	runner, err := flowy.NewDurableRunner(graph, mustExecutionStore(t, restartedPool), descriptor,
 		checkpoint.JSONSerializer[intState]{}, checkpoint.JSONSerializer[[]flowy.NoEffect]{},
 		flowy.DurableOptions{Owner: "worker", LeaseTTL: time.Minute})
 	if err != nil {
@@ -72,7 +72,7 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 		calls.Load() != 0 {
 		t.Fatalf("invalid journal executed: resume=%v stream=%v calls=%d", resumeErr, streamErr, calls.Load())
 	}
-	latest, err := NewExecutionStore(restartedPool).LoadExecution(restartCtx, id)
+	latest, err := mustExecutionStore(t, restartedPool).LoadExecution(restartCtx, id)
 	if err != nil || latest.Revision != source.Revision || latest.Digest != source.Digest {
 		t.Fatalf("rejection changed source: %+v %v", latest, err)
 	}

@@ -100,14 +100,14 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 	}
 	id := testThreadID(t)
 	var dispatches, merges atomic.Int32
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildWaitRunner(t, store, &dispatches, &merges).Start(ctx, id, intState{})
 	if first == nil || !errors.Is(err, flowy.ErrChildrenUnresolved) {
 		t.Fatalf("waits missing: %v", err)
 	}
 	pool.Close()
 	resolveCtx, resolvePool := racePool(t)
-	resolveStore := NewExecutionStore(resolvePool)
+	resolveStore := mustExecutionStore(t, resolvePool)
 	group := postgresStoredChildGroup(resolveCtx, t, resolveStore, id)
 	// Act: resolve b through a new connection, then recover through another one.
 	token, err := postgresChildWaitRunner(
@@ -121,7 +121,7 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 	}
 	resolvePool.Close()
 	resumeCtx, resumePool := racePool(t)
-	resumeStore := NewExecutionStore(resumePool)
+	resumeStore := mustExecutionStore(t, resumePool)
 	runner := postgresChildWaitRunner(t, resumeStore, &dispatches, &merges)
 	second, resumeErr := runner.Resume(resumeCtx, token)
 	group = postgresStoredChildGroup(resumeCtx, t, resumeStore, id)
@@ -137,7 +137,7 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 	}
 	resumePool.Close()
 	finalCtx, finalPool := racePool(t)
-	_, err = postgresChildWaitRunner(t, NewExecutionStore(finalPool), &dispatches, &merges).Resume(finalCtx, token)
+	_, err = postgresChildWaitRunner(t, mustExecutionStore(t, finalPool), &dispatches, &merges).Resume(finalCtx, token)
 	if err != nil || dispatches.Load() != 3 || merges.Load() != 1 {
 		t.Fatalf("wait/join restart: %v calls=%d merges=%d", err, dispatches.Load(), merges.Load())
 	}

@@ -26,7 +26,7 @@ func TestExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T) {
 				t.Fatal(err)
 			}
 			id := testThreadID(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 			if err != nil {
 				t.Fatal(err)
@@ -52,7 +52,7 @@ func TestExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T) {
 				t.Fatal(err)
 			}
 			// Act: another handle observes the persisted corruption.
-			restarted := NewExecutionStore(pool)
+			restarted := mustExecutionStore(t, pool)
 			_, latestErr := restarted.LoadExecution(ctx, id)
 			// Assert: a lost latest history row must not be mistaken for a new run.
 			if !errors.Is(latestErr, flowy.ErrExecutionCorrupt) {

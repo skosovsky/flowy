@@ -69,7 +69,7 @@ func TestTypedChildCommittedMergePersistentRestart(t *testing.T) {
 	var calls, merges atomic.Int32
 	first, err := postgresTypedChildRunner(
 		t,
-		childTerminalFaultStore{ExecutionStore: NewExecutionStore(pool)},
+		childTerminalFaultStore{ExecutionStore: mustExecutionStore(t, pool)},
 		&calls,
 		&merges,
 	).Start(ctx, id, intState{})
@@ -81,7 +81,7 @@ func TestTypedChildCommittedMergePersistentRestart(t *testing.T) {
 	// Act: a new pool/worker decodes cached typed merge bytes rather than rerunning it.
 	_, err = postgresTypedChildRunner(
 		t,
-		NewExecutionStore(restartPool),
+		mustExecutionStore(t, restartPool),
 		&calls,
 		&merges,
 	).Resume(restartCtx, first.ResumeToken)

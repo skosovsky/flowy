@@ -68,7 +68,7 @@ func TestRetentionPersistentInterruptedTransactionAndLostAck(t *testing.T) {
 					t.Fatal(err)
 				}
 				id := testThreadID(t)
-				store := NewExecutionStore(pool)
+				store := mustExecutionStore(t, pool)
 				var calls atomic.Int32
 				activity := flowy.ActivityRequest{
 					Key:            "write",
@@ -99,7 +99,7 @@ func TestRetentionPersistentInterruptedTransactionAndLostAck(t *testing.T) {
 					Revision:    result.ResumeToken.SnapshotRevision,
 					Policy:      flowy.ExecutionRetentionPolicy{Label: "archive", DeletePayload: true},
 				}
-				fault := NewExecutionStore(retentionFaultDB{DB: pool, lostAck: lostAck})
+				fault := mustExecutionStore(t, retentionFaultDB{DB: pool, lostAck: lostAck})
 				// Act: lose connection before commit or lose acknowledgement after atomic commit.
 				_, failed := fault.RetainExecution(ctx, request)
 				if failed == nil {
@@ -107,7 +107,7 @@ func TestRetentionPersistentInterruptedTransactionAndLostAck(t *testing.T) {
 				}
 				pool.Close()
 				recoveryCtx, recoveryPool := racePool(t)
-				recovery := NewExecutionStore(recoveryPool)
+				recovery := mustExecutionStore(t, recoveryPool)
 				recovered, loadErr := recovery.LoadExecution(recoveryCtx, id)
 				// Assert: before-commit failure leaves every original payload unchanged;
 				// after-commit failure leaves a complete tombstone, never a partial history.

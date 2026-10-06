@@ -842,7 +842,7 @@ func TestLifecycleObserverResumeRejectedInvalidSnapshot(t *testing.T) {
 	type state struct{}
 	cp := testutil.NewMemoryCheckpointer[state, flowy.NoEffect]()
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[state, flowy.NoEffect]{
-		ThreadID: "otel-invalid-snap-th", ExecutionPointer: "", State: state{},
+		ThreadID: "otel-invalid-snap-th", ExecutionPointer: "work", State: state{},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -854,9 +854,10 @@ func TestLifecycleObserverResumeRejectedInvalidSnapshot(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 	_, rev, _ := cp.Load(context.Background(), "otel-invalid-snap-th")
-	_, _ = g.NewRunner(cp).Resume(context.Background(), flowy.ResumeToken{
-		ThreadID: "otel-invalid-snap-th", SnapshotRevision: rev,
-	})
+	_, _ = g.NewRunner(&invalidSnapshotCheckpointer[state, flowy.NoEffect]{MemoryCheckpointer: cp}).
+		Resume(context.Background(), flowy.ResumeToken{
+			ThreadID: "otel-invalid-snap-th", SnapshotRevision: rev,
+		})
 	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected invalid_snapshot=1, got %d", got)
 	}

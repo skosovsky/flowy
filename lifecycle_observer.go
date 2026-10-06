@@ -22,7 +22,7 @@ const (
 	LifecycleChildJoin    LifecycleOperation = "child_join"
 	LifecycleChildCancel  LifecycleOperation = "child_cancel"
 	LifecycleWaitArm      LifecycleOperation = "wait_arm"
-	LifecycleWaitWinner   LifecycleOperation = "wait_winner"
+	LifecycleWaitDelivery LifecycleOperation = "wait_delivery"
 	LifecycleWaitCancel   LifecycleOperation = "wait_cancel"
 	LifecycleLease        LifecycleOperation = "lease"
 	LifecycleMigration    LifecycleOperation = "migration"

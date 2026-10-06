@@ -18,7 +18,7 @@ func TestLifecyclePersistentCreationReceiptRejectsResealedTarget(t *testing.T) {
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
 		t.Fatal(err)
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls, projections atomic.Int32
 	descriptor := referenceDescriptor("creation-seal")
 	activity := flowy.ActivityRequest{
@@ -70,7 +70,7 @@ func TestLifecyclePersistentCreationReceiptRejectsResealedTarget(t *testing.T) {
 	}
 	pool.Close()
 	recoveryCtx, recoveryPool := racePool(t)
-	recovery := NewExecutionStore(recoveryPool)
+	recovery := mustExecutionStore(t, recoveryPool)
 	recoveredRunner := persistentReferenceRunner(t, recovery, descriptor, "node", activity, nil)
 	_, loadErr := recovery.LoadExecution(recoveryCtx, token.ThreadID)
 	_, exactErr := recovery.LoadCheckpoint(recoveryCtx, token.ThreadID, token.SnapshotRevision)

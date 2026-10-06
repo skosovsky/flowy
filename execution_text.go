@@ -44,8 +44,16 @@ func validChildGroupText(group ChildGroupRecord) bool {
 		}
 	}
 	for _, child := range group.Children {
-		if !validRuntimeText(child.Spec.ID, child.ExecutionID, child.WaitID) ||
+		if !validRuntimeText(child.Spec.ID, child.ExecutionID, child.WaitID, child.Error) ||
 			!validChildCapacity(child.Spec.Allocation) {
+			return false
+		}
+	}
+	if group.CancelRequest != nil && !validRuntimeText(group.CancelRequest.ID, group.CancelRequest.Reason) {
+		return false
+	}
+	for _, decision := range group.BudgetReturns {
+		if !validRuntimeText(decision.DecisionID, decision.Reason, decision.Evidence) {
 			return false
 		}
 	}

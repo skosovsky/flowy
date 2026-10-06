@@ -36,7 +36,7 @@ func assertInterruptedStepPersistentRecovery(t *testing.T, stream, activity bool
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls, dispatches atomic.Int32
 	parent, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -48,7 +48,7 @@ func assertInterruptedStepPersistentRecovery(t *testing.T, stream, activity bool
 	}
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	saved, err := restartedStore.LoadExecution(restartCtx, id)
 	if err != nil {
 		t.Fatal(err)

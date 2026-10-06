@@ -82,7 +82,7 @@ func TestChildJoinCommittedResultSurvivesPersistentRestart(t *testing.T) {
 	}
 	id := testThreadID(t)
 	var dispatches, merges atomic.Int32
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildJoinRunner(
 		t,
 		childTerminalFaultStore{ExecutionStore: store},
@@ -97,7 +97,7 @@ func TestChildJoinCommittedResultSurvivesPersistentRestart(t *testing.T) {
 	// Act: a fresh worker/pool must replay the committed join, not run its merge.
 	_, resumeErr := postgresChildJoinRunner(
 		t,
-		NewExecutionStore(restartPool),
+		mustExecutionStore(t, restartPool),
 		&dispatches,
 		&merges,
 	).Resume(restartCtx, first.ResumeToken)

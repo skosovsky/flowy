@@ -29,7 +29,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
@@ -56,7 +56,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 	token, importErr := runner.Import(ctx, id, source, importer)
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	_, loadErr := restartedStore.LoadExecution(restartCtx, id)
 	_, historyErr := restartedStore.LoadCheckpoint(restartCtx, id, 1)
 	// Assert: no successful token/head/history/dispatch survived the invalid import.

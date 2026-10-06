@@ -77,7 +77,7 @@ func TestExplicitImportPersistentRestart(t *testing.T) {
 		},
 	}
 	// Act: close the original pool after import and recover through new connections.
-	token, err := bind(NewExecutionStore(pool)).Import(ctx, id, source, importer)
+	token, err := bind(mustExecutionStore(t, pool)).Import(ctx, id, source, importer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +90,7 @@ func TestExplicitImportPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restartedPool.Close)
-	store := NewExecutionStore(restartedPool)
+	store := mustExecutionStore(t, restartedPool)
 	result, err := bind(store).Resume(ctx, token)
 	// Assert: target resume executes once, while exact source provenance survives.
 	if err != nil || result.State.Value != 42 || calls.Load() != 1 {

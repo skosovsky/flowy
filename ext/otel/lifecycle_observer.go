@@ -65,7 +65,7 @@ func boundedOperation(operation flowy.LifecycleOperation) string {
 	case flowy.LifecycleExecution, flowy.LifecycleTerminal, flowy.LifecycleCheckpoint, flowy.LifecycleHandoff,
 		flowy.LifecycleResume, flowy.LifecycleActivity, flowy.LifecycleReconcile, flowy.LifecycleRetry,
 		flowy.LifecycleChildLaunch, flowy.LifecycleChildResolve, flowy.LifecycleChildJoin, flowy.LifecycleChildCancel,
-		flowy.LifecycleWaitArm, flowy.LifecycleWaitWinner, flowy.LifecycleWaitCancel, flowy.LifecycleLease,
+		flowy.LifecycleWaitArm, flowy.LifecycleWaitDelivery, flowy.LifecycleWaitCancel, flowy.LifecycleLease,
 		flowy.LifecycleMigration, flowy.LifecycleImport, flowy.LifecycleFork, flowy.LifecycleRollover, flowy.LifecycleRetention:
 		return string(operation)
 	default:

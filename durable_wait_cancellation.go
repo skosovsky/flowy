@@ -35,7 +35,7 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	request WaitCancellation,
 ) (result ResumeToken, retErr error) { //nolint:nonamedreturns // Preserve committed result and cleanup error.
 	if token.ThreadID == "" || token.SnapshotRevision == 0 || request.Generation == "" || request.ID == "" ||
-		!validRuntimeText(token.ThreadID, request.Generation, request.ID, request.Evidence) ||
+		!validRuntimeText(token.ThreadID, request.Generation, request.ID, request.Reason, request.Evidence) ||
 		request.Reason == "" || request.Evidence == "" {
 		return ResumeToken{}, ErrWaitInvalid
 	}
@@ -137,7 +137,7 @@ func validWaitCancellation(record DurableWaitRecord, revision uint64) bool {
 	cancel := record.Cancellation
 	return cancel != nil && cancel.ID != "" && cancel.Reason != "" && cancel.Evidence != "" &&
 		cancel.SourceRevision >= record.ArmRevision && cancel.SourceRevision < revision &&
-		cancel.Incarnation != 0 && !cancel.At.IsZero()
+		cancel.Incarnation != 0 && !cancel.At.IsZero() && validRuntimeText(cancel.ID, cancel.Reason, cancel.Evidence)
 }
 
 func validCanceledWaitTerminal(envelope ExecutionEnvelope, record DurableWaitRecord) bool {

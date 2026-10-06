@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // ErrExecutionCapability rejects an unsupported durable storage capability.
@@ -49,7 +51,8 @@ func NewDurableRunner[T, E any](
 	effectsCodec StateSerializer[[]E],
 	options DurableOptions,
 ) (*DurableRunner[T, E], error) {
-	if graph == nil || store == nil || stateCodec == nil || effectsCodec == nil || options.Owner == "" ||
+	if graph == nil || nilvalue.IsNil(store) || nilvalue.IsNil(stateCodec) || nilvalue.IsNil(effectsCodec) ||
+		options.Owner == "" ||
 		options.LeaseTTL <= 0 {
 		return nil, ErrExecutionCapability
 	}
@@ -72,7 +75,7 @@ func NewDurableRunner[T, E any](
 		policy := *options.ForkPolicy
 		options.ForkPolicy = &policy
 	}
-	if options.Clock == nil {
+	if nilvalue.IsNil(options.Clock) {
 		options.Clock = wallExecutionClock{}
 	}
 	var waitBackend DurableWaitBackend

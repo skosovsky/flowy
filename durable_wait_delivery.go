@@ -60,7 +60,7 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 		return WaitDeliveryResult{}, err
 	}
 	session.ctx = restoreExecutionTelemetry(session.ctx, source)
-	event := waitObservation(source, LifecycleWaitWinner, delivery.Generation, delivery.ID)
+	event := waitObservation(source, LifecycleWaitDelivery, delivery.Generation, delivery.ID)
 	observeLifecycle(session.ctx, event)
 	event.Stage = LifecycleFailed
 	defer func() { observeLifecycle(session.ctx, event) }()

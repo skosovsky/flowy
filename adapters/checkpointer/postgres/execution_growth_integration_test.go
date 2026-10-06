@@ -185,7 +185,7 @@ func pgGrowthWorkload(
 	if rollover {
 		cycleRecords = 16
 	}
-	store := &pgGrowthStore{ExecutionStore: NewExecutionStore(pool)}
+	store := &pgGrowthStore{ExecutionStore: mustExecutionStore(b, pool)}
 	runner := pgGrowthRunner(b, store, cycleRecords, fanout)
 	baseID := fmt.Sprintf("bench-%d-%d", time.Now().UnixNano(), iteration)
 	ids := []string{baseID}

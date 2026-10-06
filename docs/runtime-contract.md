@@ -244,3 +244,28 @@ indefinitely. BeginStreamCollect transfers a complete private collection through
 its result channel; AwaitStreamCollect can return early without transferring an
 unfinished slice. WaitResult remains execution authority because the bounded event
 stream may drop a terminal event. None of these helpers provides durable delivery.
+
+
+### Snapshot storage admission
+
+ValidateSnapshotHeader is the pure storage-header boundary: nonempty UTF-8 thread
+ID/execution pointer and a positive stored revision. Save computes its new revision
+from expectedRevision/OCC; caller Snapshot.Revision does not override that decision.
+EncodeRecord and DecodeRecord share this check, and the memory test helper checks
+before invoking cloners or changing history. PostgreSQL checks before starting its
+SaveWithOutbox transaction; malformed metadata cannot invoke enqueue. Standalone
+snapshot StateSerializer.Marshal produces valid JSON bytes; validation never calls
+host Unmarshal merely to check headers. BYOT describes state/effect types and does
+not imply support for arbitrary wire bytes. PostgreSQL additionally applies its
+JSONB storage domain, and its errors must not publish a partial head/outbox.
+
+Cancellation/budget-return reasons and manual decision provenance are valid UTF-8
+text before store/backend/notification work. Malformed bytes are rejected rather
+than normalized to replacement characters; actual U+FFFD remains valid input.
+Exact recorded equality remains the replay authority. Host runtime errors used only
+as audit diagnostics may render lossily; their strings are not decision identities.
+
+Storage admission, JSON wire domains, constructor failures, historical errors and
+TTL/counter limits are specified in [storage admission](storage-admission.md).
+Child duplicate and lost-ACK semantics are specified in
+[decision namespaces](decision-namespaces.md).

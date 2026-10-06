@@ -8,14 +8,13 @@ import (
 	"time"
 
 	"github.com/skosovsky/flowy"
-	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
 )
 
 func TestNativeLeaseSameOwnerABA(t *testing.T) {
 	// Arrange: independent connections reuse the same text owner after expiry.
 	ctx, pool := racePool(t)
 	id := testThreadID(t)
-	first, second := pglease.NewLeaseManager(pool), pglease.NewLeaseManager(pool)
+	first, second := mustPostgresLeaseManager(t, pool), mustPostgresLeaseManager(t, pool)
 	old, err := first.Acquire(ctx, id, "reused-owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)

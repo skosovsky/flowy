@@ -358,14 +358,16 @@ func TestWaitCollectionRejectsForgedLedgerBeforeDecode(t *testing.T) {
 func TestWaitSpecRequiresExplicitContractsAndUTC(t *testing.T) {
 	t.Parallel()
 	for name, mutate := range map[string]func(*DurableWaitSpec){
-		"id":           func(s *DurableWaitSpec) { s.ID = "" },
-		"correlation":  func(s *DurableWaitSpec) { s.CorrelationID = "" },
-		"deadline":     func(s *DurableWaitSpec) { s.Deadline = time.Time{} },
-		"timezone":     func(s *DurableWaitSpec) { s.Deadline = s.Deadline.In(time.FixedZone("local", 3600)) },
-		"matcher":      func(s *DurableWaitSpec) { s.MatcherLabel = "" },
-		"codec":        func(s *DurableWaitSpec) { s.PayloadCodec = "" },
-		"continuation": func(s *DurableWaitSpec) { s.ContinuationLabel = "" },
-		"policy":       func(s *DurableWaitSpec) { s.WinnerPolicy = "" },
+		"id":              func(s *DurableWaitSpec) { s.ID = "" },
+		"correlation":     func(s *DurableWaitSpec) { s.CorrelationID = "" },
+		"deadline":        func(s *DurableWaitSpec) { s.Deadline = time.Time{} },
+		"timezone":        func(s *DurableWaitSpec) { s.Deadline = s.Deadline.In(time.FixedZone("local", 3600)) },
+		"negative year":   func(s *DurableWaitSpec) { s.Deadline = time.Date(-1, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"five digit year": func(s *DurableWaitSpec) { s.Deadline = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC) },
+		"matcher":         func(s *DurableWaitSpec) { s.MatcherLabel = "" },
+		"codec":           func(s *DurableWaitSpec) { s.PayloadCodec = "" },
+		"continuation":    func(s *DurableWaitSpec) { s.ContinuationLabel = "" },
+		"policy":          func(s *DurableWaitSpec) { s.WinnerPolicy = "" },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()

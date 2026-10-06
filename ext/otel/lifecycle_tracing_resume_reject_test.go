@@ -179,7 +179,7 @@ func tracingResumeRejectSetupInvalidSnapshot(
 	t.Helper()
 	cp := testutil.NewMemoryCheckpointer[tracingResumeRejectState, flowy.NoEffect]()
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[tracingResumeRejectState, flowy.NoEffect]{
-		ThreadID: "trace-invalid-snap-th", ExecutionPointer: "", State: tracingResumeRejectState{},
+		ThreadID: "trace-invalid-snap-th", ExecutionPointer: "work", State: tracingResumeRejectState{},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -187,8 +187,13 @@ func tracingResumeRejectSetupInvalidSnapshot(
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	return tracingResumeRejectWorkGraph(t).NewRunner(cp),
-		flowy.ResumeToken{ThreadID: "trace-invalid-snap-th", SnapshotRevision: rev}
+	return tracingResumeRejectWorkGraph(
+			t,
+		).NewRunner(&invalidSnapshotCheckpointer[tracingResumeRejectState, flowy.NoEffect]{MemoryCheckpointer: cp}),
+		flowy.ResumeToken{
+			ThreadID:         "trace-invalid-snap-th",
+			SnapshotRevision: rev,
+		}
 }
 
 func tracingResumeRejectSetupInvalidPointer(

@@ -58,7 +58,7 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 ) (result ResumeToken, retErr error) {
 	if resolution.Identity == "" || resolution.InputDigest == "" || resolution.Implementation == "" ||
 		!validRuntimeText(resolution.Identity, resolution.InputDigest, resolution.Implementation,
-			resolution.DecisionID, resolution.Evidence, resolution.SafeRetryContract) ||
+			resolution.DecisionID, resolution.Reason, resolution.Evidence, resolution.SafeRetryContract) ||
 		resolution.DecisionID == "" ||
 		resolution.Reason == "" ||
 		resolution.Evidence == "" {

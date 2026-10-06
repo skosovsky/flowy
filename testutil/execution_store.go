@@ -61,13 +61,16 @@ func (s *MemoryExecutionStore) LoadCheckpoint(
 	executionID string,
 	revision uint64,
 ) (flowy.ExecutionEnvelope, error) {
+	if revision == 0 {
+		return flowy.ExecutionEnvelope{}, flowy.ErrInvalidSnapshot
+	}
 	if err := ctx.Err(); err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := s.history[executionID]
-	if revision == 0 || revision > s.heads[executionID] {
+	if revision > s.heads[executionID] {
 		return flowy.ExecutionEnvelope{}, flowy.ErrThreadNotFound
 	}
 	return s.decodeAnchoredExecution(items[revision], executionID, revision)
@@ -79,6 +82,9 @@ func (s *MemoryExecutionStore) CommitExecution(
 	lease flowy.ExecutionLease,
 	envelope flowy.ExecutionEnvelope,
 ) (flowy.ExecutionEnvelope, error) {
+	if expectedRevision == ^uint64(0) {
+		return flowy.ExecutionEnvelope{}, flowy.ErrExecutionCapability
+	}
 	if err := ctx.Err(); err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
@@ -190,6 +196,9 @@ func (s *MemoryExecutionStore) AcquireExecution(
 			return flowy.ExecutionLease{}, flowy.ErrThreadLeaseBusy
 		}
 		return flowy.ExecutionLease{}, flowy.ErrLeaseHeld
+	}
+	if s.fences[executionID] == ^uint64(0) {
+		return flowy.ExecutionLease{}, flowy.ErrExecutionCapability
 	}
 	s.fences[executionID]++
 	lease := flowy.ExecutionLease{

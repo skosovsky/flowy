@@ -84,6 +84,7 @@ func TestPostgresBlueprintRecovery(t *testing.T) {
 	}
 }
 
+//nolint:gocognit // Check all persisted scenario authorities together after the worker restart.
 func assertFinal(t *testing.T, report scenarioReport) {
 	t.Helper()
 	final := report.Final
@@ -177,8 +178,11 @@ func persistedReceipt(t *testing.T, head flowy.ExecutionEnvelope, owner, node st
 		t.Fatalf("%s journal entries=%d", owner, len(journal))
 	}
 	for identity, record := range journal {
-		if identity == "" || record.Identity != identity || record.ExecutionID != owner || string(record.Node) != node ||
-			record.Activation != 1 || record.Key != "write" || record.State != flowy.ActivityCompleted ||
+		if identity == "" || record.Identity != identity || record.ExecutionID != owner ||
+			string(record.Node) != node ||
+			record.Activation != 1 ||
+			record.Key != "write" ||
+			record.State != flowy.ActivityCompleted ||
 			len(record.Attempts) != 1 {
 			t.Fatalf("wrong external activity address: %+v", record)
 		}
@@ -213,11 +217,12 @@ func assertFreshWorkers(t *testing.T, report scenarioReport) {
 	}
 }
 
+//nolint:gocognit // One scenario verifies continuity, lost-ACK reporting and privacy on the same trace set.
 func assertTraces(t *testing.T, spans []sdktrace.ReadOnlySpan, parent trace.SpanContext) {
 	t.Helper()
 	required := map[string]bool{
 		"flowy.lifecycle.checkpoint.committed": false, "flowy.lifecycle.activity.failed": false,
-		"flowy.lifecycle.activity.replayed": false, "flowy.lifecycle.wait_winner.committed": false,
+		"flowy.lifecycle.activity.replayed": false, "flowy.lifecycle.wait_delivery.committed": false,
 		"flowy.lifecycle.child_resolve.committed": false, "flowy.lifecycle.child_join.committed": false,
 		"flowy.lifecycle.terminal.replayed": false,
 	}

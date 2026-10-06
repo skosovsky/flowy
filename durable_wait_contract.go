@@ -59,6 +59,9 @@ func (s DurableWaitSpec) Validate() error {
 		s.EventPointer == "" || s.TimeoutPointer == "" || s.WinnerPolicy != WaitFirstCommitted {
 		return ErrWaitInvalid
 	}
+	if _, err := s.Deadline.MarshalJSON(); err != nil {
+		return ErrWaitInvalid
+	}
 	return nil
 }
 

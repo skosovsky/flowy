@@ -30,7 +30,7 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 	}
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	var dispatches atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {

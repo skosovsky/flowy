@@ -146,30 +146,30 @@ func TestWaitObservationsSeparateFailedWinnerReplayAndLoser(t *testing.T) {
 		)
 	}
 	requireRuntimeObservation(t, before, flowy.LifecycleWaitArm, flowy.LifecycleCommitted, "")
-	requireRuntimeObservation(t, before, flowy.LifecycleWaitWinner, flowy.LifecycleFailed, "wait_accepted")
+	requireRuntimeObservation(t, before, flowy.LifecycleWaitDelivery, flowy.LifecycleFailed, "wait_accepted")
 	for _, event := range before {
-		if event.Operation == flowy.LifecycleWaitWinner && event.Stage == flowy.LifecycleCommitted {
+		if event.Operation == flowy.LifecycleWaitDelivery && event.Stage == flowy.LifecycleCommitted {
 			t.Fatalf("unacknowledged winner: %+v", event)
 		}
 	}
 	requireRuntimeObservation(
 		t,
 		observer.snapshot(),
-		flowy.LifecycleWaitWinner,
+		flowy.LifecycleWaitDelivery,
 		flowy.LifecycleCommitted,
 		"wait_accepted",
 	)
 	requireRuntimeObservation(
 		t,
 		observer.snapshot(),
-		flowy.LifecycleWaitWinner,
+		flowy.LifecycleWaitDelivery,
 		flowy.LifecycleReplayed,
 		"wait_accepted",
 	)
 	lostEvent := requireRuntimeObservation(
 		t,
 		observer.snapshot(),
-		flowy.LifecycleWaitWinner,
+		flowy.LifecycleWaitDelivery,
 		flowy.LifecycleCommitted,
 		"wait_lost",
 	)

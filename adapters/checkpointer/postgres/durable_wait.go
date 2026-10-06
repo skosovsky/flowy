@@ -7,12 +7,13 @@ import (
 	"time"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // NewWaitExecutionStore explicitly enables durable wait registration/discovery
 // on the same aggregate store. It introduces no independently owned scheduler.
 func NewWaitExecutionStore(db DB, profile flowy.WaitCapabilityProfile) (*ExecutionStore, error) {
-	if db == nil || profile.Validate() != nil {
+	if nilvalue.IsNil(db) || profile.Validate() != nil {
 		return nil, flowy.ErrExecutionCapability
 	}
 	return &ExecutionStore{db: db, waitProfile: &profile}, nil

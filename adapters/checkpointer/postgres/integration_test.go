@@ -13,8 +13,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
-
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
 )
@@ -55,8 +53,8 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 		t.Fatalf("schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	leaseMgr := pglease.NewLeaseManager(pool)
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
+	leaseMgr := mustPostgresLeaseManager(t, pool)
 	threadID := testThreadID(t)
 
 	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
@@ -94,7 +92,7 @@ func TestOCCConcurrencyConflict(t *testing.T) {
 		t.Fatalf("schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
 	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
 		t.Fatalf("initial save: %v", saveErr)
@@ -122,7 +120,7 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 		t.Fatalf("schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
 	snap := testSnapshot(threadID, 1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
@@ -162,7 +160,7 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 		t.Fatalf("outbox schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
 	snap := testSnapshot(threadID, 1, 42)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
@@ -234,7 +232,7 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 		t.Fatalf("outbox schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
 	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
 		t.Fatalf("initial save: %v", saveErr)
@@ -280,7 +278,7 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 		t.Fatalf("outbox schema: %v", execErr)
 	}
 
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
 	snap := testSnapshot(threadID, 1, 1)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
@@ -367,7 +365,7 @@ func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState
 	if _, execErr := pool.Exec(ctx, OutboxSchemaSQL()); execErr != nil {
 		t.Fatalf("outbox schema: %v", execErr)
 	}
-	cp := NewCheckpointer[runnerHandoffState, flowy.NoEffect](pool, checkpoint.JSONSerializer[runnerHandoffState]{})
+	cp := mustCheckpointer[runnerHandoffState, flowy.NoEffect](t, pool, checkpoint.JSONSerializer[runnerHandoffState]{})
 	return pool, cp
 }
 

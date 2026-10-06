@@ -74,3 +74,46 @@ func TestChildAssertionsInvalidTextRejectBeforeBackend(t *testing.T) {
 		})
 	}
 }
+
+func TestChildDecisionReasonAdmissionBeforeBackend(t *testing.T) {
+	t.Parallel()
+	for _, reason := range []string{"bad\xff", "bad\xe2\x82", "Корректный Unicode", "real \ufffd"} {
+		t.Run(reason, func(t *testing.T) {
+			t.Parallel()
+			// Arrange.
+			group, planErr := PlanChildGroup("parent", "node", 1, childPlanForTest(), map[string]int{"work": 3})
+			if planErr != nil {
+				t.Fatal(planErr)
+			}
+			probe := &childTextBackend{childGroupBackend: nil, calls: 0}
+			ctx := context.WithValue(context.Background(), childGroupContextKey{}, probe)
+			// Act.
+			_, cancelErr := CancelChildren(
+				ctx,
+				group,
+				ChildCancelRequest{ID: "cancel", Reason: reason},
+				func(context.Context, ChildCancelNotice) error { return nil },
+			)
+			_, budgetErr := ReturnChildBudget(
+				ctx,
+				group,
+				ChildBudgetReturn{
+					ChildID:       "a",
+					ChildRevision: 3,
+					DecisionID:    "return",
+					Reason:        reason,
+					Evidence:      "receipt",
+				},
+			)
+			// Assert.
+			if !validRuntimeText(reason) {
+				if !errors.Is(cancelErr, ErrChildJoinInvalid) || !errors.Is(budgetErr, ErrChildJoinInvalid) ||
+					probe.calls != 0 {
+					t.Fatalf("cancel=%v budget=%v calls=%d", cancelErr, budgetErr, probe.calls)
+				}
+			} else if cancelErr != nil || budgetErr != nil || probe.calls != 2 {
+				t.Fatalf("valid reason rejected: cancel=%v budget=%v calls=%d", cancelErr, budgetErr, probe.calls)
+			}
+		})
+	}
+}

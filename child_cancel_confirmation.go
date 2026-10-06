@@ -42,7 +42,7 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 	decision ChildCancelConfirmation) (result ResumeToken, retErr error) {
 	if decision.Node == "" || decision.Activation == 0 || decision.GroupKey == "" || decision.ChildID == "" ||
 		!validRuntimeText(string(decision.Node), decision.GroupKey, decision.ChildID, decision.ExecutionID,
-			decision.RequestID, decision.DecisionID, decision.Evidence) ||
+			decision.RequestID, decision.DecisionID, decision.Reason, decision.Evidence) ||
 		decision.ExecutionID == "" || decision.ChildRevision == 0 || decision.RequestID == "" || decision.DecisionID == "" ||
 		decision.Reason == "" || decision.Evidence == "" {
 		return ResumeToken{}, ErrChildJoinInvalid
@@ -189,6 +189,7 @@ func validChildCancelConfirmation(child ChildRecord) bool {
 	}
 	return child.State == ChildCanceled && child.CancelConfirmed && child.CancelRequested && child.WaitID == "" &&
 		decision.RequestID != "" && decision.DecisionID != "" && decision.Reason != "" && decision.Evidence != "" &&
+		validRuntimeText(decision.RequestID, decision.DecisionID, decision.Reason, decision.Evidence) &&
 		unresolvedCancelableChild(
 			decision.PriorState,
 		) && decision.ChildRevision > 1 && decision.ChildRevision < ^uint64(0) &&

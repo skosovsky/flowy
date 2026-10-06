@@ -79,7 +79,7 @@ func TestLifecyclePersistentRolloverAndCleanupRestart(t *testing.T) {
 				},
 			}
 			descriptor := referenceDescriptor("lifecycle")
-			base := NewExecutionStore(pool)
+			base := mustExecutionStore(t, pool)
 			source, err := persistentReferenceRunner(
 				t,
 				base,
@@ -100,7 +100,7 @@ func TestLifecyclePersistentRolloverAndCleanupRestart(t *testing.T) {
 				t.Fatal("actual pool fault missing")
 			}
 			recoverCtx, recoverPool := racePool(t)
-			recovery := NewExecutionStore(recoverPool)
+			recovery := mustExecutionStore(t, recoverPool)
 			restart := persistentReferenceRunner(t, recovery, descriptor, "node", activity, nil)
 			committedRevision := source.ResumeToken.SnapshotRevision
 			if lostAck {
@@ -148,7 +148,7 @@ func TestLifecyclePersistentRolloverAndCleanupRestart(t *testing.T) {
 			}
 			recoverPool.Close()
 			finalCtx, finalPool := racePool(t)
-			finalStore := NewExecutionStore(finalPool)
+			finalStore := mustExecutionStore(t, finalPool)
 			finalRunner := persistentReferenceRunner(t, finalStore, descriptor, "node", activity, nil)
 			replay, replayErr := finalRunner.Rollover(finalCtx, source.ResumeToken, request)
 			_, missingErr := finalStore.LoadExecution(finalCtx, sourceID)

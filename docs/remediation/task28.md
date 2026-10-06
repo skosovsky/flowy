@@ -314,3 +314,163 @@ Task05 PASS, no open findings, independent helper race count5 PASS 2.970s.
 Reports: `reviews/task05-completeness.md`, `reviews/task05-correctness.md`.
 Task05 accepted for commit `fix: stream collection`; SHA follows in Task06.
 Tasks06–13 and final six-module/backend/installability gates remain pending.
+
+
+## Task 06 contract (before implementation)
+
+Task 05 commit: `714f5ed` (`fix: stream collection`).
+
+F09: snapshot storage admission and decode share a pure metadata validator: nonempty
+UTF-8 ThreadID/execution pointer and positive stored revision. Save chooses its new
+revision before validation; caller snapshot.Revision is not an OCC authority.
+Reject before state codec/cloner, writes, TTL changes or transactional enqueue.
+Memory test helper follows the same identity/revision contract. EncodeRecord
+requires JSON-valid state bytes; Save never calls arbitrary host Unmarshal merely
+to validate headers. PG's JSONB extra wire limits remain explicit and backend
+errors cannot publish a partial head/outbox.
+
+F10: equality/provenance strings must be valid UTF-8 before backend/store/notify
+calls. Do not canonicalize malformed bytes or relax exact replay equality. Cover
+invalid byte/truncated multibyte, real U+FFFD and valid Unicode for wait cancel,
+child cancel and budget-return, including reload and current group assertions.
+Inventory other Reason/Error surfaces: exact recorded fields reject malformed
+text; audit-only runtime error rendering can be lossy and is not an identity.
+
+D36: document each child decision's own namespace and token gate: cancellation
+request replay may redeliver the same notice; budget replay reads the stored return
+without returning units twice; outcome replay uses its recorded addressed decision. Wait-resolution and
+cancellation-confirmation duplicates reject changed child revision; lost ACK is
+resolved by reading the addressed persisted record rather than redispatch. No global UUID ledger or implicit latest token.
+D44: CancelWait deliberately terminates the execution with failure. Rename the
+wait-delivery observation boundary to LifecycleWaitDelivery so unmatched/loser
+observations do not imply a winner. Deadline validation also requires JSON time
+representability, retaining the existing nonzero UTC-offset-zero requirement.
+D54: historical zero revision is ErrInvalidSnapshot; absent/future identity or
+address is ErrThreadNotFound; pruned/deleted known payload is
+ErrExecutionCheckpointUnavailable. Preserve invalid/corrupt envelope and lease
+errors distinctly; adapter signed-range input rejects before SQL conversion.
+D55: constructors reject nil collaborators as configuration/capability errors,
+including typed nil. PG constructors may clean-break to error returns; adapt all
+call sites without compatibility wrappers. Standalone snapshot codecs produce
+JSON, with extra PostgreSQL JSONB string/number limits documented; BYOT describes
+the typed domain, not arbitrary storage bytes.
+D56: positive fractional lease TTL rounds up to native precision (Redis millisecond,
+PG microsecond; memory keeps exact duration). Checkpoint TTL retains its separate
+ceil-millisecond policy. Never wrap/reset a retained fence or published revision:
+signed64 backend exhaustion rejects without mutation, and native unsigned memory
+limits remain explicit. Overflow is a capacity boundary, not an asserted P1.
+
+Acceptance: AAA metadata/codec/no-side-effect tables on memory and Redis, isolated
+live PG head/history/outbox admission checks; exact Unicode replay and rejection
+before store/notification; historical address/error parity; constructor nil/typed
+nil table; fractional TTL and counter-edge tests. Relevant root/adapter race and
+lint plus both independent final-state reviews are required before task06 commit.
+
+
+## Task 06 continuation evidence (partial, unaccepted)
+
+Implemented shared public ValidateSnapshotHeader and used it in EncodeRecord,
+DecodeRecord and MemoryCheckpointer. It checks nonempty UTF-8 ID/pointer and
+positive stored revision before host codec/cloner. Encode rejects non-JSON state
+bytes without invoking Unmarshal. Memory rejects revision wrap. PG SaveWithOutbox
+checks the header and signed revision bound before BeginTx/SQL/enqueue.
+
+Metadata before probe exited 1: all five malformed headers reached Marshal and
+returned nil. Preserved log `/tmp/flowy-task28-task06-metadata-before.log`.
+After implementation, checkpoint/testutil race exited 0 (1.618s/1.588s),
+`/tmp/flowy-task28-task06-metadata.log`; memory healthy-history/cloner admission
+race exited 0 (1.534s), `/tmp/flowy-task28-task06-memory-admission.log`; Redis
+healthy head/history/TTL/key-set admission race exited 0 (1.491s); PG unit
+header-before-BeginTx/enqueue race exited 0 (1.657s),
+`/tmp/flowy-task28-task06-pg-admission-unit.log`. PG unit is not a live-backend gate.
+An accidentally root-scoped PG test command was interrupted (exit130) and was
+replaced by the correct separate-module command; it is not counted as PASS.
+
+Reason before probes exited 1: malformed UTF-8 reached child backend twice and
+wait/activity/confirmation storage three times. Preserved log
+`/tmp/flowy-task28-task06-text-before.log`. Guards now cover wait cancellation,
+child cancellation/budget return, manual activity/cancel confirmation and child
+wait Result.Error; record/group text checks preserve equality/provenance. Real
+U+FFFD and valid Unicode pass the child boundary probe. Wait Deadline now rejects
+non-JSON time domain. After these guards, targeted root race exited 0 (1.942s),
+`/tmp/flowy-task28-task06-text.log`; root lint exited 0, 0 issues,
+`/tmp/flowy-task28-task06-lint-progress.log`; diff check PASS.
+
+Still required before accepting/committing Task06: isolated live PG head/history/
+outbox admission, malformed JSON/codec domains and constructor nil/typed-nil clean
+break plus all call-site updates; actual Unicode exact replay after reload for
+wait/child cancellation and budget return; D36 namespace table and relevant
+conformance tests; D44 observation rename and time-domain tests; D54 memory/PG
+historical address/error parity; D56 fractional TTL and counter exhaustion tests;
+final relevant-module race/lint and two independent Task06 reviews. Current
+changes are uncommitted and no Task06 acceptance is claimed. Tasks07–13 remain
+pending, as do the final six-module/backend/installability/release gates.
+
+## Task 06 final-state review preparation (not yet accepted)
+
+The nil/typed-nil constructor contract is implemented across core, checkpoint,
+Redis and PostgreSQL. PostgreSQL constructors and WithSanitizer now return
+errors; all Go call sites are adapted without production compatibility wrappers.
+Historical LoadCheckpoint zero/missing/future/pruned/deleted errors are aligned;
+PostgreSQL rejects signed-range addresses before SQL. Lease TTL rounds upward
+to native precision; memory revision/fence wrap and signed backend exhaustion
+reject without mutation. LifecycleWaitDelivery replaces the old winner-named
+observation, including the live blueprint metric expectation. Deadline admission
+rejects negative and five-digit years.
+
+Added complete Unicode/malformed-byte admission and serialized reload tests for
+wait cancellation, child cancellation and budget returns, including literal
+U+FFFD. Added JSON codec admission, constructor nil tables, native TTL SQL-argument
+probes and retained-counter exhaustion tests. Current contracts are in
+`docs/storage-admission.md` and `docs/decision-namespaces.md`, linked from the
+runtime contract. Two existing telemetry corruption fixtures now inject invalid
+pointers at Load: valid Save must not be weakened to seed corruption.
+
+Parent completed checks (exit0, no skipped live gates):
+- Root full fresh race: `/tmp/flowy-task28-task06-root-race-final.log`.
+- Four adapter unit race: module1-race-final and module2/3/4-race logs;
+  durable_agent unit build: module5-race log (no tests without integration tag).
+- Six-module lint: root-lint-final, pg-lint-final and module2/3/4/5-lint logs,
+  each 0 issues.
+- Actual disposable PostgreSQL17 metadata admission, JSONB rejection rollback,
+  historical errors and both signed-fence exhaustion paths: PG boundaries live
+  log; actual Redis7 Lua exhaustion and same-owner fencing: redis-live log.
+- Exact Unicode replay/JSON time-domain targeted root race: replay-final-progress
+  log. Controlled Redis TTL, PG SQL TTL arguments and exact memory TTL are tested
+  separately from live wall-clock scheduling.
+
+Preserved non-PASS attempts: first root suite rejected the old invalid-pointer
+Save seeds; first PG unit suite had a mistaken sentinel name; lint initially
+reported test-matrix complexity, embedded-field spacing and an integration-only
+helper in untagged test code. These were fixed; their logs remain. An accidentally
+root-scoped PG command is not backend evidence.
+
+Task06 independent reviewers `/root/task06_completeness` and
+`/root/task06_correctness` are reviewing the final implementation; no acceptance
+or commit is claimed. Parent full PostgreSQL tagged suite and live durable_agent
+blueprint are still running. Tasks07–13 remain pending.
+
+Parent final live gates finished (exit0): full tagged PostgreSQL race 43.697s,
+`/tmp/flowy-task28-task06-pg-integration-final.log`; actual PostgreSQL durable_agent
+blueprint race 3.021s, `/tmp/flowy-task28-task06-blueprint-final.log`.
+Independent reviewers have reported targeted root/native-backend PASS while
+completing source review; their final verdicts are still pending.
+
+## Task 06 accepted
+
+Completeness reviewer `/root/task06_completeness`: final 100% (7/7), no open
+findings; final test-only edits and completed tagged lint gates verified.
+Correctness reviewer `/root/task06_correctness`: final PASS, errors not found,
+no open findings; after the final edits independently repeated actual PG
+boundaries/JSONB race (2.074s), Redis live race (1.923s) and PG blueprint race
+(3.480s). Reports: `reviews/task06-completeness.md` and
+`reviews/task06-correctness.md`. Earlier reports and failures are historical
+evidence; both reviewers accepted the final diff.
+
+Additional tagged lint final gates: PG and Redis `tagged0/1-lint-final.log`,
+blueprint `tagged2-lint-accepted.log`, each completion exit0 and 0 issues.
+The initial tagged lint findings were only test shadow names, blueprint condition
+formatting and scenario-helper complexity; fixed without weakening assertions.
+No current runtime, adapter, blueprint or review gate remains open for Task06.
+Task06 commit message: `fix: storage admission`; SHA recorded in the following
+journal update. Tasks07–13 and the overall final acceptance remain pending.

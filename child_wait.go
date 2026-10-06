@@ -39,7 +39,7 @@ func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token Resume
 	resolution ChildWaitResolution) (result ResumeToken, retErr error) {
 	if resolution.Node == "" || resolution.Activation == 0 || resolution.GroupKey == "" || resolution.ChildID == "" ||
 		!validRuntimeText(string(resolution.Node), resolution.GroupKey, resolution.ChildID, resolution.ExecutionID,
-			resolution.WaitID, resolution.DecisionID) ||
+			resolution.WaitID, resolution.DecisionID, resolution.Result.Error) ||
 		resolution.ExecutionID == "" || resolution.ChildRevision == 0 || resolution.WaitID == "" || resolution.DecisionID == "" ||
 		(resolution.Result.State != ChildCompleted && resolution.Result.State != ChildFailed) || resolution.Result.WaitID != "" {
 		return ResumeToken{}, ErrChildJoinInvalid
@@ -153,6 +153,7 @@ func validChildWaitResolution(child ChildRecord) bool {
 		return true
 	}
 	return decision.WaitID != "" && decision.DecisionID != "" && decision.SourceRevision > 0 &&
+		validRuntimeText(decision.WaitID, decision.DecisionID, child.Error) &&
 		decision.Incarnation > 0 &&
 		!decision.At.IsZero() &&
 		decision.ChildRevision > 2 &&

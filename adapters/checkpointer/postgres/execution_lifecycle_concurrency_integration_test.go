@@ -19,7 +19,7 @@ func TestLifecyclePersistentConcurrentResumeForkInspectionAndCleanup(t *testing.
 		t.Fatal(err)
 	}
 	otherCtx, otherPool := racePool(t)
-	base, other := NewExecutionStore(pool), NewExecutionStore(otherPool)
+	base, other := mustExecutionStore(t, pool), mustExecutionStore(t, otherPool)
 	var calls, projections, fakeCalls atomic.Int32
 	descriptor := referenceDescriptor("concurrency")
 	activity := flowy.ActivityRequest{
@@ -159,7 +159,7 @@ func TestLifecyclePersistentConcurrentResumeForkInspectionAndCleanup(t *testing.
 	pool.Close()
 	otherPool.Close()
 	finalCtx, finalPool := racePool(t)
-	finalStore := NewExecutionStore(finalPool)
+	finalStore := mustExecutionStore(t, finalPool)
 	retained, retainedErr := finalStore.LoadExecution(finalCtx, fork.ThreadID)
 	_, missingSource := finalStore.LoadCheckpoint(finalCtx, before.ExecutionID, before.Revision)
 	_, missingCreation := finalStore.LoadCheckpoint(finalCtx, fork.ThreadID, forkCreation.Revision)

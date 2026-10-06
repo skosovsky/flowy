@@ -117,7 +117,7 @@ func TestChildNonCooperativeCancellationPersistentRecoveryFencesLiveOldConnectio
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	oldStore := &postgresLateChildStore{ExecutionStore: NewExecutionStore(pool), late: make(chan error, 1)}
+	oldStore := &postgresLateChildStore{ExecutionStore: mustExecutionStore(t, pool), late: make(chan error, 1)}
 	gate := make(chan struct{})
 	defer func() {
 		select {
@@ -137,7 +137,7 @@ func TestChildNonCooperativeCancellationPersistentRecoveryFencesLiveOldConnectio
 	}
 	// Act: independent pool owns recovery/confirmation; the old database connection stays live.
 	recoveryCtx, recoveryPool := racePool(t)
-	recoveryStore := NewExecutionStore(recoveryPool)
+	recoveryStore := mustExecutionStore(t, recoveryPool)
 	runner := postgresChildNodeRunner(t, recoveryStore, recoveredPostgresChildNode(&calls))
 	second, err := runner.Resume(recoveryCtx, first.ResumeToken)
 	group := postgresStoredChildGroup(recoveryCtx, t, recoveryStore, id)

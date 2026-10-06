@@ -122,5 +122,5 @@ func TestManualWaitCommitLeaseLossRestoresCarrierAndReleasesBeforeObserver(t *te
 	if event.SourceRevision != delivery.ExpectedRevision || event.Node != "waiting" || event.LeaseIncarnation == 0 {
 		t.Fatalf("manual source address: %+v", event)
 	}
-	assertNoAcknowledgedOutcome(t, observer.snapshot(), flowy.LifecycleWaitWinner)
+	assertNoAcknowledgedOutcome(t, observer.snapshot(), flowy.LifecycleWaitDelivery)
 }

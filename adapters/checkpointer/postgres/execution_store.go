@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 const (
@@ -53,7 +57,12 @@ type ExecutionStore struct {
 }
 
 // NewExecutionStore binds a durable store to a transaction-capable database.
-func NewExecutionStore(db DB) *ExecutionStore { return &ExecutionStore{db: db, waitProfile: nil} }
+func NewExecutionStore(db DB) (*ExecutionStore, error) {
+	if nilvalue.IsNil(db) {
+		return nil, flowy.ErrExecutionCapability
+	}
+	return &ExecutionStore{db: db, waitProfile: nil}, nil
+}
 
 func (s *ExecutionStore) LoadExecution(ctx context.Context, executionID string) (flowy.ExecutionEnvelope, error) {
 	return loadAnchoredEnvelope(s.db.QueryRow(ctx, `
@@ -70,6 +79,9 @@ func (s *ExecutionStore) LoadCheckpoint(
 	if revision == 0 {
 		return flowy.ExecutionEnvelope{}, flowy.ErrInvalidSnapshot
 	}
+	if revision > math.MaxInt64 {
+		return flowy.ExecutionEnvelope{}, flowy.ErrExecutionCapability
+	}
 	return loadAnchoredEnvelope(s.db.QueryRow(ctx, `
 SELECT @revision::bigint,h.payload,e.fork_lineage,e.rollover_incoming,e.rollover_outgoing,e.payload_deleted
 FROM flowy_executions e LEFT JOIN flowy_execution_history h
@@ -84,7 +96,11 @@ func (s *ExecutionStore) CommitExecution(
 	lease flowy.ExecutionLease,
 	envelope flowy.ExecutionEnvelope,
 ) (flowy.ExecutionEnvelope, error) {
-	if lease.Incarnation == 0 || lease.Owner == "" || envelope.ExecutionID != lease.ExecutionID {
+	if expectedRevision >= math.MaxInt64 {
+		return flowy.ExecutionEnvelope{}, flowy.ErrExecutionCapability
+	}
+	if lease.Incarnation == 0 || lease.Incarnation > math.MaxInt64 || lease.Owner == "" ||
+		envelope.ExecutionID != lease.ExecutionID {
 		return flowy.ExecutionEnvelope{}, flowy.ErrLeaseLost
 	}
 	if validationErr := envelope.Descriptor.Validate(); validationErr != nil {
@@ -226,7 +242,7 @@ func (s *ExecutionStore) AcquireExecution(
 UPDATE flowy_executions SET fence=fence+1, lease_owner=@owner,
 lease_expiry=clock_timestamp()+(@ttl::double precision * INTERVAL '1 second')
 WHERE execution_id=@execution_id AND (lease_expiry IS NULL OR lease_expiry<=clock_timestamp())
-RETURNING fence,lease_expiry`, pgx.NamedArgs{executionIDArgument: executionID, executionOwnerArgument: owner, "ttl": ttl.Seconds()}).Scan(&lease.Incarnation, &lease.ExpiresAt)
+RETURNING fence,lease_expiry`, pgx.NamedArgs{executionIDArgument: executionID, executionOwnerArgument: owner, "ttl": leaseTTLSeconds(ttl)}).Scan(&lease.Incarnation, &lease.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		var holder string
 		// The refused UPDATE observed contention, but the owner may release before
@@ -242,6 +258,10 @@ RETURNING fence,lease_expiry`, pgx.NamedArgs{executionIDArgument: executionID, e
 		return flowy.ExecutionLease{}, flowy.ErrLeaseHeld
 	}
 	if err != nil {
+		var storageErr *pgconn.PgError
+		if errors.As(err, &storageErr) && storageErr.Code == "22003" {
+			return flowy.ExecutionLease{}, fmt.Errorf("%w: %w", flowy.ErrExecutionCapability, err)
+		}
 		return flowy.ExecutionLease{}, err
 	}
 	if commitErr := tx.Commit(ctx); commitErr != nil {
@@ -255,13 +275,14 @@ func (s *ExecutionStore) RenewExecution(
 	lease flowy.ExecutionLease,
 	ttl time.Duration,
 ) (flowy.ExecutionLease, error) {
-	if ttl <= 0 || lease.Incarnation == 0 {
+	if ttl <= 0 || lease.Incarnation == 0 || lease.Incarnation > math.MaxInt64 || lease.ExecutionID == "" ||
+		lease.Owner == "" {
 		return flowy.ExecutionLease{}, flowy.ErrLeaseLost
 	}
 	err := s.db.QueryRow(ctx, `
 UPDATE flowy_executions SET lease_expiry=clock_timestamp()+(@ttl::double precision * INTERVAL '1 second')
 WHERE execution_id=@execution_id AND lease_owner=@owner AND fence=@fence AND lease_expiry>clock_timestamp()
-RETURNING lease_expiry`, pgx.NamedArgs{executionIDArgument: lease.ExecutionID, executionOwnerArgument: lease.Owner, executionFenceArgument: lease.Incarnation, "ttl": ttl.Seconds()}).Scan(&lease.ExpiresAt)
+RETURNING lease_expiry`, pgx.NamedArgs{executionIDArgument: lease.ExecutionID, executionOwnerArgument: lease.Owner, executionFenceArgument: lease.Incarnation, "ttl": leaseTTLSeconds(ttl)}).Scan(&lease.ExpiresAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return flowy.ExecutionLease{}, flowy.ErrLeaseLost
 	}
@@ -269,7 +290,7 @@ RETURNING lease_expiry`, pgx.NamedArgs{executionIDArgument: lease.ExecutionID, e
 }
 
 func (s *ExecutionStore) ReleaseExecution(ctx context.Context, lease flowy.ExecutionLease) error {
-	if lease.Incarnation == 0 {
+	if lease.Incarnation == 0 || lease.Incarnation > math.MaxInt64 || lease.ExecutionID == "" || lease.Owner == "" {
 		return flowy.ErrLeaseLost
 	}
 	tag, err := s.db.Exec(
@@ -352,3 +373,12 @@ func validateStoredForkAnchor(envelope flowy.ExecutionEnvelope, payload []byte) 
 }
 
 var _ flowy.ExecutionStore = (*ExecutionStore)(nil)
+
+// PostgreSQL timestamp/interval precision is microseconds.
+func leaseTTLSeconds(ttl time.Duration) float64 {
+	micros := ttl.Microseconds()
+	if ttl%time.Microsecond != 0 {
+		micros++
+	}
+	return float64(micros) / float64(time.Second/time.Microsecond)
+}

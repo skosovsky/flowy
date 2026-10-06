@@ -18,6 +18,7 @@ import (
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 	"github.com/skosovsky/flowy/internal/rediskeys"
 )
 
@@ -86,16 +87,15 @@ func NewCheckpointer[T, E any](
 	opts Options,
 	serializer flowy.StateSerializer[T],
 ) (*Checkpointer[T, E], error) {
-	if client == nil || opts.TTL < 0 || !utf8.ValidString(opts.Prefix) || !utf8.ValidString(opts.LeasePrefix) {
+	if nilvalue.IsNil(client) || nilvalue.IsNil(serializer) || opts.TTL < 0 || !utf8.ValidString(opts.Prefix) ||
+		!utf8.ValidString(opts.LeasePrefix) {
 		return nil, ErrConfiguration
 	}
 	switch client.(type) {
 	case *goredis.ClusterClient, *goredis.Ring:
 		return nil, ErrDeploymentUnsupported
 	}
-	if standalone, ok := client.(*goredis.Client); ok && standalone == nil {
-		return nil, ErrConfiguration
-	}
+
 	prefix := opts.Prefix
 	if prefix == "" {
 		prefix = defaultPrefix

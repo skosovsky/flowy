@@ -27,7 +27,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 			dispatches.Add(1)
 			return nil, errors.New("ambiguous delivery")
 		}}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	oldDescriptor := referenceDescriptor("old")
 	old := persistentReferenceRunner(t, store, oldDescriptor, "old-node", request, nil)
 	if _, err := old.Start(ctx, id, intState{}); !errors.Is(err, flowy.ErrActivityUnknown) {
@@ -47,7 +47,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 			state.JournalReferences = map[string]string{"operation": entry.Identity}
 			return state, nil
 		}}
-	migratedStore := NewExecutionStore(migratePool)
+	migratedStore := mustExecutionStore(t, migratePool)
 	target := persistentReferenceRunner(
 		t,
 		migratedStore,
@@ -69,7 +69,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 	operatorCtx, operatorPool := racePool(t)
 	operator := persistentReferenceRunner(
 		t,
-		NewExecutionStore(operatorPool),
+		mustExecutionStore(t, operatorPool),
 		targetDescriptor,
 		"new-node",
 		request,
@@ -94,7 +94,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 	}
 	operatorPool.Close()
 	replayCtx, replayPool := racePool(t)
-	replayedStore := NewExecutionStore(replayPool)
+	replayedStore := mustExecutionStore(t, replayPool)
 	replayed := persistentReferenceRunner(t, replayedStore, targetDescriptor, "new-node", request, nil)
 	handle, err := replayed.ResumeStream(replayCtx, token)
 	if err != nil {

@@ -83,13 +83,13 @@ func TestChildOutcomeResolutionPersistentRestart(t *testing.T) {
 				calls.Add(1)
 				return remote, nil
 			}
-			fault := &activityPoolFaultStore{ExecutionStore: NewExecutionStore(pool), pool: pool, failAt: 5}
+			fault := &activityPoolFaultStore{ExecutionStore: mustExecutionStore(t, pool), pool: pool, failAt: 5}
 			result, startErr := postgresChildOutcomeRunner(t, fault, dispatch, &merges).Start(ctx, id, intState{})
 			if startErr == nil || result == nil || calls.Load() != 1 || merges.Load() != 0 {
 				t.Fatalf("fault result=%+v err=%v calls=%d merges=%d", result, startErr, calls.Load(), merges.Load())
 			}
 			restartCtx, restartPool := racePool(t)
-			store := NewExecutionStore(restartPool)
+			store := mustExecutionStore(t, restartPool)
 			source, err := store.LoadExecution(restartCtx, id)
 			if err != nil {
 				t.Fatal(err)
@@ -129,11 +129,11 @@ func TestChildOutcomeResolutionPersistentRestart(t *testing.T) {
 			joinCtx, joinPool := racePool(t)
 			joined, joinErr := postgresChildOutcomeRunner(
 				t,
-				NewExecutionStore(joinPool),
+				mustExecutionStore(t, joinPool),
 				dispatch,
 				&merges,
 			).Resume(joinCtx, resolved)
-			latest, loadErr := NewExecutionStore(joinPool).LoadExecution(joinCtx, id)
+			latest, loadErr := mustExecutionStore(t, joinPool).LoadExecution(joinCtx, id)
 			// Assert: durable decision/join survive independent connections; one remote dispatch total.
 			if joinErr != nil || loadErr != nil || joined.Status != flowy.RunStatusCompleted ||
 				joined.State.Value != len(remote.Payload) ||

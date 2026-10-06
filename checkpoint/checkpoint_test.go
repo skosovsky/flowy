@@ -151,9 +151,12 @@ func TestDecodeRecordRejectsExpectedMetadataMismatch(t *testing.T) {
 
 func TestWithSanitizer(t *testing.T) {
 	t.Parallel()
-	serializer := WithSanitizer(JSONSerializer[state]{}, func(s *state) {
+	serializer, constructorErr := WithSanitizer(JSONSerializer[state]{}, func(s *state) {
 		s.Value = "sanitized"
 	})
+	if constructorErr != nil {
+		t.Fatal(constructorErr)
+	}
 	data, err := serializer.Marshal(state{Value: "raw"})
 	if err != nil {
 		t.Fatalf("marshal: %v", err)

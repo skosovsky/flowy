@@ -41,7 +41,7 @@ func CancelChildren(ctx context.Context, group ChildGroupRecord, request ChildCa
 	if !ok {
 		return ChildGroupRecord{}, ErrExecutionCapability
 	}
-	if request.ID == "" || !validRuntimeText(request.ID) || request.Reason == "" || notify == nil ||
+	if request.ID == "" || !validRuntimeText(request.ID, request.Reason) || request.Reason == "" || notify == nil ||
 		!validChildGroupText(group) {
 		return ChildGroupRecord{}, ErrChildJoinInvalid
 	}
@@ -161,7 +161,7 @@ func validChildCancellation(group ChildGroupRecord) bool {
 	}
 	if request == nil || request.ID == "" || request.Reason == "" || request.SourceRevision == 0 ||
 		request.Incarnation == 0 ||
-		request.At.IsZero() {
+		request.At.IsZero() || !validRuntimeText(request.ID, request.Reason) {
 		return false
 	}
 	for _, child := range group.Children {

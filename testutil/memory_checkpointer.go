@@ -4,6 +4,7 @@ package testutil
 import (
 	"context"
 	"maps"
+	"math"
 	"sync"
 
 	"github.com/skosovsky/flowy"
@@ -52,6 +53,16 @@ func (m *MemoryCheckpointer[T, E]) Save(
 	expectedRevision uint64,
 	snapshot flowy.Snapshot[T, E],
 ) (uint64, error) {
+	if expectedRevision == math.MaxUint64 {
+		return 0, flowy.ErrExecutionCapability
+	}
+	if err := flowy.ValidateSnapshotHeader(
+		snapshot.ThreadID,
+		expectedRevision+1,
+		snapshot.ExecutionPointer,
+	); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

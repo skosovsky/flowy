@@ -101,7 +101,7 @@ func TestActivityRetryPersistentRestart(t *testing.T) {
 	}
 	id := testThreadID(t)
 	at := time.Date(2026, time.October, 4, 0, 0, 0, 0, time.UTC)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls atomic.Int32
 	runner := postgresRetryRunner(t, store, at, &calls)
 	// Act: commit retry, discard the pool, then resume using independent connections.
@@ -116,7 +116,7 @@ func TestActivityRetryPersistentRestart(t *testing.T) {
 	}
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	restarted := postgresRetryRunner(t, restartedStore, at, &calls)
 	blocked, blockedErr := restarted.Resume(restartCtx, failed.ResumeToken)
 	// Assert: no dispatch or journal mutation before the persisted deadline.

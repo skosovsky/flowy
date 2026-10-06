@@ -89,12 +89,12 @@ func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *test
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
 		t.Fatal(err)
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	base := testThreadID(t)
 	source, latest := seedPersistentForkSource(ctx, t, store, base+"source")
 	pool.Close()
 	forkCtx, forkPool := racePool(t)
-	forkStore := NewExecutionStore(forkPool)
+	forkStore := mustExecutionStore(t, forkPool)
 	var nodes, live, fake atomic.Int32
 	readonly := pgForkRunner(t, forkStore, nil, &nodes, &live)
 	request := flowy.ForkRequest{Source: flowy.HistoricalCheckpointReference{ExecutionID: source.ExecutionID,
@@ -113,7 +113,7 @@ func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *test
 	}
 	forkPool.Close()
 	recoveryCtx, recoveryPool := racePool(t)
-	recovered := NewExecutionStore(recoveryPool)
+	recovered := mustExecutionStore(t, recoveryPool)
 	_, denied := pgForkRunner(t, recovered, nil, &nodes, &live).Resume(recoveryCtx, token)
 	if !errors.Is(denied, flowy.ErrForkPolicy) || nodes.Load() != 0 {
 		t.Fatalf("restart forgot fake policy: %v", denied)

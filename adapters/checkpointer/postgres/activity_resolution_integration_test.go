@@ -70,7 +70,7 @@ func TestManualActivityResolutionPersistentRestart(t *testing.T) {
 		}
 		return runner
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	failed, startErr := bind(store).Start(ctx, id, intState{})
 	if failed == nil || !errors.Is(startErr, flowy.ErrActivityUnknown) {
 		t.Fatalf("unknown missing: %+v %v", failed, startErr)
@@ -104,7 +104,7 @@ func TestManualActivityResolutionPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(resolvePool.Close)
-	token, err := bind(NewExecutionStore(resolvePool)).ResolveActivity(ctx, failed.ResumeToken, resolution)
+	token, err := bind(mustExecutionStore(t, resolvePool)).ResolveActivity(ctx, failed.ResumeToken, resolution)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +117,7 @@ func TestManualActivityResolutionPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restartPool.Close)
-	restarted := NewExecutionStore(restartPool)
+	restarted := mustExecutionStore(t, restartPool)
 	result, err := bind(restarted).Resume(ctx, token)
 	// Assert: original unknown attempt and manual evidence survive both restarts.
 	if err != nil || result.State.Value != 1 || calls.Load() != 1 {

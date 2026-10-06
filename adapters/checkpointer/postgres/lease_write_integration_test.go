@@ -11,7 +11,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/skosovsky/flowy"
-	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
@@ -19,8 +18,8 @@ func TestSnapshotAndOutboxWriteRejectStaleLease(t *testing.T) {
 	// Arrange: takeover without a checkpoint advance makes OCC alone insufficient.
 	ctx, pool := racePool(t)
 	id := testThreadID(t)
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
-	manager := pglease.NewLeaseManager(pool)
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
+	manager := mustPostgresLeaseManager(t, pool)
 	if _, err := cp.Save(ctx, 0, testSnapshot(id, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
@@ -83,11 +82,11 @@ func TestOutboxExpiryBeforeCommitRollsBack(t *testing.T) {
 		t.Fatal(schemaErr)
 	}
 	id := testThreadID(t)
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	if _, err := cp.Save(ctx, 0, testSnapshot(id, 1, 1)); err != nil {
 		t.Fatal(err)
 	}
-	lease, err := pglease.NewLeaseManager(pool).Acquire(ctx, id, "worker", time.Minute)
+	lease, err := mustPostgresLeaseManager(t, pool).Acquire(ctx, id, "worker", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}

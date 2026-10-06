@@ -26,13 +26,13 @@ func TestNativeCheckpointLongIdentitiesNeverAlias(t *testing.T) {
 	prefix := strings.Repeat("x", oldIdentityLength)
 	full, absent := prefix+"different-execution", prefix+"absent"
 	node := strings.Repeat("узел", oldIdentityLength)
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	snapshot := testSnapshot(prefix, 1, 1)
 	snapshot.ExecutionPointer = flowy.ExecutionPointer(node)
 	if _, err := cp.Save(ctx, 0, snapshot); err != nil {
 		t.Fatal(err)
 	}
-	manager := pglease.NewLeaseManager(pool)
+	manager := mustPostgresLeaseManager(t, pool)
 	lease, err := manager.Acquire(ctx, prefix, strings.Repeat("owner", oldIdentityLength), time.Minute)
 	if err != nil {
 		t.Fatal(err)

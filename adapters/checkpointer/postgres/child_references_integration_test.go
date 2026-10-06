@@ -63,7 +63,7 @@ func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var dispatches, merges atomic.Int32
 	_, err := postgresChildReferenceRunner(t, store, "old", "old-node", &dispatches, &merges, nil).
 		Start(ctx, id, intState{})
@@ -95,7 +95,7 @@ func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 			return state, nil
 		},
 	}
-	migrationStore := NewExecutionStore(migrationPool)
+	migrationStore := mustExecutionStore(t, migrationPool)
 	pending, err := postgresChildReferenceRunner(t, migrationStore, "new", "new-node", &dispatches, &merges,
 		[]flowy.ExecutionMigration{migration}).Resume(migrationCtx,
 		flowy.ResumeToken{ThreadID: id, SnapshotRevision: source.Revision})
@@ -114,7 +114,7 @@ func resolveMigratedPersistentChild(t *testing.T, token flowy.ResumeToken, index
 ) flowy.ResumeToken {
 	t.Helper()
 	ctx, pool := racePool(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)
 	next, err := runner.ResolveChildWait(ctx, token, postgresChildWaitDecision(group, index))
@@ -134,7 +134,7 @@ func finishMigratedPersistentChildren(t *testing.T, token flowy.ResumeToken, sou
 ) {
 	t.Helper()
 	ctx, pool := racePool(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)
 	next, err := runner.ResolveChildWait(ctx, token, postgresChildWaitDecision(group, 2))

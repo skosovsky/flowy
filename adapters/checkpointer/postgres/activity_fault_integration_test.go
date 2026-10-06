@@ -56,7 +56,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := &activityPoolFaultStore{ExecutionStore: NewExecutionStore(pool), pool: pool,
+	store := &activityPoolFaultStore{ExecutionStore: mustExecutionStore(t, pool), pool: pool,
 		commits: atomic.Int32{}, failAt: failAt}
 	var calls, reconciles atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),
@@ -82,7 +82,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 		t.Fatalf("real outage lost stable classification: %v", startErr)
 	}
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	source, err := restartedStore.LoadExecution(restartCtx, id)
 	if err != nil {
 		t.Fatal(err)
@@ -101,7 +101,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 		}
 		restartPool.Close()
 		resolveCtx, resolvePool := racePool(t)
-		restartedStore = NewExecutionStore(resolvePool)
+		restartedStore = mustExecutionStore(t, resolvePool)
 		restarted = persistentReferenceRunner(t, restartedStore, referenceDescriptor("fault"), "node", request, nil)
 		result, resumeErr = restarted.Resume(resolveCtx, result.ResumeToken)
 		restartCtx = resolveCtx

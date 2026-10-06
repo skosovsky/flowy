@@ -424,7 +424,7 @@ func (s *spyLifecycleObserver) ObserveLifecycle(ctx context.Context, event Lifec
 		s.CheckpointSoftError(ctx, event.ExecutionID, event.Node)
 	case LifecycleExecution, LifecycleTerminal, LifecycleActivity, LifecycleReconcile, LifecycleRetry,
 		LifecycleChildLaunch, LifecycleChildResolve, LifecycleChildJoin, LifecycleChildCancel,
-		LifecycleWaitArm, LifecycleWaitWinner, LifecycleWaitCancel, LifecycleLease,
+		LifecycleWaitArm, LifecycleWaitDelivery, LifecycleWaitCancel, LifecycleLease,
 		LifecycleMigration, LifecycleImport, LifecycleFork, LifecycleRollover, LifecycleRetention:
 		return
 	}

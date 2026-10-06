@@ -29,7 +29,7 @@ func TestChildIntentPersistentRestartWithoutDuplicateGroup(t *testing.T) {
 		FailurePolicy:  flowy.ChildCollectErrors,
 		Children:       []flowy.ChildSpec{{ID: "child", Input: []byte("input")}},
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildIntentRunner(t, store, plan).Start(ctx, id, intState{})
 	if !errors.Is(err, flowy.ErrChildrenUnresolved) || first == nil {
 		t.Fatalf("unjoined parent completed: %v", err)
@@ -40,7 +40,7 @@ func TestChildIntentPersistentRestartWithoutDuplicateGroup(t *testing.T) {
 	}
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	// Act.
 	_, resumeErr := postgresChildIntentRunner(t, restartedStore, plan).Resume(restartCtx, first.ResumeToken)
 	latest, err := restartedStore.LoadExecution(restartCtx, id)

@@ -20,7 +20,7 @@ func TestReplayPolicyPersistentMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	old := flowy.ExecutionDescriptor{
 		GraphID:       "policy-test",
 		GraphRevision: "current",
@@ -66,7 +66,7 @@ func TestReplayPolicyPersistentMigration(t *testing.T) {
 	bind := func(migrations []flowy.ExecutionMigration) *flowy.DurableRunner[intState, flowy.NoEffect] {
 		runner, bindErr := flowy.NewDurableRunner(
 			graph,
-			NewExecutionStore(pool),
+			mustExecutionStore(t, pool),
 			target,
 			checkpoint.JSONSerializer[intState]{},
 			checkpoint.JSONSerializer[[]flowy.NoEffect]{},

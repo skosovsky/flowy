@@ -15,7 +15,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/skosovsky/flowy"
-	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
@@ -93,8 +92,8 @@ func assertAcquireConcurrentOwners(t *testing.T, secondOwner string) {
 	ctx, pool := racePool(t)
 	thread := testThreadID(t)
 	barrier := &lockBarrierDB{Pool: pool, locked: make(chan struct{}), proceed: make(chan struct{})}
-	first := pglease.NewLeaseManager(barrier)
-	second := pglease.NewLeaseManager(pool)
+	first := mustPostgresLeaseManager(t, barrier)
+	second := mustPostgresLeaseManager(t, pool)
 	a, b := make(chan error, 1), make(chan error, 1)
 	go func() { _, err := first.Acquire(ctx, thread, "same-owner", time.Minute); a <- err }()
 	awaitLock(ctx, t, barrier)
@@ -130,7 +129,7 @@ func assertDeleteAcquireOrder(t *testing.T, firstOp string) {
 	// Arrange: a checkpoint, no lease row, independent DB connections.
 	ctx, pool := racePool(t)
 	thread := testThreadID(t)
-	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
+	cp := mustCheckpointer[intState, string](t, pool, checkpoint.JSONSerializer[intState]{})
 	if _, err := cp.Save(ctx, 0, testSnapshot(thread, 1, 42)); err != nil {
 		t.Fatal(err)
 	}
@@ -139,17 +138,17 @@ func assertDeleteAcquireOrder(t *testing.T, firstOp string) {
 	// Act: stop the first operation after its lock, before its decision.
 	if firstOp == "acquire" {
 		go func() {
-			_, err := pglease.NewLeaseManager(barrier).Acquire(ctx, thread, "B", time.Minute)
+			_, err := mustPostgresLeaseManager(t, barrier).Acquire(ctx, thread, "B", time.Minute)
 			acquired <- err
 		}()
 		awaitLock(ctx, t, barrier)
 		go func() { deleted <- cp.DeleteIfIdle(ctx, thread) }()
 	} else {
-		lockedCP := NewCheckpointer[intState, string](barrier, checkpoint.JSONSerializer[intState]{})
+		lockedCP := mustCheckpointer[intState, string](t, barrier, checkpoint.JSONSerializer[intState]{})
 		go func() { deleted <- lockedCP.DeleteIfIdle(ctx, thread) }()
 		awaitLock(ctx, t, barrier)
 		go func() {
-			_, err := pglease.NewLeaseManager(pool).Acquire(ctx, thread, "B", time.Minute)
+			_, err := mustPostgresLeaseManager(t, pool).Acquire(ctx, thread, "B", time.Minute)
 			acquired <- err
 		}()
 	}

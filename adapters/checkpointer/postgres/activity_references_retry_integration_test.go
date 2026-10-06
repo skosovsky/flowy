@@ -51,7 +51,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 		},
 	}
 	options := flowy.DurableOptions{Owner: "worker", LeaseTTL: time.Minute, Clock: persistedRetryClock{at: now}}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	old := persistentReferenceRunnerOptions(t, store, referenceDescriptor("old"), "old-node", request, options)
 	if _, err := old.Start(ctx, id, intState{}); !errors.Is(err, flowy.ErrActivityRetryPending) {
 		t.Fatal(err)
@@ -70,7 +70,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 			}},
 	}
 	earlyCtx, earlyPool := racePool(t)
-	earlyStore := NewExecutionStore(earlyPool)
+	earlyStore := mustExecutionStore(t, earlyPool)
 	earlyRunner := persistentReferenceRunnerOptions(
 		t,
 		earlyStore,
@@ -93,7 +93,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 	earlyPool.Close()
 	resumeCtx, resumePool := racePool(t)
 	options.Clock, options.Migrations = persistedRetryClock{at: now.Add(time.Hour)}, nil
-	restartedStore := NewExecutionStore(resumePool)
+	restartedStore := mustExecutionStore(t, resumePool)
 	restarted := persistentReferenceRunnerOptions(
 		t,
 		restartedStore,

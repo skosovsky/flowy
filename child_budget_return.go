@@ -38,7 +38,7 @@ func ReturnChildBudget(ctx context.Context, group ChildGroupRecord, claim ChildB
 		return ChildGroupRecord{}, ErrExecutionCapability
 	}
 	if claim.ChildID == "" || claim.ChildRevision == 0 || claim.DecisionID == "" || claim.Reason == "" ||
-		!validRuntimeText(claim.ChildID, claim.DecisionID, claim.Evidence) ||
+		!validRuntimeText(claim.ChildID, claim.DecisionID, claim.Reason, claim.Evidence) ||
 		claim.Evidence == "" || !validChildGroupText(group) {
 		return ChildGroupRecord{}, ErrChildJoinInvalid
 	}
@@ -112,7 +112,7 @@ func validChildBudgetReturns(group ChildGroupRecord) bool {
 			record.Evidence == "" ||
 			record.SourceRevision == 0 ||
 			record.Incarnation == 0 ||
-			record.At.IsZero() {
+			record.At.IsZero() || !validRuntimeText(record.DecisionID, record.Reason, record.Evidence) {
 			return false
 		}
 		returned, err := PlanChildBudgetReturn(child, record.Used)

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/jackc/pgx/v5"
 
@@ -17,6 +18,16 @@ func (c *Checkpointer[T, E]) SaveWithOutbox(
 	snapshot flowy.Snapshot[T, E],
 	enqueueFn func(ctx context.Context, tx flowy.TransactionHandle, savedRevision uint64) error,
 ) (uint64, error) {
+	if expectedRevision >= math.MaxInt64 {
+		return 0, flowy.ErrExecutionCapability
+	}
+	if headerErr := flowy.ValidateSnapshotHeader(
+		snapshot.ThreadID,
+		expectedRevision+1,
+		snapshot.ExecutionPointer,
+	); headerErr != nil {
+		return 0, headerErr
+	}
 	options := pgx.TxOptions{} //nolint:exhaustruct_v5 // driver defaults; isolation is specified explicitly
 	options.IsoLevel = pgx.ReadCommitted
 	tx, err := c.db.BeginTx(ctx, options)

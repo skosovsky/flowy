@@ -117,7 +117,7 @@ func testDiscoveryPublicationFault(t *testing.T, lostAck bool) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fault := NewExecutionStore(discoveryFaultDB{DB: pool, lostAck: lostAck})
+	fault := mustExecutionStore(t, discoveryFaultDB{DB: pool, lostAck: lostAck})
 	// Act: interrupt after actual projection DML or lose acknowledgement after commit.
 	_, err = fault.CommitExecution(ctx, before.Revision, lease, rescheduledWaitEnvelope(t, before, deadline))
 	if err == nil {

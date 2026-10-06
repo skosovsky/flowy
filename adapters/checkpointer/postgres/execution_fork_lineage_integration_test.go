@@ -21,7 +21,7 @@ func TestForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			// Arrange: change stored payload and its seal, but not immutable creation metadata.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, testThreadID(t), &nodes, &live)
 			candidate := before
@@ -57,7 +57,7 @@ func TestForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 			pool.Close()
 			// Act: recover through a fresh pool, with executable fake policy present.
 			recoveryCtx, recoveryPool := racePool(t)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			_, loadErr := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			_, exactErr := recovered.LoadCheckpoint(recoveryCtx, before.ExecutionID, before.Revision)
 			policy := &flowy.ForkExecutionPolicy{
@@ -116,13 +116,13 @@ func TestForkPersistentLineageCannotBeRewrittenUnderValidFence(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			// Arrange: create fork, close its pool, acquire a genuine successor lease.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			base := testThreadID(t)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, base, &nodes, &live)
 			pool.Close()
 			recoveryCtx, recoveryPool := racePool(t)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			candidate, err := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			if err != nil {
 				t.Fatal(err)
