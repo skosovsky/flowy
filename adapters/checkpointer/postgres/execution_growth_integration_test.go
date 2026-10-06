@@ -18,6 +18,7 @@ import (
 
 type pgGrowthStore struct {
 	*ExecutionStore
+
 	commits int
 	written int
 	peak    int
@@ -164,7 +165,7 @@ func BenchmarkPostgresExecutionGrowth(b *testing.B) {
 				b.Run(fmt.Sprintf("rollover=%t/fanout=%t/records=%d", rollover, fanout, records), func(b *testing.B) {
 					b.ReportAllocs()
 					for iteration := range b.N {
-						pgGrowthWorkload(b, ctx, pool, rollover, fanout, records, iteration)
+						pgGrowthWorkload(ctx, b, pool, rollover, fanout, records, iteration)
 					}
 				})
 			}
@@ -173,8 +174,8 @@ func BenchmarkPostgresExecutionGrowth(b *testing.B) {
 }
 
 func pgGrowthWorkload(
-	b *testing.B,
 	ctx context.Context,
+	b *testing.B,
 	pool *pgxpool.Pool,
 	rollover, fanout bool,
 	records, iteration int,

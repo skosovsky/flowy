@@ -47,6 +47,11 @@ func postgresWaitRunner(t *testing.T, store flowy.ExecutionStore, spec flowy.Dur
 		t.Fatal(err)
 	}
 	profile := postgresWaitProfile()
+	if capable, ok := store.(interface {
+		WaitCapabilities() flowy.WaitCapabilityProfile
+	}); ok {
+		profile = capable.WaitCapabilities()
+	}
 	var clock flowy.ExecutionClock
 	if len(clocks) != 0 {
 		clock = clocks[0]
@@ -73,7 +78,9 @@ func TestWaitRegistrationPersistentRestartAndDiscovery(t *testing.T) {
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
 		t.Fatal(err)
 	}
-	store, err := NewWaitExecutionStore(pool, postgresWaitProfile())
+	profile := postgresWaitProfile()
+	profile.Label = testThreadID(t)
+	store, err := NewWaitExecutionStore(pool, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -90,28 +97,32 @@ func TestWaitRegistrationPersistentRestartAndDiscovery(t *testing.T) {
 	}
 	pool.Close()
 	restartCtx, restartPool := racePool(t)
-	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
+	restarted, err := NewWaitExecutionStore(restartPool, profile)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// Act: registration and due discovery use only the fresh pool's committed history.
 	recovered, recoverErr := postgresWaitRunner(t, restarted, postgresWaitSpec(deadline), &calls).
 		Resume(restartCtx, armed.ResumeToken)
-	first, scanErr := restarted.DiscoverDueWaits(restartCtx, deadline, base, 1)
+	first, scanErr := restarted.DiscoverDueWaits(restartCtx, deadline, DiscoveryCursor{}, 1)
 	if scanErr != nil {
 		t.Fatal(scanErr)
 	}
-	second, nextErr := restarted.DiscoverDueWaits(restartCtx, deadline, first.AfterExecutionID, 1)
-	// Assert.
+	// Assert: the index excludes the future head and returns the due generation directly.
 	if recoverErr != nil || recovered.State.Value != 1 || recovered.ResumeToken != armed.ResumeToken ||
-		calls.Load() != 2 || len(first.Waits) != 0 || !first.More || first.AfterExecutionID != base+"01" ||
-		nextErr != nil || len(second.Waits) != 1 || second.Waits[0].Wait.ExecutionID != base+"02" ||
-		second.Waits[0].Revision != armed.ResumeToken.SnapshotRevision ||
-		!second.Waits[0].Wait.Spec.Deadline.Equal(deadline) {
-		t.Fatalf("persistent wait recovery/discovery: recovered=%+v err=%v first=%+v second=%+v next=%v calls=%d",
-			recovered, recoverErr, first, second, nextErr, calls.Load())
+		calls.Load() != 2 || len(first.Waits) != 1 || first.More ||
+		first.Waits[0].Wait.ExecutionID != base+"02" ||
+		first.Waits[0].Revision != armed.ResumeToken.SnapshotRevision ||
+		!first.Waits[0].Wait.Spec.Deadline.Equal(deadline) {
+		t.Fatalf(
+			"persistent indexed discovery: recovered=%+v err=%v page=%+v calls=%d",
+			recovered,
+			recoverErr,
+			first,
+			calls.Load(),
+		)
 	}
-	changed := second.Waits[0].Wait
+	changed := first.Waits[0].Wait
 	changed.Spec.Deadline = changed.Spec.Deadline.Add(time.Hour)
 	if changedErr := restarted.RegisterWait(restartCtx, changed); !errors.Is(changedErr, flowy.ErrWaitConflict) {
 		t.Fatalf("changed registration contract accepted: %v", changedErr)

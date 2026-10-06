@@ -57,6 +57,7 @@ func lifecyclePGRequest(
 	}
 }
 
+//nolint:gocognit // Keep before-commit and lost-ack assertions in one complete rollover and cleanup crash matrix.
 func TestLifecyclePersistentRolloverAndCleanupRestart(t *testing.T) {
 	for _, lostAck := range []bool{false, true} {
 		t.Run(map[bool]string{false: "before commit", true: "lost ack"}[lostAck], func(t *testing.T) {

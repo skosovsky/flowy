@@ -17,6 +17,7 @@ import (
 
 type retentionFaultDB struct {
 	DB
+
 	lostAck bool
 }
 
@@ -30,6 +31,7 @@ func (db retentionFaultDB) BeginTx(ctx context.Context, options pgx.TxOptions) (
 
 type retentionFaultTx struct {
 	pgx.Tx
+
 	lostAck bool
 }
 
@@ -54,6 +56,7 @@ func (tx retentionFaultTx) Commit(ctx context.Context) error {
 	return err
 }
 
+//nolint:gocognit // Keep rollback and committed-deletion assertions together in the actual connection-loss matrix.
 func TestRetentionPersistentInterruptedTransactionAndLostAck(t *testing.T) {
 	for _, lostAck := range []bool{false, true} {
 		t.Run(

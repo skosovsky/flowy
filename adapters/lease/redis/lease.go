@@ -8,13 +8,20 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/rediskeys"
 )
 
 const defaultPrefix = "flowy"
+
+var (
+	ErrConfiguration         = errors.New("flowy redis: invalid standalone configuration")
+	ErrDeploymentUnsupported = errors.New("flowy redis: only standalone deployment supported")
+)
 
 const acquireReplyFields = 3
 
@@ -23,19 +30,31 @@ type Options struct {
 	Prefix string
 }
 
-// LeaseManager stores thread leases at {prefix}:lease:{threadID}.
+// LeaseManager stores fenced leases in standalone Redis key schema v2.
 type LeaseManager struct {
 	client goredis.Cmdable
 	prefix string
 }
 
-// NewLeaseManager creates a Redis-backed lease manager.
-func NewLeaseManager(client goredis.Cmdable, opts Options) *LeaseManager {
+// NewLeaseManager supports only a standalone Redis server. Cmdable wrappers
+// must address the same standalone server; ClusterClient and Ring are rejected.
+func NewLeaseManager(client goredis.Cmdable, opts Options) (*LeaseManager, error) {
+	if client == nil || !utf8.ValidString(opts.Prefix) {
+		return nil, ErrConfiguration
+	}
+	switch client.(type) {
+	case *goredis.ClusterClient, *goredis.Ring:
+		return nil, ErrDeploymentUnsupported
+	}
+	if standalone, ok := client.(*goredis.Client); ok && standalone == nil {
+		return nil, ErrConfiguration
+	}
+
 	prefix := opts.Prefix
 	if prefix == "" {
 		prefix = defaultPrefix
 	}
-	return &LeaseManager{client: client, prefix: prefix}
+	return &LeaseManager{client: client, prefix: prefix}, nil
 }
 
 const acquireScript = `
@@ -171,11 +190,11 @@ func (m *LeaseManager) Holder(ctx context.Context, threadID string) (string, boo
 }
 
 func (m *LeaseManager) leaseKey(threadID string) string {
-	return fmt.Sprintf("%s:lease:%s", m.prefix, threadID)
+	return rediskeys.Key(m.prefix, threadID, "lease")
 }
 
 func (m *LeaseManager) fenceKey(threadID string) string {
-	return fmt.Sprintf("%s:lease-fence:%s", m.prefix, threadID)
+	return rediskeys.Key(m.prefix, threadID, "fence")
 }
 
 func decodeAcquiredLease(threadID, owner string, reply []any) (flowy.ExecutionLease, error) {

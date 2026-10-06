@@ -343,7 +343,10 @@ func TestTerminalRetentionFailureContextCancel(t *testing.T) {
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		// Keep this cancellation fixture inside one admitted node, so scheduling
+		// cannot reach MaxSteps or fill the best-effort stream before cancel.
+		<-ctx.Done()
 		s.Ticks++
 		return s, Completed(), nil
 	})

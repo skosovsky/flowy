@@ -69,46 +69,42 @@ type DueWait struct {
 	Revision uint64
 }
 
-// WaitScanPage uses bounded keyset pagination over execution heads, including
-// non-due heads. Restart scanning from the empty cursor each complete cycle so
-// updates/insertions behind the cursor are observed in the next cycle.
+// WaitScanPage paginates indexed due work. Reset Cursor after a complete cycle
+// so concurrent insertions or reschedules behind it appear in the next cycle.
 type WaitScanPage struct {
-	Waits            []DueWait
-	AfterExecutionID string
-	More             bool
+	Waits       []DueWait
+	Cursor      DiscoveryCursor
+	More        bool
+	Diagnostics []DiscoveryDiagnostic
 }
 
 const maxWaitScanHeads = 500
 
-// DiscoverDueWaits performs no dispatch, lease acquisition, timer acceptance or
-// host decoding. The caller supplies time under the declared clock contract.
+// DiscoverDueWaits observes indexed work and revalidates each authoritative head.
+// It performs no dispatch, lease acquisition or timer acceptance.
 func (s *ExecutionStore) DiscoverDueWaits(ctx context.Context, now time.Time,
-	afterExecutionID string, scanLimit int,
+	cursor DiscoveryCursor, scanLimit int,
 ) (WaitScanPage, error) {
-	if s.waitProfile == nil {
-		return WaitScanPage{}, flowy.ErrExecutionCapability
-	}
-	if now.IsZero() || scanLimit <= 0 || scanLimit > maxWaitScanHeads {
-		return WaitScanPage{}, flowy.ErrWaitInvalid
-	}
-	page := WaitScanPage{Waits: make([]DueWait, 0), AfterExecutionID: afterExecutionID, More: false}
-	position, err := s.scanExecutionHeads(
-		ctx,
-		afterExecutionID,
-		scanLimit,
-		func(envelope flowy.ExecutionEnvelope) error {
-			candidates, candidateErr := s.dueWaitCandidates(envelope, now)
-			if candidateErr != nil {
-				return candidateErr
+	var empty DiscoveryCursor
+	page := WaitScanPage{Waits: make([]DueWait, 0), Cursor: empty, More: false, Diagnostics: nil}
+	position, diagnostics, more, err := s.scanDueCandidates(ctx, now, cursor, scanLimit, "wait",
+		func(envelope flowy.ExecutionEnvelope, candidate dueCandidate) error {
+			waits, inspectErr := s.dueWaitCandidates(envelope, now)
+			if inspectErr != nil {
+				return inspectErr
 			}
-			page.Waits = append(page.Waits, candidates...)
-			return nil
-		},
-	)
+			for _, wait := range waits {
+				if wait.Wait.Generation == candidate.Identity {
+					page.Waits = append(page.Waits, wait)
+					return nil
+				}
+			}
+			return flowy.ErrExecutionCorrupt
+		})
 	if err != nil {
 		return WaitScanPage{}, err
 	}
-	page.AfterExecutionID, page.More = position.AfterExecutionID, position.More
+	page.Cursor, page.Diagnostics, page.More = position, diagnostics, more
 	return page, nil
 }
 

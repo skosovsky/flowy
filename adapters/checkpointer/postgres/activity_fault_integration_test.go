@@ -67,7 +67,8 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 	runner := persistentReferenceRunner(t, store, referenceDescriptor("fault"), "node", request, nil)
 	// Act: interrupt exactly before intent, outcome or step commit and discard original pool/runner.
 	failed, startErr := runner.Start(ctx, id, intState{})
-	if startErr == nil || failed == nil || failed.State.Value != 0 || failed.RunMeta.StepCount != expectedLiveSteps(failAt) ||
+	if startErr == nil || failed == nil || failed.State.Value != 0 ||
+		failed.RunMeta.StepCount != expectedLiveSteps(failAt) ||
 		failed.ResumeToken.SnapshotRevision == 0 ||
 		calls.Load() != initialCalls {
 		t.Fatalf(

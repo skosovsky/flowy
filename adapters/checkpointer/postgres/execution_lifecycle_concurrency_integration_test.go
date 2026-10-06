@@ -172,14 +172,14 @@ func TestLifecyclePersistentConcurrentResumeForkInspectionAndCleanup(t *testing.
 		flowy.DurableOptions{Owner: "worker", LeaseTTL: time.Minute, ForkPolicy: policy},
 	)
 	cached, cachedErr := finalRunner.Resume(finalCtx, simulated.ResumeToken)
-	real, realErr := finalRunner.Resume(finalCtx, transferred.token)
+	continued, realErr := finalRunner.Resume(finalCtx, transferred.token)
 	if retainedErr != nil || retained.Fork == nil || *retained.Fork != *forkCreation.Fork ||
 		!errors.Is(missingSource, flowy.ErrExecutionCheckpointUnavailable) ||
 		!errors.Is(missingCreation, flowy.ErrExecutionCheckpointUnavailable) ||
 		cachedErr != nil ||
 		cached.Status != flowy.RunStatusCompleted ||
 		realErr != nil ||
-		real.Status != flowy.RunStatusCompleted ||
+		continued.Status != flowy.RunStatusCompleted ||
 		fakeCalls.Load() != 1 ||
 		calls.Load() != 2 {
 		t.Fatalf(

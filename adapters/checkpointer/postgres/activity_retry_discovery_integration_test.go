@@ -19,6 +19,7 @@ func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing
 		t.Fatal(err)
 	}
 	profile := postgresWaitProfile()
+	profile.Label = testThreadID(t)
 	store, err := NewWaitExecutionStore(pool, profile)
 	if err != nil {
 		t.Fatal(err)
@@ -51,22 +52,13 @@ func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing
 		t.Fatal(err)
 	}
 	// Act: bounded keyset pages never adopt plain executions or dispatch candidates.
-	plain, err := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, base, 1)
+	due, err := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, DiscoveryCursor{}, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	future, err := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, plain.AfterExecutionID, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	due, err := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, future.AfterExecutionID, 1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Assert.
-	assertRetryDiscoveryPages(t, base, plain, future, due)
-	if plainCalls.Load() != 1 || futureCalls.Load() != 1 || dueCalls.Load() != 1 {
-		t.Fatalf("discovery adopted/dispatched/reset: plain=%+v future=%+v due=%+v", plain, future, due)
+	// Assert: plain and future records never consume due-page capacity.
+	if len(due.Retries) != 1 || due.More || plainCalls.Load() != 1 || futureCalls.Load() != 1 || dueCalls.Load() != 1 {
+		t.Fatalf("indexed discovery adopted/dispatched/reset: %+v", due)
 	}
 	candidate := due.Retries[0]
 	assertDiscoveredRetryContract(t, candidate, armed.ResumeToken, pending)
@@ -79,7 +71,7 @@ func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing
 	if resumeErr != nil || result.State.Value != 1 || dueCalls.Load() != 2 {
 		t.Fatalf("discovered due retry not bounded: %+v err=%v calls=%d", result, resumeErr, dueCalls.Load())
 	}
-	settled, scanErr := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, base+"02", 1)
+	settled, scanErr := restarted.DiscoverDueActivityRetries(restartCtx, pending.Deadline, DiscoveryCursor{}, 1)
 	if scanErr != nil || len(settled.Retries) != 0 {
 		t.Fatalf("completed execution rediscovered: %+v err=%v", settled, scanErr)
 	}
@@ -93,14 +85,6 @@ func assertRetryDiscoveryLeaseReleased(ctx context.Context, t *testing.T, store 
 	}
 	if err = store.ReleaseExecution(ctx, lease); err != nil {
 		t.Fatal(err)
-	}
-}
-
-func assertRetryDiscoveryPages(t *testing.T, base string, plain, future, due ActivityRetryScanPage) {
-	t.Helper()
-	if len(plain.Retries) != 0 || !plain.More || plain.AfterExecutionID != base+"01" || len(future.Retries) != 0 ||
-		future.AfterExecutionID != base+"02" || len(due.Retries) != 1 {
-		t.Fatalf("discovery pagination/profile/deadline mismatch: plain=%+v future=%+v due=%+v", plain, future, due)
 	}
 }
 

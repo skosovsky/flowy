@@ -119,6 +119,12 @@ WHERE execution_id=$3 AND fence=$4 AND lease_owner=$5 AND lease_expiry>clock_tim
 	if tag.RowsAffected() != 1 {
 		return flowy.RolloverReceipt{}, flowy.ErrLeaseLost
 	}
+	if err = replaceDiscoveryProjection(ctx, tx, transferred); err != nil {
+		return flowy.RolloverReceipt{}, err
+	}
+	if err = replaceDiscoveryProjection(ctx, tx, created); err != nil {
+		return flowy.RolloverReceipt{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return flowy.RolloverReceipt{}, err
 	}

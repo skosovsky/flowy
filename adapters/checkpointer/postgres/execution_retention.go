@@ -79,6 +79,9 @@ SELECT count(*),COALESCE(sum(bytes),0) FROM removed`, request.ExecutionID, reque
 			return flowy.ExecutionRetentionReceipt{}, err
 		}
 	}
+	if err = retainDiscoveryProjection(ctx, tx, request); err != nil {
+		return flowy.ExecutionRetentionReceipt{}, err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return flowy.ExecutionRetentionReceipt{}, err
 	}
@@ -147,4 +150,11 @@ func retentionSelection(request flowy.ExecutionRetentionRequest, revision uint64
 		protected[index] = int64(value)
 	}
 	return firstRetained, protected, nil
+}
+
+func retainDiscoveryProjection(ctx context.Context, tx pgx.Tx, request flowy.ExecutionRetentionRequest) error {
+	if !request.Policy.DeletePayload {
+		return nil
+	}
+	return removeDiscoveryProjection(ctx, tx, request.ExecutionID, "")
 }

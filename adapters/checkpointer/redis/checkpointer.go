@@ -7,18 +7,26 @@ package redis
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
+	"github.com/skosovsky/flowy/internal/rediskeys"
 )
 
 const defaultPrefix = "flowy"
+
+var (
+	ErrConfiguration         = errors.New("flowy redis: invalid standalone configuration")
+	ErrDeploymentUnsupported = errors.New("flowy redis: only standalone deployment supported")
+)
 
 const saveOccScript = `
 local activeLease = redis.call('GET', KEYS[2])
@@ -46,7 +54,9 @@ if current ~= expected then
 end
 redis.call('LPUSH', KEYS[1], ARGV[2])
 if tonumber(ARGV[3]) > 0 then
-  redis.call('EXPIRE', KEYS[1], tonumber(ARGV[3]))
+  redis.call('PEXPIRE', KEYS[1], ARGV[3])
+else
+  redis.call('PERSIST', KEYS[1])
 end
 return 1
 `
@@ -56,7 +66,7 @@ type Options struct {
 	Prefix string
 	TTL    time.Duration
 	// LeasePrefix is the Redis key prefix for lease records used by atomic DeleteIfIdle.
-	// Defaults to Prefix when empty. Lease keys: {LeasePrefix}:lease:{threadID}
+	// Defaults to Prefix when empty. Keys use independently encoded v2 identities.
 	LeasePrefix string
 }
 
@@ -69,12 +79,23 @@ type Checkpointer[T, E any] struct {
 	serializer  flowy.StateSerializer[T]
 }
 
-// NewCheckpointer creates a Redis-backed checkpointer.
+// NewCheckpointer creates a standalone-only Redis checkpointer. Cmdable wrappers
+// must address one standalone server; ClusterClient and Ring are unsupported.
 func NewCheckpointer[T, E any](
 	client goredis.Cmdable,
 	opts Options,
 	serializer flowy.StateSerializer[T],
-) *Checkpointer[T, E] {
+) (*Checkpointer[T, E], error) {
+	if client == nil || opts.TTL < 0 || !utf8.ValidString(opts.Prefix) || !utf8.ValidString(opts.LeasePrefix) {
+		return nil, ErrConfiguration
+	}
+	switch client.(type) {
+	case *goredis.ClusterClient, *goredis.Ring:
+		return nil, ErrDeploymentUnsupported
+	}
+	if standalone, ok := client.(*goredis.Client); ok && standalone == nil {
+		return nil, ErrConfiguration
+	}
 	prefix := opts.Prefix
 	if prefix == "" {
 		prefix = defaultPrefix
@@ -89,7 +110,7 @@ func NewCheckpointer[T, E any](
 		leasePrefix: leasePrefix,
 		ttl:         opts.TTL,
 		serializer:  serializer,
-	}
+	}, nil
 }
 
 func (c *Checkpointer[T, E]) Save(
@@ -111,9 +132,9 @@ func (c *Checkpointer[T, E]) Save(
 		return 0, fmt.Errorf("redis checkpoint marshal: %w", err)
 	}
 	key := c.historyKey(snapshot.ThreadID)
-	ttlSec := int64(0)
-	if c.ttl > 0 {
-		ttlSec = int64(c.ttl.Seconds())
+	ttlMillis := c.ttl.Milliseconds()
+	if c.ttl%time.Millisecond != 0 {
+		ttlMillis++
 	}
 	owner, incarnation := "", ""
 	if lease, supplied := flowy.ExecutionLeaseFromContext(ctx); supplied {
@@ -123,7 +144,7 @@ func (c *Checkpointer[T, E]) Save(
 		owner, incarnation = lease.Owner, strconv.FormatUint(lease.Incarnation, 10)
 	}
 	result, err := c.client.Eval(ctx, saveOccScript, []string{key, c.leaseKey(snapshot.ThreadID)},
-		strconv.FormatUint(expectedRevision, 10), string(payload), ttlSec, owner, incarnation,
+		strconv.FormatUint(expectedRevision, 10), string(payload), ttlMillis, owner, incarnation,
 	).Int64()
 	if err != nil {
 		return 0, err
@@ -139,6 +160,9 @@ func (c *Checkpointer[T, E]) Save(
 	}
 	if result == -3 {
 		return 0, checkpoint.ErrInvalidRecord
+	}
+	if result != 1 {
+		return 0, flowy.ErrExecutionCapability
 	}
 	return newRevision, nil
 }
@@ -196,7 +220,7 @@ func (c *Checkpointer[T, E]) Delete(ctx context.Context, threadID string) error 
 
 const deleteIfIdleScript = `
 if redis.call('exists', KEYS[2]) == 1 then
-  return 0
+  return -1
 end
 return redis.call('del', KEYS[1])
 `
@@ -209,13 +233,14 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 	if err != nil {
 		return err
 	}
-	if result == 0 {
-		held, existsErr := c.client.Exists(ctx, c.leaseKey(threadID)).Result()
-		if existsErr == nil && held > 0 {
-			return flowy.ErrThreadLeaseBusy
-		}
+	switch result {
+	case -1:
+		return flowy.ErrThreadLeaseBusy
+	case 0, 1:
+		return nil
+	default:
+		return flowy.ErrExecutionCapability
 	}
-	return nil
 }
 
 func (c *Checkpointer[T, E]) decode(threadID string, raw string) (flowy.Snapshot[T, E], error) {
@@ -256,11 +281,11 @@ func (r redisRecord) checkpointRecord() checkpoint.Record {
 }
 
 func (c *Checkpointer[T, E]) historyKey(threadID string) string {
-	return fmt.Sprintf("%s:thread:%s:history", c.prefix, threadID)
+	return rediskeys.Key(c.prefix, threadID, "history")
 }
 
 func (c *Checkpointer[T, E]) leaseKey(threadID string) string {
-	return fmt.Sprintf("%s:lease:%s", c.leasePrefix, threadID)
+	return rediskeys.Key(c.leasePrefix, threadID, "lease")
 }
 
 // NativeDeleteIfIdle marks atomic delete-if-idle in Redis storage.

@@ -47,7 +47,7 @@ func TestSaveOCCConflict(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	_, err := cp.Save(context.Background(), 0, testSnapshot(2, "stale"))
 	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
@@ -61,7 +61,7 @@ func TestSaveLoadRoundtrip(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[state, string]{
 		ThreadID:         "t1",
 		ExecutionPointer: "n1",
@@ -95,7 +95,7 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[state, string]{
 		ThreadID:         "router-th",
 		ExecutionPointer: "router",
@@ -118,7 +118,7 @@ func TestLoadNoSnapshot(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	_, _, err := cp.Load(context.Background(), "missing")
 	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
@@ -131,7 +131,7 @@ func TestLoadRejectsRecordThreadMismatch(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
 		ThreadID:         "thread-b",
 		Revision:         1,
@@ -163,7 +163,7 @@ func TestGetHistoryRejectsRecordThreadMismatch(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
 		ThreadID:         "thread-b",
 		Revision:         1,
@@ -195,7 +195,7 @@ func TestSaveAfterLargeRevision(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	const largeRevision = uint64(9_007_199_254_740_992)
 	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
 		ThreadID:         "t1",
@@ -252,7 +252,7 @@ func TestGetHistory(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	saveTestSnapshot(t, cp, 1, 2, "v2")
 	history, err := cp.GetHistory(context.Background(), "t1", 10)
@@ -273,7 +273,7 @@ func TestPruneRetainsLatestN(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	saveTestSnapshot(t, cp, 1, 2, "v2")
 	saveTestSnapshot(t, cp, 2, 3, "v3")
@@ -296,9 +296,9 @@ func TestDeleteIfIdleBlockedByLeaseKey(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{Prefix: "flowy"}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{Prefix: "flowy"}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
-	if err := client.Set(context.Background(), "flowy:lease:t1", "worker-a", 0).Err(); err != nil {
+	if err := client.Set(context.Background(), cp.leaseKey("t1"), "worker-a", 0).Err(); err != nil {
 		t.Fatalf("set lease: %v", err)
 	}
 	err := cp.DeleteIfIdle(context.Background(), "t1")
@@ -317,7 +317,7 @@ func TestDeleteIfIdleSucceedsWhenIdle(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {
 		t.Fatalf("delete if idle: %v", err)
@@ -334,11 +334,11 @@ func TestDeleteIfIdleLeasePrefixMismatch(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{
+	cp := mustCheckpointer[state, string](t, client, Options{
 		Prefix:      "app",
 		LeasePrefix: "leases",
 	}, checkpoint.JSONSerializer[state]{})
-	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: "app"})
+	leaseMgr := mustRedisLeaseManager(t, client, redislease.Options{Prefix: "app"})
 
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if _, err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
@@ -360,7 +360,7 @@ func TestPruneDeleteAllWhenRetainNonPositive(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	saveTestSnapshot(t, cp, 0, 1, "v1")
 	if err := cp.Prune(context.Background(), "t1", 0); err != nil {
 		t.Fatalf("prune: %v", err)

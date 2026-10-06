@@ -21,8 +21,8 @@ func TestSnapshotWriteRejectsStaleSameOwnerLease(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
 	ctx := context.Background()
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	manager := redislease.NewLeaseManager(client, redislease.Options{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
+	manager := mustRedisLeaseManager(t, client, redislease.Options{})
 	saveTestSnapshot(t, cp, 0, 1, "original")
 	old, err := manager.Acquire(ctx, "t1", "same-owner", time.Minute)
 	if err != nil {

@@ -63,6 +63,7 @@ func postgresChildOutcomeRunner(t *testing.T, store flowy.ExecutionStore,
 	return r
 }
 
+//nolint:gocognit // Keep unknown-outcome and explicit recovery branches together in this actual pool-restart matrix.
 func TestChildOutcomeResolutionPersistentRestart(t *testing.T) {
 	for _, failed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "completed", true: "failed"}[failed], func(t *testing.T) {
@@ -149,17 +150,7 @@ func TestChildOutcomeResolutionPersistentRestart(t *testing.T) {
 					merges.Load(),
 				)
 			}
-			settled := postgresChildOutcomeGroup(t, latest)
-			provenance := settled.Children[0].OutcomeResolution
-			if len(settled.MergedIDs) != 1 || settled.Children[0].State != remote.State ||
-				settled.Children[0].Revision != 3 ||
-				provenance == nil ||
-				provenance.PriorState != flowy.ChildRunning ||
-				provenance.ChildRevision != 2 ||
-				provenance.SourceRevision != source.Revision ||
-				provenance.Incarnation <= provenance.PriorIncarnation {
-				t.Fatalf("lost provenance: %+v", settled)
-			}
+			assertPostgresChildOutcomeProvenance(t, latest, source.Revision, remote.State)
 		})
 	}
 }
@@ -175,4 +166,24 @@ func postgresChildOutcomeGroup(t *testing.T, envelope flowy.ExecutionEnvelope) f
 	}
 	t.Fatal("missing group")
 	return flowy.ChildGroupRecord{}
+}
+
+func assertPostgresChildOutcomeProvenance(
+	t *testing.T,
+	latest flowy.ExecutionEnvelope,
+	sourceRevision uint64,
+	state flowy.ChildState,
+) {
+	t.Helper()
+	settled := postgresChildOutcomeGroup(t, latest)
+	provenance := settled.Children[0].OutcomeResolution
+	if len(settled.MergedIDs) != 1 || settled.Children[0].State != state ||
+		settled.Children[0].Revision != 3 ||
+		provenance == nil ||
+		provenance.PriorState != flowy.ChildRunning ||
+		provenance.ChildRevision != 2 ||
+		provenance.SourceRevision != sourceRevision ||
+		provenance.Incarnation <= provenance.PriorIncarnation {
+		t.Fatalf("lost provenance: %+v", settled)
+	}
 }

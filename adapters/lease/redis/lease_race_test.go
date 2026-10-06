@@ -42,7 +42,7 @@ func TestStaleLeaseMutationPreservesSuccessor(t *testing.T) {
 			client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
 			t.Cleanup(func() { _ = client.Close() })
 			ctx := context.Background()
-			next := NewLeaseManager(client, Options{})
+			next := mustLeaseManager(t, client, Options{})
 			old, acquireErr := next.Acquire(ctx, "thread", "A", time.Second)
 			if acquireErr != nil {
 				t.Fatal(acquireErr)
@@ -55,7 +55,7 @@ func TestStaleLeaseMutationPreservesSuccessor(t *testing.T) {
 				}
 				barrier.takeover = func() {}
 			}
-			stale := NewLeaseManager(barrier, Options{})
+			stale := mustLeaseManager(t, barrier, Options{})
 			// Act.
 			var err error
 			if operation == "renew" {

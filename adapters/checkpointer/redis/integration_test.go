@@ -24,12 +24,12 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	const prefix = "flowy"
-	cp := NewCheckpointer[state, string](
+	cp := mustCheckpointer[state, string](t,
 		client,
 		Options{Prefix: prefix, LeasePrefix: prefix},
 		checkpoint.JSONSerializer[state]{},
 	)
-	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: prefix})
+	leaseMgr := mustRedisLeaseManager(t, client, redislease.Options{Prefix: prefix})
 
 	if _, err := cp.Save(context.Background(), 0, testSnapshot(1, "v1")); err != nil {
 		t.Fatalf("save: %v", err)
@@ -54,7 +54,7 @@ func TestOCCConcurrencyConflict(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	if _, err := cp.Save(context.Background(), 0, testSnapshot(1, "v1")); err != nil {
 		t.Fatalf("initial save: %v", err)
 	}

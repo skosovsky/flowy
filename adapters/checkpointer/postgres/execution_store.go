@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS flowy_execution_history (
 
 // ExecutionSchemaSQL is the durable aggregate schema. The execution head must
 // survive lease release and retention so a fencing incarnation is never reused.
-func ExecutionSchemaSQL() string { return executionSchema }
+func ExecutionSchemaSQL() string { return executionSchema + discoverySchema }
 
 // ExecutionStore persists raw execution aggregates with atomic revision/fencing
 // validation. Graph, codecs and domain state are supplied by the caller.
@@ -165,6 +165,9 @@ WHERE execution_id=@execution_id AND lease_owner=@owner AND fence=@fence AND lea
 	}
 	if tag.RowsAffected() != 1 {
 		return flowy.ExecutionEnvelope{}, flowy.ErrLeaseLost
+	}
+	if projectionErr := replaceDiscoveryProjection(ctx, tx, envelope); projectionErr != nil {
+		return flowy.ExecutionEnvelope{}, projectionErr
 	}
 	if commitErr := tx.Commit(ctx); commitErr != nil {
 		return flowy.ExecutionEnvelope{}, commitErr

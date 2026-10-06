@@ -79,12 +79,13 @@ func TestForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) 
 			_, loadErr := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			_, exactErr := recovered.LoadCheckpoint(recoveryCtx, before.ExecutionID, before.Revision)
 			_, commitErr := recovered.CommitExecution(recoveryCtx, before.Revision, lease, before)
-			visited := 0
-			_, scanErr := recovered.scanExecutionHeads(recoveryCtx, base+"source", 1,
-				func(flowy.ExecutionEnvelope) error { visited++; return nil })
+			_, scanErr := recovered.validateDueCandidate(
+				recoveryCtx,
+				dueCandidate{ExecutionID: before.ExecutionID, Revision: before.Revision},
+			)
 			// Assert: no callback or new head is acknowledged, and the writer can release.
 			assertForkAnchorErrors(t, loadErr, exactErr, commitErr, scanErr)
-			if visited != 0 || nodes.Load() != 0 || live.Load() != 0 {
+			if nodes.Load() != 0 || live.Load() != 0 {
 				t.Fatal("corrupt anchor reached host code")
 			}
 			if err = recovered.ReleaseExecution(recoveryCtx, lease); err != nil {

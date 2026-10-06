@@ -223,6 +223,14 @@ Native Redis/PostgreSQL snapshot writes also check the live incarnation atomical
 
 Redis checkpoint JSON now stores revision as a canonical decimal string to preserve the entire uint64 range in Lua. Numeric legacy revisions require explicit offline conversion; they are not silently accepted. Corrupt head metadata is rejected without overwriting history, and exhausted revisions cannot wrap to zero.
 
+Redis adapters support one standalone server. Constructors now return an error
+and reject known ClusterClient/Ring configurations. Checkpoint, lease and fence
+keys use injective namespace/ID encoding in key schema v2; drain old workers and
+perform an explicit offline transition preserving fence maxima. Positive
+checkpoint TTL rounds up to milliseconds, TTL zero removes expiry, and negative
+TTL is rejected. See the [storage adapter contract](docs/storage-adapter-contract.md).
+
+
 Durable execution aggregates carry a SHA-256 seal computed after assigning the committed revision, inside the fenced/OCC write. Reads verify the exact execution identity, revision, pointer and content digest; the runtime rechecks custom-store results before codecs, migration callbacks or nodes. Missing seals and corrupt payloads return `ErrExecutionCorrupt`, never “not found” or an implicit upgrade. Unsealed legacy data needs explicit import. The seal detects content corruption; it does not establish semantic compatibility or authenticate writers who can replace both content and digest.
 
 Runtime also validates activity journal structure and attempt/state consistency before recovery, migration or domain decoding. A valid seal does not make a malformed or inconsistent journal executable. Empty journal bytes mean no activities; JSON `null` does not. Reconciliation and manual completion retain the original unknown attempt rather than pretending the remote dispatch completed successfully.
@@ -267,7 +275,7 @@ Durable wait registration is opt-in: configure a `WaitCapabilityProfile` with ex
 
 `DeliverWait(ctx, executionID, delivery, contract)` checks persisted matcher/payload/continuation labels before pure host callbacks. It commits accepted decision, transformed state and selected event/timeout cursor together under OCC/fencing, then returns a recovery token without executing a node. Duplicate replay calls no matcher/codec/transition; a loser adds only its durable decision. Callback/codec/write errors acknowledge no acceptance. Host owns payload decoding, permission checks and redelivery on explicit `ErrWaitNotArmed`/ownership failures.
 
-`CancelWait(ctx, token, request)` atomically stores cancellation ID/reason/evidence and a failed terminal (`durable_wait_canceled`), preserving state and effects without node/codec/remote-cancel calls. The same addressed cancellation replays without a write. Late deliveries record canceled rejection and cannot clear the terminal; Resume returns the persisted failure. This does not prove that remote work stopped. PostgreSQL bounded keyset discovery exposes due waits and prepared activity retries; discovery neither accepts a timer nor acknowledges/dispatches work. The host supplies polling/scheduling, maps transport identities and resumes only from committed recovery tokens. Configure one recovery/retry owner; do not add a competing scheduler for the same execution. See [wait contract](docs/durable-wait-contract.md).
+`CancelWait(ctx, token, request)` atomically stores cancellation ID/reason/evidence and a failed terminal (`durable_wait_canceled`), preserving state and effects without node/codec/remote-cancel calls. The same addressed cancellation replays without a write. Late deliveries record canceled rejection and cannot clear the terminal; Resume returns the persisted failure. This does not prove that remote work stopped. PostgreSQL indexed due discovery exposes waits and prepared activity retries through a profile/clock-bound deadline keyset cursor and authoritative head revalidation; discovery neither accepts a timer nor acknowledges/dispatches work. The host supplies polling/scheduling, maps transport identities and resumes only from committed recovery tokens. Configure one recovery/retry owner; do not add a competing scheduler for the same execution. See [wait contract](docs/durable-wait-contract.md).
 
 ### Durable terminal failures
 
