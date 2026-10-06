@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"time"
 )
@@ -32,7 +33,7 @@ type WaitCancellationRecord struct {
 // execution. Identical addressed cancellation is replayed without another write.
 func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	request WaitCancellation,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) { //nolint:nonamedreturns // Preserve committed result and cleanup error.
 	if token.ThreadID == "" || token.SnapshotRevision == 0 || request.Generation == "" || request.ID == "" ||
 		!validRuntimeText(token.ThreadID, request.Generation, request.ID, request.Evidence) ||
 		request.Reason == "" || request.Evidence == "" {
@@ -45,7 +46,7 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.waitDeliverySource(session.ctx, token.ThreadID, request.Generation)
 	if err != nil {
 		return ResumeToken{}, err

@@ -553,7 +553,7 @@ type RunEvent[T, E any] struct {
 // execution never waits for a consumer. Values are immutable unless WithEventCloners detaches them.
 // terminal RunResult from WaitResult is authoritative.
 //
-// RequestStop: closes the event sink and cancels the in-flight run context (cancelSessionForConsumerStop).
+// RequestStop: closes the event sink and cancels the in-flight run context owned by this handle.
 // Do not call RequestLocalHandoff after RequestStop; the run has already terminated and the API returns
 // [ErrNoActiveExecution]. A terminal event may be dropped after consumer stop; the checkpointer snapshot
 // is the source of truth for terminal state and reason (persist-vs-event semantics).
@@ -608,6 +608,7 @@ var (
 	ErrLeaseOwnerRequired = errors.New(
 		"flowy: WithRunLease owner is required when LeaseManager is configured",
 	)
+	ErrRunCleanup                       = errors.New("flowy: run cleanup failed")
 	ErrLeaseLost                        = errors.New("flowy: thread lease lost or expired")
 	ErrNoActiveExecution                = errors.New("flowy: no active execution to hand off")
 	ErrThreadAlreadyRunning             = errors.New("flowy: thread already has an active in-process execution")

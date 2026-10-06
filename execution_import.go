@@ -59,12 +59,14 @@ type ImportProvenance struct {
 
 // Import creates a new target execution without executing nodes or activities.
 // It never overwrites an existing execution or guesses an old record's format.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) Import(
 	ctx context.Context,
 	id string,
 	source LegacyExecutionSource,
 	importer ExecutionImporter,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) {
 	if importer.ID == "" || importer.Format != source.Format || importer.Transform == nil ||
 		!validRuntimeText(importer.ID) {
 		return ResumeToken{}, ErrExecutionImportInvalid
@@ -80,7 +82,7 @@ func (r *DurableRunner[T, E]) Import(
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	ctx = session.ctx
 	if _, loadErr := r.store.LoadExecution(ctx, id); !errors.Is(loadErr, ErrThreadNotFound) {
 		if loadErr != nil {

@@ -195,12 +195,13 @@ func TestContextCancelSaveHardFailEventConsistency(t *testing.T) {
 		t.Fatalf("compile: %v", err)
 	}
 
+	// Cancel before dispatch so buffer pressure cannot hide the terminal event.
 	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
 	handle, err := g.NewRunner(cp).Stream(ctx, "cancel-save-fail-th", state{})
 	if err != nil {
 		t.Fatalf("stream: %v", err)
 	}
-	cancel()
 
 	events, waitErr := CollectEventsAndWait(context.Background(), handle)
 	if waitErr == nil {
@@ -423,7 +424,7 @@ func TestEventCheckpointFailedCarriesSaveError(t *testing.T) {
 	}
 }
 
-func TestPostRunCleanupRetentionFailureDoesNotFailCompleted(t *testing.T) {
+func TestPostRunCleanupRetentionFailureReportsCompletedOutcome(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -444,8 +445,8 @@ func TestPostRunCleanupRetentionFailureDoesNotFailCompleted(t *testing.T) {
 	}
 
 	res, err := g.NewRunner(cp).Start(context.Background(), "postrun-ret-th", state{})
-	if err != nil {
-		t.Fatalf("postRunCleanup retention must not fail completed run: %v", err)
+	if !errors.Is(err, ErrRunCleanup) {
+		t.Fatalf("completed outcome must report cleanup failure: %v", err)
 	}
 	if res.Status != RunStatusCompleted {
 		t.Fatalf("expected completed, got %s", res.Status)

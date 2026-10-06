@@ -940,118 +940,15 @@ func TestStreamRequestLocalHandoffSaveHardFail(t *testing.T) {
 	}
 }
 
-func assertStreamHandoffDuringLeaseLossRace[T, E any](
-	t *testing.T,
-	handoffErr, waitErr error,
-	events []RunEvent[T, E],
-) {
-	t.Helper()
-	if handoffErr == nil {
-		if waitErr != nil {
-			t.Fatalf("expected nil Wait after successful handoff, got %v", waitErr)
-		}
-		return
-	}
-	if errors.Is(handoffErr, ErrNoActiveExecution) {
-		t.Fatalf(
-			"handoff must not return ErrNoActiveExecution while session may still be active, got %v",
-			handoffErr,
-		)
-	}
-	if !errors.Is(handoffErr, ErrLeaseLost) {
-		t.Fatalf("expected nil or ErrLeaseLost on handoff, got %v", handoffErr)
-	}
-	if !errors.Is(waitErr, ErrLeaseLost) {
-		t.Fatalf("stream Wait: want ErrLeaseLost, got %v", waitErr)
-	}
-	requireTerminalEventReason(t, events, EventFailed, ErrLeaseLost.Error())
-}
-
 func TestStreamRequestLocalHandoffLeaseLost(t *testing.T) {
 	t.Parallel()
-
-	type state struct{ N int }
-
-	leaseOpts := []RunOption[state, NoEffect]{
-		WithRunLease[state, NoEffect]("worker-a", 50*time.Millisecond),
-	}
-
 	t.Run("lease_lost_before_handoff", func(t *testing.T) {
 		t.Parallel()
-		// RequestLocalHandoff before forceLeaseTakeover is intentional: deterministic ordering vs concurrent race.
-
-		lease := NewMemoryLeaseManager()
-		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
-		runner := g.NewRunnerWithOptions(
-			newMemoryCP[state, NoEffect](),
-			[]RunnerOption[state, NoEffect]{
-				WithLeaseManager[state, NoEffect](lease),
-			},
-		)
-
-		handle, err := runner.Stream(
-			context.Background(),
-			"stream-htb-lease-before-th",
-			state{},
-			leaseOpts...)
-		if err != nil {
-			t.Fatalf("stream: %v", err)
-		}
-		out := BeginStreamCollect(handle)
-		<-ready
-		handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-lease-before-th")
-		if errors.Is(handoffErr, ErrNoActiveExecution) {
-			t.Fatalf(
-				"handoff must not return ErrNoActiveExecution while session is active, got %v",
-				handoffErr,
-			)
-		}
-		forceLeaseTakeover(t, lease, "stream-htb-lease-before-th")
-		waitForLeaseTTLExpiry()
-
-		events, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
-		assertStreamHandoffDuringLeaseLossRace(t, handoffErr, waitErr, events)
+		assertControlledHandoffLeaseLoss(t, true, true)
 	})
-
 	t.Run("session_closed_after_lease_lost", func(t *testing.T) {
 		t.Parallel()
-		// Stream Wait may be context.Canceled when RequestStop/consumer teardown races lease loss.
-
-		lease := NewMemoryLeaseManager()
-		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
-		runner := g.NewRunnerWithOptions(
-			newMemoryCP[state, NoEffect](),
-			[]RunnerOption[state, NoEffect]{
-				WithLeaseManager[state, NoEffect](lease),
-			},
-		)
-
-		handle, err := runner.Stream(
-			context.Background(),
-			"stream-htb-lease-after-th",
-			state{},
-			leaseOpts...)
-		if err != nil {
-			t.Fatalf("stream: %v", err)
-		}
-		out := BeginStreamCollect(handle)
-		<-ready
-		forceLeaseTakeover(t, lease, "stream-htb-lease-after-th")
-		waitForLeaseTTLExpiry()
-
-		_, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
-		if waitErr != nil && !errors.Is(waitErr, ErrLeaseLost) &&
-			!errors.Is(waitErr, context.Canceled) {
-			t.Fatalf(
-				"stream Wait: want ErrLeaseLost or context.Canceled after lease loss, got %v",
-				waitErr,
-			)
-		}
-
-		handoffErr := runner.RequestLocalHandoff(context.Background(), "stream-htb-lease-after-th")
-		if !errors.Is(handoffErr, ErrNoActiveExecution) {
-			t.Fatalf("expected ErrNoActiveExecution after session closed, got %v", handoffErr)
-		}
+		assertControlledHandoffLeaseLoss(t, true, false)
 	})
 }
 

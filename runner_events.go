@@ -166,6 +166,11 @@ func newRunResultSuspended[T, E any](state T, effects []E, meta RunMetadata, poi
 }
 
 func newRunResultFailed[T, E any](state T, effects []E, meta RunMetadata, pointer, reason string) *RunResult[T, E] {
+	if meta.Segment.EndReason != SegmentEndFail || meta.Segment.EndTime.IsZero() {
+		markSegmentFailed(&meta)
+	} else {
+		meta.Segment.EndTime = meta.Segment.EndTime.UTC()
+	}
 	return &RunResult[T, E]{
 		State:            state,
 		Status:           RunStatusFailed,

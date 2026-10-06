@@ -8,7 +8,9 @@ import (
 
 // Fork creates only a fresh saved boundary. Resume requires the recorded policy;
 // source history and latest are never changed or implicitly migrated.
-func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (ResumeToken, error) {
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
+func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (result ResumeToken, retErr error) {
 	// Freeze caller-owned registration before any host callback can mutate it.
 	if request.Projection != nil {
 		projection := *request.Projection
@@ -38,7 +40,7 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	if err = r.forkTargetAbsent(session.ctx, request.TargetID); err != nil {
 		return ResumeToken{}, err
 	}

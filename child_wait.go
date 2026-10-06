@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -32,8 +33,10 @@ type ChildWaitResolutionRecord struct {
 
 // ResolveChildWait atomically resolves exactly one waiting child without
 // invoking codecs, nodes or dispatch. It does not resume the parent implicitly.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token ResumeToken,
-	resolution ChildWaitResolution) (ResumeToken, error) {
+	resolution ChildWaitResolution) (result ResumeToken, retErr error) {
 	if resolution.Node == "" || resolution.Activation == 0 || resolution.GroupKey == "" || resolution.ChildID == "" ||
 		!validRuntimeText(string(resolution.Node), resolution.GroupKey, resolution.ChildID, resolution.ExecutionID,
 			resolution.WaitID, resolution.DecisionID) ||
@@ -46,7 +49,7 @@ func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token Resume
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.childMutationSource(session.ctx, token)
 	if err != nil {
 		return ResumeToken{}, err

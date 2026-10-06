@@ -40,7 +40,7 @@ func (contract WaitDeliveryContract[T]) check(spec DurableWaitSpec) error {
 // and permission checks. No durable decision is returned on a failed write.
 func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID string,
 	delivery WaitDelivery, contract WaitDeliveryContract[T],
-) (WaitDeliveryResult, error) {
+) (result WaitDeliveryResult, retErr error) { //nolint:nonamedreturns // Preserve committed result and cleanup error.
 	if executionID == "" || delivery.Generation == "" || delivery.ID == "" ||
 		!validRuntimeText(executionID, delivery.Generation, delivery.ID, delivery.CorrelationID) {
 		return WaitDeliveryResult{}, ErrWaitInvalid
@@ -54,7 +54,7 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.waitDeliverySource(session.ctx, executionID, delivery.Generation)
 	if err != nil {
 		return WaitDeliveryResult{}, err

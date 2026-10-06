@@ -887,77 +887,13 @@ func TestRequestLocalHandoffRetentionFailAfterPersist(t *testing.T) {
 
 func TestRequestLocalHandoffLeaseLostClosesSession(t *testing.T) {
 	t.Parallel()
-
-	type state struct{ N int }
-
-	leaseOpts := []RunOption[state, NoEffect]{
-		WithRunLease[state, NoEffect]("worker-a", 50*time.Millisecond),
-	}
-
 	t.Run("lease_lost_before_handoff", func(t *testing.T) {
 		t.Parallel()
-		// RequestLocalHandoff before forceLeaseTakeover is intentional: deterministic ordering vs concurrent race.
-
-		lease := NewMemoryLeaseManager()
-		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
-		runner := g.NewRunnerWithOptions(newMemoryCP[state, NoEffect](), []RunnerOption[state, NoEffect]{
-			WithLeaseManager[state, NoEffect](lease),
-		})
-
-		startDone := make(chan error, 1)
-		go func() {
-			_, runErr := runner.Start(context.Background(), "htb-lease-before-th", state{}, leaseOpts...)
-			startDone <- runErr
-		}()
-
-		<-ready
-		handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-lease-before-th")
-		if errors.Is(handoffErr, ErrNoActiveExecution) {
-			t.Fatalf(
-				"handoff must not return ErrNoActiveExecution while session is active, got %v",
-				handoffErr,
-			)
-		}
-		forceLeaseTakeover(t, lease, "htb-lease-before-th")
-		waitForLeaseTTLExpiry()
-
-		startErr := <-startDone
-		if handoffErr != nil && !errors.Is(handoffErr, ErrLeaseLost) {
-			t.Fatalf("expected nil or ErrLeaseLost on handoff, got %v", handoffErr)
-		}
-		if startErr != nil && !errors.Is(startErr, ErrLeaseLost) {
-			t.Fatalf("expected nil or ErrLeaseLost on execute after handoff race, got %v", startErr)
-		}
+		assertControlledHandoffLeaseLoss(t, false, true)
 	})
-
 	t.Run("session_closed_after_lease_lost", func(t *testing.T) {
 		t.Parallel()
-
-		lease := NewMemoryLeaseManager()
-		g, ready := blockingHandoffWorkGraph[state, NoEffect](t)
-		runner := g.NewRunnerWithOptions(newMemoryCP[state, NoEffect](), []RunnerOption[state, NoEffect]{
-			WithLeaseManager[state, NoEffect](lease),
-		})
-
-		startDone := make(chan error, 1)
-		go func() {
-			_, runErr := runner.Start(context.Background(), "htb-lease-after-th", state{}, leaseOpts...)
-			startDone <- runErr
-		}()
-
-		<-ready
-		forceLeaseTakeover(t, lease, "htb-lease-after-th")
-		waitForLeaseTTLExpiry()
-
-		startErr := <-startDone
-		if !errors.Is(startErr, ErrLeaseLost) {
-			t.Fatalf("expected ErrLeaseLost on execute, got %v", startErr)
-		}
-
-		handoffErr := runner.RequestLocalHandoff(context.Background(), "htb-lease-after-th")
-		if !errors.Is(handoffErr, ErrNoActiveExecution) {
-			t.Fatalf("expected ErrNoActiveExecution after session closed, got %v", handoffErr)
-		}
+		assertControlledHandoffLeaseLoss(t, false, false)
 	})
 }
 

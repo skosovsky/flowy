@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -35,8 +36,10 @@ type ChildCancelConfirmationRecord struct {
 
 // ConfirmChildCancellation commits one addressed stop confirmation without
 // codec/node/dispatch calls. Stale decisions cannot replace a committed outcome.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, token ResumeToken,
-	decision ChildCancelConfirmation) (ResumeToken, error) {
+	decision ChildCancelConfirmation) (result ResumeToken, retErr error) {
 	if decision.Node == "" || decision.Activation == 0 || decision.GroupKey == "" || decision.ChildID == "" ||
 		!validRuntimeText(string(decision.Node), decision.GroupKey, decision.ChildID, decision.ExecutionID,
 			decision.RequestID, decision.DecisionID, decision.Evidence) ||
@@ -48,7 +51,7 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.childMutationSource(session.ctx, token)
 	if err != nil {
 		return ResumeToken{}, err

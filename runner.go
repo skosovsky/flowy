@@ -163,8 +163,7 @@ func (r *graphRunner[T, E]) Start(
 		nil,
 		inv,
 	)
-	r.postRunCleanup(context.WithoutCancel(ctx), threadID, inv, result)
-	return result, err
+	return result, errors.Join(err, r.postRunCleanup(ctx, threadID, inv, result))
 }
 
 func (r *graphRunner[T, E]) Resume(
@@ -189,12 +188,7 @@ func (r *graphRunner[T, E]) Resume(
 
 	decision, err := r.evaluateResume(ctx, token, inv)
 	if err != nil {
-		r.logReleaseLeaseError(
-			context.WithoutCancel(ctx),
-			token.ThreadID,
-			r.releaseLease(context.WithoutCancel(ctx), token.ThreadID, inv),
-		)
-		return nil, err
+		return nil, errors.Join(err, r.postRunCleanup(ctx, token.ThreadID, inv, nil))
 	}
 	runCtx := injectTelemetryContext(r.attachInvocation(ctx, inv, &decision.RunMeta), decision.RunMeta.TelemetryContext)
 	result, runErr := r.execute(
@@ -208,8 +202,7 @@ func (r *graphRunner[T, E]) Resume(
 		nil,
 		inv,
 	)
-	r.postRunCleanup(context.WithoutCancel(ctx), token.ThreadID, inv, result)
-	return result, runErr
+	return result, errors.Join(runErr, r.postRunCleanup(ctx, token.ThreadID, inv, result))
 }
 
 func (r *graphRunner[T, E]) Stream(
@@ -231,7 +224,7 @@ func (r *graphRunner[T, E]) Stream(
 	meta := newRunMetadata()
 	mergeRunMetadataInput(&meta, inv.runMetadata)
 	runCtx := r.attachInvocation(ctx, inv, &meta)
-	return r.startStream(runCtx, threadID, inv, func(
+	return r.startStream(runCtx, inv, func(
 		streamCtx context.Context,
 		sink eventSink[T, E],
 	) (*RunResult[T, E], error) {
@@ -246,8 +239,7 @@ func (r *graphRunner[T, E]) Stream(
 			sink,
 			inv,
 		)
-		r.postRunCleanup(context.WithoutCancel(runCtx), threadID, inv, result)
-		return result, err
+		return result, errors.Join(err, r.postRunCleanup(runCtx, threadID, inv, result))
 	}), nil
 }
 
@@ -272,15 +264,10 @@ func (r *graphRunner[T, E]) ResumeStream(
 	}
 	decision, err := r.evaluateResume(ctx, token, inv)
 	if err != nil {
-		r.logReleaseLeaseError(
-			context.WithoutCancel(ctx),
-			token.ThreadID,
-			r.releaseLease(context.WithoutCancel(ctx), token.ThreadID, inv),
-		)
-		return nil, err
+		return nil, errors.Join(err, r.postRunCleanup(ctx, token.ThreadID, inv, nil))
 	}
 	runCtx := injectTelemetryContext(r.attachInvocation(ctx, inv, &decision.RunMeta), decision.RunMeta.TelemetryContext)
-	return r.startStream(runCtx, token.ThreadID, inv, func(
+	return r.startStream(runCtx, inv, func(
 		streamCtx context.Context,
 		sink eventSink[T, E],
 	) (*RunResult[T, E], error) {
@@ -295,8 +282,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 			sink,
 			inv,
 		)
-		r.postRunCleanup(context.WithoutCancel(runCtx), token.ThreadID, inv, result)
-		return result, runErr
+		return result, errors.Join(runErr, r.postRunCleanup(runCtx, token.ThreadID, inv, result))
 	}), nil
 }
 
@@ -555,7 +541,9 @@ func (r *graphRunner[T, E]) releaseLease(
 	if inv.lease.ExecutionID != threadID {
 		return ErrLeaseLost
 	}
-	return r.leaseManager.Release(ctx, inv.lease)
+	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
+	defer cancel()
+	return r.leaseManager.Release(releaseCtx, inv.lease)
 }
 
 func (r *graphRunner[T, E]) leaseTTL(inv runInvocationOptions[T, E]) time.Duration {
@@ -612,21 +600,8 @@ func (r *graphRunner[T, E]) startLeaseHeartbeat(
 	}
 }
 
-func (r *graphRunner[T, E]) cancelSessionForConsumerStop(threadID string) {
-	value, ok := r.sessions.Load(threadID)
-	if !ok {
-		return
-	}
-	session, ok := value.(*runSession)
-	if !ok || session.cancel == nil {
-		return
-	}
-	session.cancel(context.Canceled)
-}
-
 func (r *graphRunner[T, E]) startStream(
 	ctx context.Context,
-	threadID string,
 	inv runInvocationOptions[T, E],
 	runFn func(context.Context, eventSink[T, E]) (*RunResult[T, E], error),
 ) StreamHandle[T, E] {
@@ -640,7 +615,6 @@ func (r *graphRunner[T, E]) startStream(
 		result: nil,
 		onStop: func() {
 			cancelStream(context.Canceled)
-			r.cancelSessionForConsumerStop(threadID)
 		},
 	}
 	go func() {
@@ -675,7 +649,7 @@ func (r *graphRunner[T, E]) startStream(
 		runCtx := context.WithValue(streamCtx, streamCloseKey{}, stream)
 		result, err := runFn(runCtx, sink)
 		if errors.Is(err, context.Canceled) && stream.stopped() && ctx.Err() == nil &&
-			!errors.Is(err, ErrCheckpointSkipped) {
+			!errors.Is(err, ErrCheckpointSkipped) && !errors.Is(err, ErrRunCleanup) {
 			err = nil
 		}
 		stream.result = result
@@ -1018,10 +992,10 @@ func (r *graphRunner[T, E]) execute(
 ) (result *RunResult[T, E], retErr error) {
 	current := startNode
 	runCtx, cancelRun := context.WithCancelCause(ctx)
+	defer cancelRun(context.Canceled)
 	runCtx = withRunThreadID(runCtx, threadID)
 	session, regErr := r.registerRunSession(threadID, cancelRun)
 	if regErr != nil {
-		cancelRun(context.Canceled)
 		return nil, regErr
 	}
 	defer func() {
@@ -1104,7 +1078,8 @@ func (r *graphRunner[T, E]) execute(
 					ErrLeaseLost.Error(),
 				), ErrLeaseLost
 			}
-			if errors.Is(stepErr, context.Canceled) && runCtx.Err() != nil {
+			if runCtx.Err() != nil &&
+				(errors.Is(stepErr, context.Canceled) || errors.Is(stepErr, context.DeadlineExceeded)) {
 				if errors.Is(context.Cause(runCtx), ErrHandoffRequested) {
 					return r.handleHandoff(
 						runCtx,
@@ -2063,14 +2038,7 @@ func failedResultWithReason[T, E any](
 	meta RunMetadata,
 	pointer, reason string,
 ) *RunResult[T, E] {
-	return &RunResult[T, E]{
-		State:            state,
-		Status:           RunStatusFailed,
-		Effects:          append([]E(nil), effects...),
-		RunMeta:          meta,
-		ExecutionPointer: ExecutionPointer(pointer),
-		Reason:           reason,
-	}
+	return newRunResultFailed(state, effects, meta, pointer, reason)
 }
 
 func markSegmentFailed(meta *RunMetadata) {
@@ -2181,33 +2149,25 @@ func (r *graphRunner[T, E]) postRunCleanup(
 	threadID string,
 	inv runInvocationOptions[T, E],
 	result *RunResult[T, E],
-) {
-	r.logReleaseLeaseError(ctx, threadID, r.releaseLease(ctx, threadID, inv))
+) error {
+	releaseErr := r.releaseLease(ctx, threadID, inv)
+	r.logReleaseLeaseError(ctx, threadID, releaseErr)
+	var policyErr error
 	if result != nil && threadID != "" && appliesTerminalPolicies(result.Status) {
-		r.tryApplyTerminalPolicies(ctx, threadID, result.Status)
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
+		policyErr = r.applyTerminalPolicies(cleanupCtx, threadID, result.Status)
+		cancel()
 	}
+	if err := errors.Join(releaseErr, policyErr); err != nil {
+		return fmt.Errorf("%w: %w", ErrRunCleanup, err)
+	}
+	return nil
 }
 
 func (r *graphRunner[T, E]) logReleaseLeaseError(ctx context.Context, threadID string, err error) {
 	if err != nil {
 		r.logger.WarnContext(ctx, "flowy: release lease failed",
 			"thread_id", threadID, "err", err)
-	}
-}
-
-func (r *graphRunner[T, E]) tryApplyTerminalPolicies(
-	ctx context.Context,
-	threadID string,
-	status RunStatus,
-) {
-	if err := r.applyTerminalPolicies(ctx, threadID, status); err != nil {
-		if errors.Is(err, ErrThreadLeaseBusy) {
-			r.logger.DebugContext(ctx, "flowy: terminal policy skipped, thread busy",
-				"thread_id", threadID, "status", status)
-			return
-		}
-		r.logger.WarnContext(ctx, "flowy: terminal policy failed",
-			"thread_id", threadID, "status", status, "err", err)
 	}
 }
 

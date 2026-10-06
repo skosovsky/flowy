@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -44,8 +45,10 @@ type ChildOutcomeResolutionRecord struct {
 // ResolveChildOutcome atomically settles one unknown child, without node,
 // codec, dispatch or merge calls. Replay requires an exact current parent token;
 // stale tokens are never advanced to latest implicitly.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token ResumeToken,
-	resolution ChildOutcomeResolution) (ResumeToken, error) {
+	resolution ChildOutcomeResolution) (result ResumeToken, retErr error) {
 	if !validChildOutcomeRequest(resolution) {
 		return ResumeToken{}, ErrChildJoinInvalid
 	}
@@ -54,7 +57,7 @@ func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token Res
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.childMutationSource(session.ctx, token)
 	if err != nil {
 		return ResumeToken{}, err

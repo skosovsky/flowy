@@ -78,7 +78,7 @@ func (r *DurableRunner[T, E]) Stream(
 func (r *DurableRunner[T, E]) preparedStream(
 	ctx context.Context, id string,
 	prepare func(context.Context, ExecutionLease) (ExecutionEnvelope, error), opts ...RunOption[T, E],
-) (StreamHandle[T, E], error) {
+) (handle StreamHandle[T, E], retErr error) { //nolint:nonamedreturns // Admission failures must report cleanup.
 	inv, err := applyRunOptions(opts...)
 	if err != nil {
 		return nil, err
@@ -90,7 +90,7 @@ func (r *DurableRunner[T, E]) preparedStream(
 	transferred := false
 	defer func() {
 		if !transferred {
-			session.finish()
+			retErr = errors.Join(retErr, session.finish())
 		}
 	}()
 	envelope, err := prepare(session.ctx, session.lease)
@@ -101,12 +101,11 @@ func (r *DurableRunner[T, E]) preparedStream(
 	if !ok {
 		return nil, ErrExecutionCapability
 	}
-	handle := base.startStream(
+	handle = base.startStream(
 		session.ctx,
-		id,
 		inv,
-		func(streamCtx context.Context, sink eventSink[T, E]) (*RunResult[T, E], error) {
-			defer session.finish()
+		func(streamCtx context.Context, sink eventSink[T, E]) (result *RunResult[T, E], runErr error) { //nolint:nonamedreturns // Join cleanup on all exit paths.
+			defer func() { runErr = errors.Join(runErr, session.finish()) }()
 			return r.runWithSink(streamCtx, session.lease, envelope, sink, opts...)
 		},
 	)

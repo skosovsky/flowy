@@ -16,7 +16,9 @@ func (r *graphRunner[T, E]) interruptionSnapshot(
 	effects []E,
 ) (Snapshot[T, E], error) {
 	if r.durable != nil {
-		snapshot, _, err := r.durable.Load(context.WithoutCancel(ctx), threadID)
+		restoreCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
+		defer cancel()
+		snapshot, _, err := r.durable.Load(restoreCtx, threadID)
 		return snapshot, err
 	}
 	return Snapshot[T, E]{

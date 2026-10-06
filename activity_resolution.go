@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -48,11 +49,13 @@ type ActivityResolutionRecord struct {
 
 // ResolveActivity commits a manual decision without node, codec, reconciliation
 // or dispatcher calls. It rejects stale revisions and never migrates implicitly.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ResolveActivity(
 	ctx context.Context,
 	token ResumeToken,
 	resolution ActivityResolution,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) {
 	if resolution.Identity == "" || resolution.InputDigest == "" || resolution.Implementation == "" ||
 		!validRuntimeText(resolution.Identity, resolution.InputDigest, resolution.Implementation,
 			resolution.DecisionID, resolution.Evidence, resolution.SafeRetryContract) ||
@@ -66,7 +69,7 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.store.LoadExecution(session.ctx, token.ThreadID)
 	if err != nil {
 		return ResumeToken{}, err

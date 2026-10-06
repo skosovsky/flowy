@@ -100,7 +100,7 @@ func (r *DurableRunner[T, E]) Start(
 	id string,
 	initial T,
 	opts ...RunOption[T, E],
-) (*RunResult[T, E], error) {
+) (result *RunResult[T, E], retErr error) { //nolint:nonamedreturns // Cleanup must join every return path.
 	if err := r.validateRunOptions(opts...); err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (r *DurableRunner[T, E]) Start(
 	if err != nil {
 		return nil, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	ctx = session.ctx
 	lease := session.lease
 	envelope, err := r.prepareStart(ctx, lease, initial)
@@ -127,7 +127,7 @@ func (r *DurableRunner[T, E]) Resume(
 	ctx context.Context,
 	token ResumeToken,
 	opts ...RunOption[T, E],
-) (*RunResult[T, E], error) {
+) (result *RunResult[T, E], retErr error) { //nolint:nonamedreturns // Cleanup must join every return path.
 	if err := r.validateRunOptions(opts...); err != nil {
 		return nil, err
 	}
@@ -135,7 +135,7 @@ func (r *DurableRunner[T, E]) Resume(
 	if err != nil {
 		return nil, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	ctx = session.ctx
 	lease := session.lease
 	envelope, err := r.prepareResume(ctx, lease, token)
@@ -409,7 +409,7 @@ func (*DurableRunner[T, E]) validateRunOptions(opts ...RunOption[T, E]) error {
 type executionSession struct {
 	ctx                context.Context
 	lease              ExecutionLease
-	finish             func()
+	finish             func() error
 	observationMu      sync.Mutex
 	observationContext context.Context
 	observation        LifecycleObservation
@@ -436,13 +436,19 @@ func (r *DurableRunner[T, E]) acquireSession(ctx context.Context, id string) (*e
 	session.ctx = ownedCtx
 	stop := r.heartbeat(ownedCtx, cancel, lease)
 	var once sync.Once
-	session.finish = func() {
+	var cleanupErr error
+	session.finish = func() error {
 		once.Do(func() {
 			cancel(context.Canceled)
 			stop()
-			session.noteLeaseFailure(r.release(ctx, lease))
+			releaseErr := r.release(ctx, lease)
+			session.noteLeaseFailure(releaseErr)
+			if releaseErr != nil {
+				cleanupErr = fmt.Errorf("%w: %w", ErrRunCleanup, releaseErr)
+			}
 			session.observeLeaseLoss(ownedCtx)
 		})
+		return cleanupErr
 	}
 	return session, nil
 }

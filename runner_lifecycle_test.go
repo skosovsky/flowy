@@ -1756,9 +1756,12 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 	}
 	runner := g.NewRunner(guarded)
 
-	_, err = runner.Start(context.Background(), "del-busy-th", state{})
-	if err != nil {
-		t.Fatalf("start: %v", err)
+	// Act: completion succeeds but busy cleanup is explicitly reported.
+	result, startErr := runner.Start(context.Background(), "del-busy-th", state{})
+	// Assert: the execution outcome and skipped cleanup are separate.
+	if result == nil || result.Status != RunStatusCompleted || !errors.Is(startErr, ErrRunCleanup) ||
+		!errors.Is(startErr, ErrThreadLeaseBusy) {
+		t.Fatalf("result=%+v err=%v", result, startErr)
 	}
 
 	if _, _, loadErr := cp.Load(context.Background(), "del-busy-th"); loadErr != nil {

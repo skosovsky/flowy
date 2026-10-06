@@ -193,3 +193,32 @@ Unknown child outcomes have an addressed raw boundary described in [child outcom
 [Activity retry scheduling](activity_retry_scheduling.md) defines explicit fixed/exponential configuration, bounded jitter and compatibility-labelled host not-before hints. The deadline and its provenance commit once with the prepared retry, survive restart and never cause dispatch through discovery. Old active Delay-only policies are rejected; recovery does not guess schedule semantics.
 
 State and accumulated effects have independent mandatory compatibility labels; changing either requires the corresponding explicit pure transformation. See [durable lifecycle](durable-lifecycle.md). Activity/child outcomes are immutable throughout these representation changes.
+
+
+### Cancellation ownership and cleanup
+
+Each stream stop cancels its own context, including before session registration.
+Completed and rejected handles cannot stop a later run with the same thread ID.
+Every execute-owned context is canceled on return, after heartbeat shutdown and
+session completion/unregistration; the caller's context remains independently owned.
+An active-run Canceled or DeadlineExceeded node error, raw or wrapped, checkpoints
+continuation. A node-local timeout with a live run remains a failure. Lease loss
+and explicit handoff preserve their existing precedence; durable interruption
+restores the committed entry rather than an aliased pre-node value.
+
+Lease release and post-run terminal prune/delete use detached contexts bounded to
+five seconds per operation, preserving caller context values. Rejected resume
+admission releases under the same bound. Failures wrap ErrRunCleanup and the
+original cause and are joined with execution errors; a returned completed or
+failed RunResult still describes execution. Busy DeleteIfIdle is a cleanup error.
+RequestLocalHandoff acknowledges execution/checkpoint completion; Start and stream
+WaitResult also report subsequent cleanup. Durable Start/Resume and streams,
+DeliverWait, CancelWait, activity/child resolution and fork/import/rollover
+preserve a committed result/token alongside a cleanup error. Such an error does not mean the preceding durable write failed. Timeouts
+require context-cooperative adapters; no background retry or detached goroutine is
+used to pretend uncooperative I/O completed.
+
+All failed live RunResults close Segment with a UTC EndTime and EndReason fail.
+The Retry-route restriction is retained: AddRetryRoute requires an
+AllowNoOutgoingRoute node, which cannot also route Completed. Split mixed behavior
+into separate graph nodes; directive Retry provides no implicit I/O retry safety.

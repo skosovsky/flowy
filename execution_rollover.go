@@ -26,11 +26,13 @@ func rolloverRequestDigest(
 // Rollover explicitly publishes a fresh continuation and a transferred source.
 // No nodes, activity dispatch, child dispatch, merge or implicit Resume runs.
 // Identical replay addresses the original source token and skips projection.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) Rollover(
 	ctx context.Context,
 	token ResumeToken,
 	request RolloverRequest,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) {
 	store, ok := r.store.(ExecutionRolloverStore)
 	if !ok {
 		return ResumeToken{}, ErrExecutionLifecycleUnsupported
@@ -49,7 +51,7 @@ func (r *DurableRunner[T, E]) Rollover(
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	event := rolloverOperationObservation(token, request)
 	defer func() { observeLifecycle(session.ctx, event) }()
 	prior, err := store.LoadRollover(session.ctx, token.ThreadID)
