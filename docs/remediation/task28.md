@@ -955,3 +955,82 @@ bothprobePASS; short duration proves executedproperties only. Whitespacecheck0.
 Task13 remains all-six fresh race/lint/native/blueprint/benchmark/releasefixtures
 and clean consumer installability; no overall/release acceptance asserted yet.
 Local signedcommit follows; SHA recorded with Task13 contract.
+
+
+## Task13 contract (before final verification)
+
+Task12 committed e3dfa84 docs: runtime contracts; clean checkout verified.
+Final scope: F01–F10/D01–D62/doc1–8 coverage audit plus complete DoD. No requirement
+is waived through prior partial/seed/local-only results. Fresh race+lint all SIX
+modules; tagged race/lint all four native adapters+actual PostgreSQL blueprint on
+own disposable infrastructure. Keep user-owned task22 containers untouched.
+Run fixed root15/PG14 benchmark manifests and rejection fixtures; never loosen
+ceilings to obtain PASS. Native benchmark DB is separate from native test DB.
+Run all isolated release fixtures, meaningful fuzz runner fixtures/probes and
+cookbook/memory smoke. Verify all six intended module artifacts from one HEAD
+via a disposable local Go module proxy, no localreplace/GOWORKoff/freshGOMODCACHE,
+consumerbuild importing core+4adapters and separate goinstall blueprint. Add a
+repeatable verification script; it builds artifacts/consumer only, no remoteref
+mutation, repositorytagging or release. Dependency version edits stay in /tmp.
+Record actual commands, terminal results, skipped/failure limits and benchmark
+metrics in finaljournal/report. Two independent final reviewers must audit all80
+criteria plus gates, completeness100% and correctness0open; any gap fixed then
+BOTH rerun/review finalstate. Final short signed localcommit required. Stop/remove
+only owned temporarycontainers after native/reviewchecks. No push/PR/release.
+
+
+### Task13 final gates (review pending)
+
+All six fresh uncached race sessions terminal0:11146root,24413PGcheckpoint,
+34516Redischeckpoint,17431PGlease,3184Redislease,62164blueprint. Root/adapter
+ordinary proof excludes taggednative tests; separate native63373terminal0 all
+five modules, verbose logs native0..4,0skippedfixtures. NativePGcheckpoint65.195s;
+PG17port58029 isolatedfinalDB, Redis7port55255 ownedtemporaryredis13. Taggedlint
+49498terminal0 allfive0issues; makealllint4147terminal0 six0issues.
+Python1753terminal0,25fixtures14.861s: release16+benchmark5+fuzz4.
+Rootbenchmark64851terminal0/checker15cases; PG55855terminal0/checker14cases,
+fixedmanifestsunchanged. Actual benchlogs final-root-bench/final-pg-bench retained.
+Consumer firstattempt29911exit1 due persisted GOPRIVATE bypassing localproxy;
+second55092exit1 libraryconsumerbuilt but cold blueprint package-query selected
+parent module. Script now GOENVoff/nonmatching privatepatterns and explicitly
+downloads/verifies each module zip before build/install; fresh thirdattemptpending.
+Failed attempts are diagnostic, neverinstallabilityPASS. No source/refs/release
+mutation fromconsumercheck; its sources are committede3dfa84. Runtime Go/dependency
+sources have no Task13 delta; current changes are verification script/docs only.
+
+
+Final consumer79866terminal0: frozen e3dfa84 source, six verified local-proxy zip
+artifacts, freshbuild/module caches, GOWORK/GOENVoff/no localreplace, library
+consumerbuild plus blueprintinstall. Result retained at
+/var/folders/46/5ywmz5gj26n7mnky51gd60g00000gn/T/flowy-task28-consumer-b6to6e51/result.json.
+Third50931exit0 alsopassed before the harness froze SHA once; neitherfailed first
+attempt is accepted. Final runtime/application and dependency sources unchanged
+since the verified commit. Task13 final ledger task28-final.md maps all80 unique
+criteria without duplicates/omissions and records gates/limits. Final reports,
+owned infrastructure cleanup and signedcommit still pending.
+
+
+Task13 final commit journal detail: after the last signedcommit completes, write
+all13 task/SHA/message/signature records to local ignored tmp/task28/commit-receipt.json.
+This is a local audit receipt, excluded from publication like other tmp artifacts;
+the final commit cannot contain its own hash without changing that hash. Prior12
+SHAs remain recorded in sequential contracts. Final tool/docs code unchanged;
+owned cleanup and finalcommit follow both reports.
+
+
+## Task13 accepted
+
+Final independent reports: reviews/task13-completeness.md100%(80/80,0gaps),
+reviews/task13-correctness.md0open. Both rechecked final frozenSHA script and
+final ledger/ignoredreceipt documentation. Independent completeness root2358
+exit0,2.390s, boundary69641exit0,1.543s andPython43595exit0,25tests13.270s.
+Correctness root95941exit0,count2/root2.594s,Python23935exit0,25tests12.711s,
+nativeRediscount2exit0,1.509s/no skips and independent sixartifactfreeze probe.
+Both validated fixedbenchmark outputs and actualfinalconsumer result.
+All80criteria/gates documented task28-final.md. No runtime/dependencychanges
+since e3dfa84; final consumers verify that exact application source. Final
+whitespacecheck0; Python verification script compiles. Signed prior12commitsG.
+Own PostgreSQL pg11 andRedisredis13 dockerstopterminal0; --rm containers removed,
+verified absent. Existinguser flowy-task22-postgres/redis retained and untouched.
+Final short signedlocalcommit follows; its exactSHA/all13signatures are recorded
+in ignored localreceipt after completion. No push/release/PR performed.

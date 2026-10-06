@@ -79,3 +79,22 @@ without local replaces; test via a disposable local module proxy when the commit
 is unpublished. This does not publish remote refs or prove a release occurred.
 The final task28 acceptance journal records actual terminal results and review
 verdicts. Historical task22–27 evidence is not rewritten as new acceptance.
+
+
+Repeatable unpublished-consumer check:
+
+```sh
+python3 scripts/check_installability.py
+```
+
+The script archives committed HEAD only, edits dependency versions/replaces only
+inside its temporary directory, packages each of six modules separately and uses
+a synthetic v0.0.0-task28 version served by its local file proxy. It builds a
+consumer importing core and all four adapters and installs the blueprint binary.
+GOWORK and persisted Go environment are disabled, caches are fresh and downloaded
+first-party zip bytes must equal the intended local artifacts. Public pinned
+dependencies may download from proxy.golang.org; GOSUMDB is disabled inside this
+isolated synthetic-version check. This is source/module graph installability,
+not verification of an actual published tag, checksum-log entry or remote release.
+The temporary path/result.json is printed and retained for evidence. Repository
+refs/index/worktree and user Go environment are not rewritten by this command.
