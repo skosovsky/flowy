@@ -290,7 +290,14 @@ func (r *graphRunner[T, E]) handleContextCancellation(
 ) (*RunResult[T, E], error) {
 	snapshot, restoreErr := r.interruptionSnapshot(runCtx, threadID, current, state, meta, effects)
 	if restoreErr != nil {
-		return failedResultWithReason(state, effects, meta, current, restoreErr.Error()), restoreErr
+		return failedDiagnosticResult(
+			state,
+			effects,
+			meta,
+			current,
+			errors.Join(ctxErr, context.Cause(runCtx)),
+			restoreErr,
+		)
 	}
 	state, meta, effects = snapshot.State, snapshot.RunMeta, snapshot.Effects
 	current = string(snapshot.ExecutionPointer)

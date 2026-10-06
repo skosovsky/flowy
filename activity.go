@@ -82,6 +82,9 @@ type ActivityRecord struct {
 // an unknown outcome using downstream evidence; it must not blindly dispatch it.
 // Retries require an explicit persisted safe-retry policy. The host owns
 // authorization and must disable any competing adapter retry loop.
+// Reconcile must be read-only, idempotent and safe for overlapping concurrent probes.
+// All callbacks must return promptly and must not recursively call CallActivity.
+// Dispatch/Classify panics are not retry classification; the node panic boundary applies.
 // Classify may supply a generic NotBefore hint under the persisted HintLabel.
 type ActivityRequest struct {
 	Key            string
@@ -112,13 +115,20 @@ type ActivityOutcome struct {
 }
 
 type activityContextKey struct{}
+type activityCallbackContextKey struct{}
 type activityBackend interface {
 	callActivity(context.Context, ActivityRequest) (ActivityOutcome, error)
 }
 
 // CallActivity invokes the activity boundary in a durable node. The logical key
 // is scoped to run/node/activation, separating graph cycles from replay.
+// CallActivity is a node boundary: callbacks must not recursively call it,
+// including through captured node contexts. Callback-derived contexts reject it.
+// Each call performs at most one dispatch; a node may call different keys in order.
 func CallActivity(ctx context.Context, request ActivityRequest) (ActivityOutcome, error) {
+	if ctx.Value(activityCallbackContextKey{}) != nil {
+		return ActivityOutcome{}, ErrExecutionCapability
+	}
 	backend, ok := ctx.Value(activityContextKey{}).(activityBackend)
 	if !ok || request.Key == "" || request.Implementation == "" || request.Dispatch == nil ||
 		!validRuntimeText(request.Key, request.Implementation) {
@@ -231,15 +241,13 @@ func (c *executionCheckpointer[T, E]) callActivity(
 	event.Attempt = len(record.Attempts)
 	c.mu.Unlock()
 	observeLifecycle(ctx, event)
-	payload, dispatchErr := request.Dispatch(ctx, ActivityInvocation{
+	callbackCtx := context.WithValue(ctx, activityCallbackContextKey{}, true)
+	payload, dispatchErr := request.Dispatch(callbackCtx, ActivityInvocation{
 		Identity: identity,
 		Input:    bytes.Clone(request.Input),
 		Attempt:  len(record.Attempts),
 	})
-	var classification ActivityFailureDecision
-	if dispatchErr != nil {
-		classification = classifyActivityFailure(request, dispatchErr)
-	}
+	classification := classifyObservedActivityFailure(ctx, event, request, dispatchErr)
 	return c.finishActivity(ctx, identity, payload, dispatchErr, c.activityDispatchOrigin(), classification)
 }
 
@@ -276,7 +284,7 @@ func (c *executionCheckpointer[T, E]) recoverActivityLocked(
 		return ActivityOutcome{}, ErrActivityUnknown
 	}
 	observeLifecycle(ctx, event)
-	payload, err := request.Reconcile(ctx, record)
+	payload, err := request.Reconcile(context.WithValue(ctx, activityCallbackContextKey{}, true), record)
 	if err != nil {
 		event.Stage = LifecycleFailed
 		observeLifecycle(ctx, event)

@@ -98,3 +98,16 @@ func (c *executionCheckpointer[T, E]) replayActivityLocked(
 	observeLifecycle(ctx, event)
 	return result
 }
+
+func classifyObservedActivityFailure(ctx context.Context, event LifecycleObservation,
+	request ActivityRequest, dispatchErr error) ActivityFailureDecision {
+	if dispatchErr == nil {
+		return ActivityFailureDecision{}
+	}
+	decision, invalid := classifyActivityFailure(request, dispatchErr)
+	if invalid {
+		event.Code, event.Stage = "invalid_classification", LifecycleFailed
+		observeLifecycle(ctx, event)
+	}
+	return decision
+}

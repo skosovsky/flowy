@@ -653,3 +653,71 @@ patterns/OTel count3, scopes count3 and explicit bindings/durable restoration
 count3. Parent final root race and lint are terminal PASS as recorded above.
 No six-module/native/final Task28 acceptance is inferred from this task.
 Local commit follows; its SHA will be recorded with the next task contract.
+
+## Task 09 contract (before implementation)
+
+Task08 accepted and committed as `f033a9c` (`fix: runtime configuration`).
+Scope: D22–D29, eight independently checked criteria.
+D22: retain duplicate manual DecisionID rejection; document load/inspect exact
+resolution plus fresh revision token after lost ACK. No blind redispatch or new
+operator ID to bypass uncertainty, no new exact command replay semantics.
+D23: reconciliation is read-only/idempotent/concurrency-safe and prompt; dispatch/
+classifier panic remains panic, never an ordinary retry classification. Forbid
+nested CallActivity from activity callbacks using a context marker, before journal
+mutation. Separate keys within the owning node remain supported sequentially.
+D24: document record state/origin versus historical attempt classification,
+all-zero retry policy exhaustion, manual resolution provenance and observation.
+D25: add validated fixed/exponential schedule constructors with examples and
+explicit total-attempt accounting; one CallActivity performs at most one dispatch.
+D26: retain nil RNG standard source and invalid class -> ambiguous; emit bounded
+invalid-classification diagnostic with no raw classifier value or dispatch error.
+Persisted deadline remains authority and unknown does not automatically retry.
+D27: current contract provides host bump rules for callbacks/codecs/projections/
+merge; no function pointer hashing or inferred compatibility.
+D28: failed committed-state reload/decode returns ErrDurableStateUnavailable plus
+both original/reload errors; returned local state/effects are explicitly diagnostic
+in result reason and GoDoc, without suggesting a restored committed boundary.
+D29: measure fresh journal/attempt/child/wait aggregate rewrite growth, document
+measurement limits and explicit resolved-boundary rollover/payload references.
+No TTL deletion of unknown/receipts or unmeasured storage-engine replacement.
+Acceptance requires regression/fault tests for changed boundaries, fresh relevant
+race/lint, measured growth output and two final independent reviews (100%/0 open).
+
+## Task 09 review preparation (not yet accepted)
+
+Implemented callback-derived context rejection, bounded invalid-classification
+observation and validated fixed/exponential schedule constructors. Added explicit
+ErrDurableStateUnavailable diagnostic classification on failed entry restoration
+at commit, cancellation and handoff boundaries; original causes and restore error
+remain joined. No diagnostic local state claims committed authority. Duplicate
+manual decisions remain rejected; a real commit/lost-ACK fixture covers inspect
+and fresh-token resume without redispatch. Current retry doc records callback
+ownership, taxonomy/observation, total attempts, host compatibility bump rules,
+recovery and aggregate amplification limits.
+
+Fresh growth measurements passed under race: waits16/64 retained all deliveries
+and activities16/64 retained all attempts. One-iteration activity/child growth
+benchmarks passed for16/64/256 records; raw logs are
+`/tmp/flowy-task28-task09-growth.log` and `...-bench.log`. Serialized rewrite bytes
+exclude native indexes/WAL; no latency threshold or production capacity inferred.
+Targeted boundary checks passed after correcting a test that incorrectly required
+zero revision on a diagnostic result; its token legitimately addresses stored
+head1. Initial FAIL retained in `...-targeted.log`; final targeted exit0 in
+`...-targeted-final.log`. First lint found function length/shadowing and test style;
+refactored observation classification into a small helper, final lint exit0,
+0 issues in `...-lint-final.log`. Full final race and independent reviews pending;
+no Task09 acceptance or commit claimed.
+
+## Task 09 accepted
+
+Independent completeness: 100%, D22–D29 8/8, 0 gaps; independently executed
+selected regression/growth race count2 exit0 (9.797s). Independent correctness:
+0 open findings; full root race exit0 (15.045s), targeted count3 exit0 (1.640s).
+Reports: `reviews/task09-completeness.md`, `reviews/task09-correctness.md`.
+Parent full final root race exit0 (16.129s), lost-ACK targeted exit0 (1.541s),
+final lint including all new fixtures exit0, 0 issues (`...-lint-accepted-final.log`).
+The penultimate lint's embedded-field blank-line issue in the lost-ACK fixture
+was corrected; no semantic changes followed fullroot PASS. Whitespace check PASS.
+Prior failed expectation/lint logs remain recorded, not relabelled PASS.
+Local commit follows; SHA recorded at next task contract. Overall Task28 and
+native/all-six-module gates remain incomplete, assigned to remaining tasks.

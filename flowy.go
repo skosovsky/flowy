@@ -514,6 +514,8 @@ const (
 )
 
 // RunResult is the final state returned to the application.
+// With ErrDurableStateUnavailable, State/Effects/RunMeta are diagnostic local
+// values, not a restored committed boundary. Load and inspect storage to recover.
 type RunResult[T, E any] struct {
 	State            T
 	Status           RunStatus

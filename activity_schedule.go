@@ -49,6 +49,22 @@ type ActivityRetryScheduleDecision struct {
 
 var ErrActivityScheduleInvalid = errors.New("flowy: invalid activity retry schedule")
 
+// NewFixedActivityRetrySchedule validates a fixed delay, including zero delay.
+func NewFixedActivityRetrySchedule(delay time.Duration) (ActivityRetrySchedule, error) {
+	schedule := ActivityRetrySchedule{Kind: ActivityRetryFixed, InitialDelay: delay, MaxDelay: delay,
+		Multiplier: 0, JitterPermille: 0, HintLabel: ""}
+	return schedule, validateActivitySchedule(schedule)
+}
+
+// NewExponentialActivityRetrySchedule validates capped exponential backoff.
+// Set jitter/hint labels explicitly before constructing the persisted policy.
+func NewExponentialActivityRetrySchedule(initial, maximum time.Duration,
+	multiplier uint64) (ActivityRetrySchedule, error) {
+	schedule := ActivityRetrySchedule{Kind: ActivityRetryExponential, InitialDelay: initial, MaxDelay: maximum,
+		Multiplier: multiplier, JitterPermille: 0, HintLabel: ""}
+	return schedule, validateActivitySchedule(schedule)
+}
+
 func validateActivitySchedule(schedule ActivityRetrySchedule) error {
 	if schedule.InitialDelay < 0 || schedule.MaxDelay < schedule.InitialDelay ||
 		schedule.JitterPermille > retryJitterDenominator ||

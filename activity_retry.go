@@ -86,16 +86,16 @@ func preparedActivityError(record ActivityRecord, revision uint64, now time.Time
 	return nil
 }
 
-func classifyActivityFailure(request ActivityRequest, dispatchErr error) ActivityFailureDecision {
+func classifyActivityFailure(request ActivityRequest, dispatchErr error) (ActivityFailureDecision, bool) {
 	if request.Classify == nil {
-		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}
+		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}, false
 	}
 	decision := request.Classify(dispatchErr)
 	switch decision.Class {
 	case ActivityRetryable, ActivityNonRetryable, ActivityAmbiguous:
-		return decision
+		return decision, false
 	default:
-		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}
+		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}, true
 	}
 }
 
