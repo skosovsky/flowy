@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // Node is the basic execution unit. It returns state update plus a directive.
@@ -666,17 +668,19 @@ func withRunThreadID(ctx context.Context, threadID string) context.Context {
 	return context.WithValue(ctx, runThreadContextKey, threadID)
 }
 
-// TelemetryBridge serializes runtime tracing metadata across suspend/resume boundaries.
+// TelemetryBridge captures/restores detached correlation metadata across resume.
+// Callbacks are synchronous, prompt, concurrency-safe and must not panic. Restore
+// preserves cancellation and existing context values; carriers are not authority.
 type TelemetryBridge interface {
-	Extract(ctx context.Context) map[string]string
-	Inject(ctx context.Context, metadata map[string]string) context.Context
+	Capture(ctx context.Context) map[string]string
+	Restore(ctx context.Context, metadata map[string]string) context.Context
 }
 
 type noopTelemetryBridge struct{}
 
-func (noopTelemetryBridge) Extract(context.Context) map[string]string { return nil }
+func (noopTelemetryBridge) Capture(context.Context) map[string]string { return nil }
 
-func (noopTelemetryBridge) Inject(ctx context.Context, _ map[string]string) context.Context {
+func (noopTelemetryBridge) Restore(ctx context.Context, _ map[string]string) context.Context {
 	return ctx
 }
 
@@ -685,22 +689,41 @@ var (
 	telemetryBridge   TelemetryBridge = noopTelemetryBridge{} //nolint:gochecknoglobals // process-wide bridge slot
 )
 
-// SetTelemetryBridge installs the process-wide telemetry bridge (stateless Extract/Inject only).
+// SetTelemetryBridge installs the process-wide telemetry bridge (synchronous Capture/Restore only).
 func SetTelemetryBridge(bridge TelemetryBridge) {
 	telemetryBridgeMu.Lock()
 	defer telemetryBridgeMu.Unlock()
-	if bridge == nil {
+	if nilvalue.IsNil(bridge) {
 		telemetryBridge = noopTelemetryBridge{}
 		return
 	}
 	telemetryBridge = bridge
 }
 
-func extractTelemetryContext(ctx context.Context) map[string]string {
+type telemetryBridgeContextKey struct{}
+
+// WithTelemetryBridge selects this context's bridge rather than the global
+// default. Nil (including typed nil) explicitly disables capture and restoration.
+// Reattach the instance bridge to a fresh worker's resume context.
+func WithTelemetryBridge(ctx context.Context, bridge TelemetryBridge) context.Context {
+	if nilvalue.IsNil(bridge) {
+		bridge = noopTelemetryBridge{}
+	}
+	return context.WithValue(ctx, telemetryBridgeContextKey{}, bridge)
+}
+
+func telemetryBridgeForContext(ctx context.Context) TelemetryBridge {
+	if bridge, ok := ctx.Value(telemetryBridgeContextKey{}).(TelemetryBridge); ok {
+		return bridge
+	}
 	telemetryBridgeMu.RLock()
-	bridge := telemetryBridge
-	telemetryBridgeMu.RUnlock()
-	metadata := bridge.Extract(ctx)
+	defer telemetryBridgeMu.RUnlock()
+	return telemetryBridge
+}
+
+func extractTelemetryContext(ctx context.Context) map[string]string {
+	bridge := telemetryBridgeForContext(ctx)
+	metadata := bridge.Capture(ctx)
 	if len(metadata) == 0 {
 		return nil
 	}
@@ -715,10 +738,8 @@ func injectTelemetryContext(ctx context.Context, metadata map[string]string) con
 	}
 	copyMetadata := make(map[string]string, len(metadata))
 	maps.Copy(copyMetadata, metadata)
-	telemetryBridgeMu.RLock()
-	bridge := telemetryBridge
-	telemetryBridgeMu.RUnlock()
-	return bridge.Inject(ctx, copyMetadata)
+	bridge := telemetryBridgeForContext(ctx)
+	return bridge.Restore(ctx, copyMetadata)
 }
 
 func newSegmentInfo() SegmentInfo {

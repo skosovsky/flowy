@@ -554,3 +554,102 @@ Both reviewed the final implementation and corroborated completed parent logs.
 Reports are `reviews/task07-completeness.md` and `reviews/task07-correctness.md`.
 Task07 commit message: `refactor: runner boundaries`; SHA will be recorded in the
 following journal update. Task08–13 and overall completion remain pending.
+
+## Task 08 contract (before implementation)
+
+Task07 commit: `268f458` (`refactor: runner boundaries`).
+
+D15: BuildSupervisor becomes BuildDispatchGraph without an alias: the routing node
+selects a terminal worker and never supervises a worker loop. Its fixed routing
+node is dispatch. BuildReAct keeps its name but names its positive parameter
+maxActionRetries: the existing Retry semantics permit at most that many fallback
+rounds and at most maxActionRetries+1 action callbacks, not a total graph-step
+limit. Keep this explicit existing policy rather than silently changing persisted
+retry accounting. BuildEvaluatorOptimizer names maxCorrectionRetries and retains
+the same Retry budget; correction rounds are domain evaluation, not transport retry.
+D16: all pattern constructors return (builder,error) and reject missing node/
+predicate/accessor callbacks and nonpositive retry budgets before execution.
+Dispatch snapshots routes/worker definitions at construction, rejects nil workers
+and conflicting reserved worker IDs, and retains Compile's topology validation.
+ReAct predicate is evaluated exactly once in the router for each Completed reason
+node; non-Completed directives preserve their wrappers without evaluating it.
+Pure callbacks must be prompt and safe for concurrent graph runs.
+D17: retain replacement reducers and fixed node IDs with a full-state-update
+contract and explicit IDs in docs. No graph DSL or implicit host merge reducer.
+D18: retain exactly one zero-value binding slot per Go type T. Different sentinels
+of the same T collide. Bind only during setup, then freeze by discipline before
+WithContext/WithBindings/share. Concurrent reads are allowed; host resources own
+their concurrency. No reflected resource cloning, DI framework or silent same-type
+identity introduced.
+D19: add context-scoped LifecycleObserver and TelemetryBridge selection, including
+explicit nil disable, while synchronized process-wide setters remain defaults.
+Context values provide instance/run isolation for ordinary and durable entry
+points; host must reattach its instance scope on a fresh worker/resume context.
+OTel observer/bridge constructors permit use without global installation and use
+explicit providers for observation. No mandatory telemetry dependency in core.
+D20: rename TelemetryBridge methods to Capture/Restore and update all consumers
+without old-method adapters. Installation returns errors to the host, never also
+logs them. Observer panics remain contained; bridge callbacks are pure synchronous
+codec-like hooks and must not panic, block indefinitely or mutate retained inputs.
+Bridge panics propagate rather than inventing safe replay after unknown work.
+D21: preserve bounded operation/stage/code metric dimensions, default W3C-only
+carrier, no raw payload/evidence/error traces and no commit/delivery guarantee
+from observation. Add isolation/privacy tests for scoped integrations.
+
+Acceptance: nil config tables, route ownership and single predicate evaluation
+under concurrent runs, action/correction retry counts and effect order; binding
+same-type collision/frozen read tests; scoped observer/bridge isolation and global
+fallback/explicit disable, Capture/Restore carrier detachment, OTel constructor
+error and privacy checks. Fresh relevant race/lint plus two independent final
+reviews are required before Task08 acceptance or commit.
+
+## Task 08 final-state review preparation (not yet accepted)
+
+Implemented pattern construction error returns/nil callback and positive retry
+budget admission, BuildDispatchGraph without a supervisor alias, owned route
+configuration and single pending-predicate evaluation in ReAct routing. Existing
+Retry semantics are explicit and tested: two fallback rounds allow three action/
+evaluation callbacks and six graph nodes. Full-state replacement and fixed IDs
+are current GoDoc/runtime contracts; the old dispatch cursor requires explicit
+host migration/drain. Updated both executable pattern examples and README usage.
+RunBindings retains a slot per type and documented freeze-by-discipline; same-type
+collision and eight frozen concurrent readers have regression coverage.
+
+WithLifecycleObserver and WithTelemetryBridge provide immutable context scope;
+typed nil explicitly disables rather than using globals. Core bridge methods are
+Capture/Restore without old-method adapters. OTel constructors bind explicit
+providers without global installation; install failures return the cause without
+also logging. Added scoped isolation/detachment, constructor nil, provider error/
+no-log and provider isolation/privacy tests. W3C-only bridge and bounded telemetry
+dimensions remain unchanged. Current observation doc now names WaitDelivery and
+explains instance scope, host callback concurrency, observer panic containment
+and nonpanicking bridge policy.
+
+Parent evidence so far:
+- Pattern/OTel initial fresh race exit0, 1.420s/1.498s, patterns-otel-progress log.
+- Scoped core/bindings targeted race exit0, 1.806s, scopes-progress log.
+- Full final root race exit0, 11.176s; ext/otel1.575s/patterns1.511s/testutil1.174s,
+  `/tmp/flowy-task28-task08-root-race-final.log`.
+- Separate durable_agent module compile/race command exit0, no untagged tests;
+  `/tmp/flowy-task28-task08-example-race.log` is build evidence only.
+- Final lint exit0, 0 issues; `/tmp/flowy-task28-task08-lint-accepted.log`.
+- Diff whitespace check PASS; production BuildSupervisor/old bridge methods absent.
+
+Preserved non-PASS logs: the new config table initially omitted explicit generic
+E arguments; lint reported an intentionally nonexecuted callback's always-nil
+error and embedded-field spacing in test provider stubs. Corrected fixture types/
+poison callback and spacing; no runtime assertion was weakened. Earlier fullroot
+PASS13.215s predates the added retry-count/provider-error fixtures and is not used
+as the final evidence for those fixtures. No Task08 acceptance or commit claimed.
+
+## Task 08 accepted
+
+Both independent final reviews accepted the unchanged implementation: completeness
+100% (D15–D21, 7/7), correctness 0 open findings. Reports are
+`reviews/task08-completeness.md` and `reviews/task08-correctness.md`.
+Completeness independently passed patterns/OTel race and scoped core/bindings
+race count3. Correctness independently passed full root race (12.169s),
+patterns/OTel count3, scopes count3 and explicit bindings/durable restoration
+count3. Parent final root race and lint are terminal PASS as recorded above.
+No six-module/native/final Task28 acceptance is inferred from this task.
+Local commit follows; its SHA will be recorded with the next task contract.

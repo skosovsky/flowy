@@ -24,13 +24,14 @@ func TestTask23PatternsPreserveEffects(t *testing.T) {
 				}
 			}
 			var b *flowy.GraphBuilder[int, string]
+			var buildErr error
 			var want []string
 			switch name {
 			case "react":
-				b = BuildReAct(node("reason"), node("action"), func(s int) bool { return s < 3 }, 2)
+				b, buildErr = BuildReAct(node("reason"), node("action"), func(s int) bool { return s < 3 }, 2)
 				want = []string{"reason:1:a", "reason:1:b", "action:2:a", "action:2:b", "reason:3:a", "reason:3:b"}
 			case "supervisor":
-				b = BuildSupervisor(
+				b, buildErr = BuildDispatchGraph(
 					node("supervisor"),
 					map[string]flowy.Node[int, string]{"worker": node("worker")},
 					func(int) string { return "route" },
@@ -38,7 +39,12 @@ func TestTask23PatternsPreserveEffects(t *testing.T) {
 				)
 				want = []string{"supervisor:1:a", "supervisor:1:b", "worker:2:a", "worker:2:b"}
 			case "optimizer":
-				b = BuildEvaluatorOptimizer(node("generate"), node("evaluate"), func(s int) bool { return s >= 4 }, 2)
+				b, buildErr = BuildEvaluatorOptimizer(
+					node("generate"),
+					node("evaluate"),
+					func(s int) bool { return s >= 4 },
+					2,
+				)
 				want = []string{
 					"generate:1:a",
 					"generate:1:b",
@@ -49,6 +55,9 @@ func TestTask23PatternsPreserveEffects(t *testing.T) {
 					"evaluate:4:a",
 					"evaluate:4:b",
 				}
+			}
+			if buildErr != nil {
+				t.Fatal(buildErr)
 			}
 			graph, err := b.Compile()
 			if err != nil {
@@ -71,7 +80,10 @@ func TestTask23PatternsPreserveTerminalWrappers(t *testing.T) {
 			reason := func(_ context.Context, s int) (int, flowy.Directive, error) {
 				return s, flowy.Effect(flowy.Effect(base, "a"), "b"), nil
 			}
-			b := BuildReAct[int, string](reason, reason, func(int) bool { return false }, 2)
+			b, buildErr := BuildReAct[int, string](reason, reason, func(int) bool { return false }, 2)
+			if buildErr != nil {
+				t.Fatal(buildErr)
+			}
 			// Act. Check wrapper before runtime terminal routing or retry policy.
 			graph, err := b.Compile()
 			if err != nil {

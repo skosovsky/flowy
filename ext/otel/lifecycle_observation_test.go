@@ -22,7 +22,7 @@ func TestLifecycleDefaultMetricsHaveBoundedDimensions(t *testing.T) {
 	previous := otel.GetMeterProvider()
 	otel.SetMeterProvider(provider)
 	t.Cleanup(func() { otel.SetMeterProvider(previous); _ = provider.Shutdown(context.Background()) })
-	observer, err := newLifecycleMetricsObserver()
+	observer, err := newLifecycleMetricsObserver(otel.GetMeterProvider())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -78,9 +78,9 @@ func TestLifecycleReplaySpanUsesRestoredRemoteParentAndRedactsCode(t *testing.T)
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
 	t.Cleanup(func() { _ = provider.Shutdown(context.Background()) })
 	original, parent := provider.Tracer("source").Start(context.Background(), "source")
-	carrier := (bridge{}).Extract(original)
+	carrier := (bridge{}).Capture(original)
 	parent.End()
-	restored := (bridge{}).Inject(context.Background(), carrier)
+	restored := (bridge{}).Restore(context.Background(), carrier)
 	observer := lifecycleTracingDecorator{inner: nil, tracer: provider.Tracer("worker")}
 	var event flowy.LifecycleObservation
 	event.Operation, event.Stage, event.ExecutionID, event.Code = flowy.LifecycleActivity, flowy.LifecycleReplayed, "execution", "private host error payload"

@@ -14,14 +14,14 @@ import (
 type durableTraceKey struct{}
 type durableTraceBridge struct{ injections *atomic.Int32 }
 
-func (b durableTraceBridge) Extract(ctx context.Context) map[string]string {
+func (b durableTraceBridge) Capture(ctx context.Context) map[string]string {
 	value, _ := ctx.Value(durableTraceKey{}).(string)
 	if value == "" {
 		return nil
 	}
 	return map[string]string{"trace": value}
 }
-func (b durableTraceBridge) Inject(ctx context.Context, carrier map[string]string) context.Context {
+func (b durableTraceBridge) Restore(ctx context.Context, carrier map[string]string) context.Context {
 	b.injections.Add(1)
 	return context.WithValue(ctx, durableTraceKey{}, carrier["trace"])
 }

@@ -11,12 +11,16 @@ import (
 
 // InstallTelemetryBridge registers OTel propagation bridge in flowy core.
 func InstallTelemetryBridge() {
-	flowy.SetTelemetryBridge(bridge{})
+	flowy.SetTelemetryBridge(NewTelemetryBridge())
 }
+
+// NewTelemetryBridge creates W3C traceparent/tracestate propagation without a
+// process-wide installation. Pass it to flowy.WithTelemetryBridge for isolation.
+func NewTelemetryBridge() flowy.TelemetryBridge { return bridge{} }
 
 type bridge struct{}
 
-func (bridge) Extract(ctx context.Context) map[string]string {
+func (bridge) Capture(ctx context.Context) map[string]string {
 	carrier := mapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, carrier)
 	if len(carrier) == 0 {
@@ -27,7 +31,7 @@ func (bridge) Extract(ctx context.Context) map[string]string {
 	return out
 }
 
-func (bridge) Inject(ctx context.Context, metadata map[string]string) context.Context {
+func (bridge) Restore(ctx context.Context, metadata map[string]string) context.Context {
 	if len(metadata) == 0 {
 		return ctx
 	}

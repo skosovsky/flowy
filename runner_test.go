@@ -740,14 +740,14 @@ type testTelemetryBridge struct {
 	inject  func(ctx context.Context, metadata map[string]string) context.Context
 }
 
-func (t testTelemetryBridge) Extract(ctx context.Context) map[string]string {
+func (t testTelemetryBridge) Capture(ctx context.Context) map[string]string {
 	if t.extract == nil {
 		return nil
 	}
 	return t.extract(ctx)
 }
 
-func (t testTelemetryBridge) Inject(ctx context.Context, metadata map[string]string) context.Context {
+func (t testTelemetryBridge) Restore(ctx context.Context, metadata map[string]string) context.Context {
 	if t.inject == nil {
 		return ctx
 	}

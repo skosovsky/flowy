@@ -306,3 +306,33 @@ so node/map registration order does not change the reported diagnostic sequence.
 
 The clean-break names replace AsNode, SubgraphNode and NewLeaseGuardCheckpointer;
 there are no aliases. Use the slot variant when an inner cursor must survive.
+
+## Pattern helpers and ephemeral bindings
+
+Pattern constructors return (builder,error) and reject missing callbacks or
+nonpositive retry budgets before any node runs. BuildReAct uses react_reason and
+react_action with replacement updates: callbacks return the entire new state.
+Its maxActionRetries limits action fallback rounds; Retry semantics allow at most
+maxActionRetries+1 action callbacks, never a total graph-step bound. The pending
+predicate runs once per Completed reason route and is not called for other
+directives. BuildEvaluatorOptimizer uses generator/evaluator replacement updates
+and maxCorrectionRetries domain correction fallbacks, not transport retries.
+Predicates/accessors are pure, prompt and concurrency-safe across graph runs.
+
+BuildDispatchGraph replaces BuildSupervisor without an alias. Its dispatch node
+selects one terminal worker; workers do not route back into a supervisor loop.
+Routes/worker definitions are captured during construction; caller mutations after
+construction cannot affect compiled routing. Worker IDs must not conflict with
+dispatch or EndNode; Compile validates remaining topology. Existing persisted
+ordinary cursors at the old supervisor node require explicit host migration or
+draining before this clean break. No automatic cursor rename occurs.
+
+RunBindings has one slot per Go type T. Two BindingKey[T] sentinels of the same
+type address the same slot. Bind during setup, then freeze by discipline before
+WithContext/WithBindings or concurrent reads. Concurrent mutation is unsupported.
+Use distinct host wrapper types for multiple same-resource-type dependencies;
+resource concurrency/lifetime belongs to the host. Bindings are never persisted
+or reflectively cloned by the runtime.
+
+Observation and bridge scope, callback policies and bounded default dimensions
+are canonical in [runtime observation](runtime-observation-contract.md).

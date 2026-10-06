@@ -2,19 +2,26 @@ package otel
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 const otherDimension = "other"
 
-func newLifecycleMetricsObserver() (*lifecycleObserver, error) {
-	meter := otel.Meter("github.com/skosovsky/flowy")
+// ErrConfiguration rejects missing observation providers before installation.
+var ErrConfiguration = errors.New("flowy/otel: invalid configuration")
+
+func newLifecycleMetricsObserver(provider metric.MeterProvider) (*lifecycleObserver, error) {
+	if nilvalue.IsNil(provider) {
+		return nil, ErrConfiguration
+	}
+	meter := provider.Meter("github.com/skosovsky/flowy")
 	events, err := meter.Int64Counter(
 		"flowy.lifecycle_total",
 		metric.WithDescription("Runtime observations by bounded operation and stage"),
@@ -25,11 +32,20 @@ func newLifecycleMetricsObserver() (*lifecycleObserver, error) {
 	return &lifecycleObserver{events: events}, nil
 }
 
+// NewLifecycleObserver binds bounded metrics to an explicit provider without
+// changing the process-wide observer. Use flowy.WithLifecycleObserver per run.
+func NewLifecycleObserver(provider metric.MeterProvider) (flowy.LifecycleObserver, error) {
+	observer, err := newLifecycleMetricsObserver(provider)
+	if err != nil {
+		return nil, err
+	}
+	return observer, nil
+}
+
 // InstallLifecycleObserver registers the bounded runtime observation counter.
 func InstallLifecycleObserver() error {
-	obs, err := newLifecycleMetricsObserver()
+	obs, err := NewLifecycleObserver(otel.GetMeterProvider())
 	if err != nil {
-		slog.Default().ErrorContext(context.Background(), "InstallLifecycleObserver", "err", err)
 		return err
 	}
 	flowy.SetLifecycleObserver(obs)

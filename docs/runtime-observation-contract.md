@@ -1,6 +1,6 @@
 # Runtime observation contract
 
-Status: task27 implementation contract. Observations describe runtime-owned
+Status: current implementation contract (original task27 baseline). Observations describe runtime-owned
 boundaries. They are never an execution journal, claim, delivery acknowledgement
 or authorization to repeat external work. Core remains BYOT and imports no OTel
 SDK. The host owns model usage, prompts, business evidence, downstream idempotency,
@@ -16,7 +16,7 @@ The existing process-wide installation remains explicit and synchronized.
 
 Operation and stage are closed provider-neutral classifications. Runtime
 operations include execution/terminal, activity dispatch/replay/reconcile/retry,
-child launch/resolve/join/cancel, wait arm/winner/cancel, lease loss,
+child launch/resolve/join/cancel, wait arm/delivery/cancel, lease loss,
 migration/fork, rollover and explicit retention. Stages distinguish started,
 failed, committed and replayed. A dispatch return is not an outcome commit.
 Only an acknowledged successful atomic publication emits committed. A failed or
@@ -47,7 +47,7 @@ ChildID the local spec, ChildExecutionID the isolated execution. Parent envelope
 revisions address the atomic publication, not a child-store checkpoint revision.
 
 WaitArm committed describes the aggregate arm, independently of external
-registration; registration failure cannot revoke it. WaitWinner describes an
+registration; registration failure cannot revoke it. WaitDelivery describes an
 acknowledged delivery decision with a bounded accepted/lost/unmatched/canceled
 code, so a non-winning decision never impersonates an accepted winner. Identical
 delivery/cancellation decisions are replayed without a new publication. Public
@@ -158,3 +158,29 @@ Documentation distinguishes ordinary/durable, PostgreSQL/standalone Redis,
 inline composition/isolated children, event stream/token stream and accounting/
 reservation. Supervisor helpers describe actual control flow. Compile-time tool
 filtering or installed hooks are claimed only when implementation proves them.
+
+## Instance scope and callback naming
+
+WithLifecycleObserver(ctx, observer) and WithTelemetryBridge(ctx, bridge) select
+immutable per-context instances before a run or addressed durable operation.
+Scoped nil, including a typed nil, explicitly disables that integration without
+falling back to the global default. Context scopes are ephemeral and do not become
+execution authority or snapshot payload. Reattach the host instance to a fresh
+resume context. Process-wide SetLifecycleObserver/SetTelemetryBridge remain
+synchronized optional defaults for contexts without explicit scopes. Callbacks
+execute after releasing default-slot locks and must support concurrent calls.
+
+TelemetryBridge.Capture returns correlation metadata; Restore derives a context
+from a detached carrier while retaining cancellation and existing context values.
+Old Extract/Inject methods have no adapters. Core copies both captured and restored
+carrier maps. Bridge callbacks are pure codec-like hooks: prompt, synchronous and
+nonpanicking. A bridge panic propagates; it does not make unknown external work
+safe to retry. Observer panics are contained under the separate observer policy.
+
+OTel NewTelemetryBridge selects W3C-only propagation without installation.
+NewLifecycleObserver(meterProvider) and
+NewLifecycleObserverWithTracing(meterProvider, tracerProvider) bind explicit
+providers and return collaborators for instance scope without global installation.
+Nil providers are configuration errors. Install helpers select current global
+OTel providers; constructor/installation errors are returned to the host and are
+not also logged by the library. Default cardinality/privacy rules remain the same.

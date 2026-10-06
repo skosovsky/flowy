@@ -3,6 +3,8 @@ package flowy
 import (
 	"context"
 	"sync"
+
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // LifecycleOperation identifies a runtime-owned boundary, not a provider action.
@@ -84,17 +86,42 @@ var (
 	lifecycleObserver   LifecycleObserver //nolint:gochecknoglobals // optional process-wide observer slot
 )
 
-// SetLifecycleObserver installs the observer; nil disables all callbacks.
+// SetLifecycleObserver installs the process-wide default. Nil disables that
+// default; observers explicitly selected by WithLifecycleObserver still apply.
 func SetLifecycleObserver(observer LifecycleObserver) {
 	lifecycleObserverMu.Lock()
 	defer lifecycleObserverMu.Unlock()
-	lifecycleObserver = observer
+	if nilvalue.IsNil(observer) {
+		lifecycleObserver = nil
+	} else {
+		lifecycleObserver = observer
+	}
+}
+
+type lifecycleObserverContextKey struct{}
+type lifecycleObserverScope struct{ observer LifecycleObserver }
+
+// WithLifecycleObserver selects this context's observer independently of the
+// process-wide default. Nil (including typed nil) explicitly disables observation.
+// Callbacks may be concurrent across runs; the host owns their synchronization.
+func WithLifecycleObserver(ctx context.Context, observer LifecycleObserver) context.Context {
+	if nilvalue.IsNil(observer) {
+		observer = nil
+	}
+	return context.WithValue(ctx, lifecycleObserverContextKey{}, lifecycleObserverScope{observer: observer})
+}
+
+func lifecycleObserverForContext(ctx context.Context) LifecycleObserver {
+	if scope, ok := ctx.Value(lifecycleObserverContextKey{}).(lifecycleObserverScope); ok {
+		return scope.observer
+	}
+	lifecycleObserverMu.RLock()
+	defer lifecycleObserverMu.RUnlock()
+	return lifecycleObserver
 }
 
 func observeLifecycle(ctx context.Context, observation LifecycleObservation) {
-	lifecycleObserverMu.RLock()
-	observer := lifecycleObserver
-	lifecycleObserverMu.RUnlock()
+	observer := lifecycleObserverForContext(ctx)
 	if observer == nil {
 		return
 	}

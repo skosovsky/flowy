@@ -96,11 +96,11 @@ func TestTelemetryBridgeRoundTrip(t *testing.T) {
 	}))
 	ctx = baggage.ContextWithBaggage(ctx, bag)
 
-	metadata := (bridge{}).Extract(ctx)
+	metadata := (bridge{}).Capture(ctx)
 	if len(metadata) == 0 {
 		t.Fatal("expected non-empty telemetry metadata")
 	}
-	restored := (bridge{}).Inject(context.Background(), metadata)
+	restored := (bridge{}).Restore(context.Background(), metadata)
 	restoredSC := trace.SpanContextFromContext(restored)
 	if restoredSC.TraceID() != traceID {
 		t.Fatalf("trace id mismatch: got %s want %s", restoredSC.TraceID(), traceID)

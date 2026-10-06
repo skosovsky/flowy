@@ -2,7 +2,9 @@ package patterns
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 
 	"github.com/skosovsky/flowy"
 )
@@ -10,13 +12,21 @@ import (
 // RouteMap maps intents to worker node ids.
 type RouteMap map[string]string
 
-// BuildReAct creates a protected reasoning/acting loop.
+// ErrConfiguration rejects a pattern before callbacks can execute.
+var ErrConfiguration = errors.New("flowy/patterns: invalid configuration")
+
+// BuildReAct uses replacement updates and fixed react_reason/react_action nodes.
+// maxActionRetries bounds action fallback rounds, not total graph steps; at most
+// maxActionRetries+1 action callbacks may execute. Predicates must be pure.
 func BuildReAct[T, E any](
 	reasonNode flowy.Node[T, E],
 	actionNode flowy.Node[T, E],
 	hasPendingActions func(state T) bool,
-	maxSteps int,
-) *flowy.GraphBuilder[T, E] {
+	maxActionRetries int,
+) (*flowy.GraphBuilder[T, E], error) {
+	if reasonNode == nil || actionNode == nil || hasPendingActions == nil || maxActionRetries <= 0 {
+		return nil, ErrConfiguration
+	}
 	builder := flowy.NewGraph[T, E](func(_ T, update T) T { return update })
 	builder.AddNode("react_reason", func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		update, directive, err := reasonNode(ctx, state)
@@ -30,10 +40,7 @@ func BuildReAct[T, E any](
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		if hasPendingActions != nil && hasPendingActions(update) {
-			return update, flowy.WithEffects(flowy.Completed(), effects), nil
-		}
-		return update, flowy.WithEffects(flowy.End(), effects), nil
+		return update, flowy.WithEffects(flowy.Completed(), effects), nil
 	})
 	builder.AddNode("react_action", func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		update, directive, err := actionNode(ctx, state)
@@ -47,32 +54,42 @@ func BuildReAct[T, E any](
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		return update, flowy.WithEffects(flowy.Retry(maxSteps), effects), nil
+		return update, flowy.WithEffects(flowy.Retry(maxActionRetries), effects), nil
 	})
 	builder.AllowNoOutgoingRoute("react_action")
 	builder.AddConditionalEdge("react_reason", func(_ context.Context, state T) (string, error) {
-		if hasPendingActions != nil && hasPendingActions(state) {
+		if hasPendingActions(state) {
 			return "react_action", nil
 		}
 		return flowy.EndNode, nil
 	}, "react_action", flowy.EndNode)
 	builder.AddRetryRoute("react_action", "react_reason")
 	builder.SetEntryPoint("react_reason")
-	return builder
+	return builder, nil
 }
 
-// BuildSupervisor creates supervisor routing graph.
+// BuildDispatchGraph routes once from dispatch to a terminal worker.
+// Node updates replace the full state. Routes are copied at construction.
 //
-//nolint:gocognit // supervisor wiring mirrors route table structure
-func BuildSupervisor[T, E any](
-	supervisorNode flowy.Node[T, E],
+//nolint:gocognit // dispatch wiring mirrors route table structure
+func BuildDispatchGraph[T, E any](
+	dispatchNode flowy.Node[T, E],
 	workerNodes map[string]flowy.Node[T, E],
 	routeAccessor func(state T) string,
 	routes RouteMap,
-) *flowy.GraphBuilder[T, E] {
+) (*flowy.GraphBuilder[T, E], error) {
+	if dispatchNode == nil || routeAccessor == nil {
+		return nil, ErrConfiguration
+	}
+	for id, worker := range workerNodes {
+		if id == "dispatch" || id == flowy.EndNode || worker == nil {
+			return nil, ErrConfiguration
+		}
+	}
+	routes = maps.Clone(routes)
 	builder := flowy.NewGraph[T, E](func(_ T, update T) T { return update })
-	builder.AddNode("supervisor", func(ctx context.Context, state T) (T, flowy.Directive, error) {
-		update, directive, err := supervisorNode(ctx, state)
+	builder.AddNode("dispatch", func(ctx context.Context, state T) (T, flowy.Directive, error) {
+		update, directive, err := dispatchNode(ctx, state)
 		if err != nil {
 			return update, directive, err
 		}
@@ -106,39 +123,40 @@ func BuildSupervisor[T, E any](
 		builder.AllowNoOutgoingRoute(localID)
 	}
 
-	supervisorTargets := make([]string, 0, len(routes)+1)
+	dispatchTargets := make([]string, 0, len(routes)+1)
 	seen := make(map[string]struct{}, len(routes)+1)
 	for _, routeNode := range routes {
 		if _, ok := seen[routeNode]; ok {
 			continue
 		}
 		seen[routeNode] = struct{}{}
-		supervisorTargets = append(supervisorTargets, routeNode)
+		dispatchTargets = append(dispatchTargets, routeNode)
 	}
-	supervisorTargets = append(supervisorTargets, flowy.EndNode)
+	dispatchTargets = append(dispatchTargets, flowy.EndNode)
 
-	builder.AddConditionalEdge("supervisor", func(_ context.Context, state T) (string, error) {
-		intent := ""
-		if routeAccessor != nil {
-			intent = routeAccessor(state)
-		}
+	builder.AddConditionalEdge("dispatch", func(_ context.Context, state T) (string, error) {
+		intent := routeAccessor(state)
 		routeNode, ok := routes[intent]
 		if !ok {
-			return "", fmt.Errorf("flowy/patterns: unknown supervisor intent %q", intent)
+			return "", fmt.Errorf("flowy/patterns: unknown dispatch intent %q", intent)
 		}
 		return routeNode, nil
-	}, supervisorTargets...)
-	builder.SetEntryPoint("supervisor")
-	return builder
+	}, dispatchTargets...)
+	builder.SetEntryPoint("dispatch")
+	return builder, nil
 }
 
-// BuildEvaluatorOptimizer creates generate/evaluate correction loop.
+// BuildEvaluatorOptimizer uses full-state replacement at generator/evaluator.
+// maxCorrectionRetries bounds correction fallbacks, not transport retries.
 func BuildEvaluatorOptimizer[T, E any](
 	generatorNode flowy.Node[T, E],
 	evaluatorNode flowy.Node[T, E],
 	isValid func(state T) bool,
-	maxRetries int,
-) *flowy.GraphBuilder[T, E] {
+	maxCorrectionRetries int,
+) (*flowy.GraphBuilder[T, E], error) {
+	if generatorNode == nil || evaluatorNode == nil || isValid == nil || maxCorrectionRetries <= 0 {
+		return nil, ErrConfiguration
+	}
 	builder := flowy.NewGraph[T, E](func(_ T, update T) T { return update })
 	builder.AddNode("generator", func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		update, directive, err := generatorNode(ctx, state)
@@ -166,14 +184,14 @@ func BuildEvaluatorOptimizer[T, E any](
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		if isValid != nil && isValid(update) {
+		if isValid(update) {
 			return update, flowy.WithEffects(flowy.End(), effects), nil
 		}
-		return update, flowy.WithEffects(flowy.Retry(maxRetries), effects), nil
+		return update, flowy.WithEffects(flowy.Retry(maxCorrectionRetries), effects), nil
 	})
 	builder.AllowNoOutgoingRoute("evaluator")
 	builder.AddRetryRoute("evaluator", "generator")
 	builder.AddEdge("generator", "evaluator")
 	builder.SetEntryPoint("generator")
-	return builder
+	return builder, nil
 }

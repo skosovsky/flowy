@@ -125,7 +125,8 @@ Prod: pair native checkpointer and lease adapters in one coordination domain.
 ## Agentic Patterns
 
 ```go
-b := patterns.BuildReAct[AgentState, AgentEffect](reasonNode, actionNode, hasPending, 8)
+b, err := patterns.BuildReAct[AgentState, AgentEffect](reasonNode, actionNode, hasPending, 8)
+if err != nil { return err }
 g, err := b.Compile(flowy.WithNamedBudget("reflection", 5))
 ```
 

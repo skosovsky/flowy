@@ -5,10 +5,14 @@ import "context"
 type bindingsKey struct{}
 
 // BindingKey identifies a typed dependency slot in RunBindings.
-// Use package-level sentinels (var DBKey BindingKey[*sql.DB]). One zero-value key per type T.
+// One zero-value slot exists per Go type T: two sentinels with the same T collide.
+// Use distinct host wrapper types when multiple dependencies need separate slots.
 type BindingKey[T any] struct{}
 
-// RunBindings holds ephemeral runtime dependencies that are never persisted in snapshots.
+// RunBindings holds ephemeral dependencies, never persisted in snapshots.
+// Bind during setup only, then freeze by discipline before sharing the container
+// through WithContext or WithBindings. Concurrent frozen reads are safe; concurrent
+// mutation is unsupported. Bound resources own their own concurrency contract.
 type RunBindings struct {
 	m map[any]any
 }

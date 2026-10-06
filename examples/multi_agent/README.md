@@ -1,6 +1,6 @@
 # Multi-Agent Supervisor
 
-Оркестрация через `patterns.BuildSupervisor`: supervisor выбирает worker по `Intent` и `RouteMap`.
+Оркестрация через `patterns.BuildDispatchGraph`: dispatch выбирает terminal worker по `Intent` и `RouteMap`.
 
 ## Граница ответственности
 
@@ -18,4 +18,4 @@ go run main.go
 
 | Старый подход | Current API                             |
 | ------------- | --------------------------------------- |
-| `multi_agent` | `patterns.BuildSupervisor` + `RouteMap` |
+| `multi_agent` | `patterns.BuildDispatchGraph` + `RouteMap` |

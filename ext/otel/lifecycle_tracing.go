@@ -7,9 +7,11 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 type lifecycleTracingDecorator struct {
@@ -19,15 +21,31 @@ type lifecycleTracingDecorator struct {
 
 // InstallLifecycleObserverWithTracing registers OTel counters and lifecycle trace spans.
 func InstallLifecycleObserverWithTracing() error {
-	obs, err := newLifecycleMetricsObserver()
+	observer, err := NewLifecycleObserverWithTracing(otel.GetMeterProvider(), otel.GetTracerProvider())
 	if err != nil {
 		return err
 	}
-	flowy.SetLifecycleObserver(&lifecycleTracingDecorator{
-		inner:  obs,
-		tracer: otel.Tracer("github.com/skosovsky/flowy/lifecycle"),
-	})
+	flowy.SetLifecycleObserver(observer)
 	return nil
+}
+
+// NewLifecycleObserverWithTracing binds counters/spans to explicit providers
+// without installing a global core observer. Constructor errors belong to the host.
+func NewLifecycleObserverWithTracing(
+	meter metric.MeterProvider,
+	tracer trace.TracerProvider,
+) (flowy.LifecycleObserver, error) {
+	if nilvalue.IsNil(tracer) {
+		return nil, ErrConfiguration
+	}
+	obs, err := newLifecycleMetricsObserver(meter)
+	if err != nil {
+		return nil, err
+	}
+	return &lifecycleTracingDecorator{
+		inner:  obs,
+		tracer: tracer.Tracer("github.com/skosovsky/flowy/lifecycle"),
+	}, nil
 }
 
 func (d *lifecycleTracingDecorator) ObserveLifecycle(ctx context.Context, event flowy.LifecycleObservation) {
