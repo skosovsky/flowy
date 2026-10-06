@@ -1,5 +1,23 @@
 # Durable execution design
 
+## Node panic boundary
+
+RecoverMiddleware catches panics only inside its wrapped node/middleware chain.
+The first registered middleware is outermost: place Recover before middleware
+whose panic should be caught. A middleware outside that boundary can still panic.
+Recovery preserves the supplied input state, returns a failure directive and a
+nonnil error; an error panic is wrapped so errors.Is retains its cause. Reducer,
+effect commit and checkpoint persistence do not proceed as successful node work.
+
+The surrounding runner's reducer, routing, checkpoint preparation/save/load and
+lifecycle publication are outside this wrapper. Synchronous callbacks invoked by
+the node itself (including nested graph or activity tooling) are within its call
+chain and still retain their own effect/recovery contracts. Shared mutable input
+and external effects already performed by a callback are not rolled back. Panic
+does not establish absence of remote dispatch and does not justify retrying an
+unknown external outcome. Recovery adds no blanket catch around the surrounding
+runner callbacks.
+
 ## Ordinary snapshot preparation and atomic handoff
 
 Save and SaveWithOutbox use the same state preparation: validate domain state,

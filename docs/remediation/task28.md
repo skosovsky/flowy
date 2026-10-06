@@ -70,7 +70,7 @@ installability gate; fixture success is not a real release.
 - Primary final checks: 16 release fixtures PASS (29.388s), shell syntax,
   Python compile and `git diff --check` PASS. All release origins were disposable
   local repositories; no real release/push performed. Commit SHA follows in task 02.
-- Task 02 accepted below; tasks 03–13 pending.
+- Tasks 01–03 accepted below; tasks 04–13 pending.
 
 ## Task 02 contract (before implementation)
 
@@ -130,3 +130,40 @@ Task 02 dispositions:
   PASS, no open findings; independent targeted race PASS (1.747s).
   Reports: `reviews/task02-completeness.md`, `reviews/task02-correctness.md`.
   Commit SHA follows in task 03. No live adapters were claimed as verified.
+
+## Task 03 contract (before implementation)
+
+Task 02 commit: `cffaa7b` (`fix: checkpoint preparation`).
+
+RecoverMiddleware returns the supplied input state and a nonnil error on panic.
+Panicked errors remain discoverable with errors.Is; other panic values retain
+their formatted cause. The returned directive is failure, never success. Direct
+wrapper and graph execution must preserve cause and nonzero state; graph reducer,
+effect commit and checkpoint save cannot run as though the node succeeded.
+
+Middleware registration order is outermost first. Recover catches only callbacks
+inside its wrapped node/middleware chain, including synchronous callbacks called
+by a node. The surrounding runner's reducer/routing/persistence/publication
+are separate boundaries. Shared mutable input or remote
+effects already performed by a callback cannot be rolled back by recovery; a panic
+does not prove an external effect was not dispatched. No blanket recovery/retry
+is introduced outside this node boundary.
+
+Task 03 dispositions and evidence:
+
+- F04: named return slots preserve nonzero input and panic error; error-valued
+  panics retain errors.Is identity; recovery returns a failure directive. Replaced
+  the weak zero-state graph test with direct cause/input, graph no-success,
+  mutable-input and middleware-order regression coverage.
+- D10: documented the surrounding runner/node call-chain boundary, outermost-first
+  middleware order and host ownership of mutations/external outcomes. Retained
+  separate callback contracts rather than adding blanket recover/retry.
+- Before fix: direct wrapper returned state 0, zero directive, nil error; graph
+  lost cause and returned invalid-directive error. Expected FAIL recorded in
+  `/tmp/flowy-task28-panic-before.log`.
+- Final targeted race PASS (2.023s); lint PASS, 0 issues; diff check PASS.
+  Independent completeness `/root/task03_completeness`: 100%, 10/10; independent
+  targeted race PASS (1.901s). Independent correctness
+  `/root/task03_correctness`: PASS, no open findings; targeted race PASS (2.012s),
+  diff check PASS. Reports: `reviews/task03-completeness.md`,
+  `reviews/task03-correctness.md`. Task 03 accepted; commit SHA follows in task 04.

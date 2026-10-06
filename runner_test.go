@@ -560,23 +560,6 @@ func TestBuilderUseAppliesOnionOrder(t *testing.T) {
 	}
 }
 
-func TestRecoverMiddlewareConvertsPanicToError(t *testing.T) {
-	t.Parallel()
-	type state struct{}
-	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.Use(RecoverMiddleware[state, NoEffect]())
-	b.AddNode("panic", func(_ context.Context, _ state) (state, Directive, error) {
-		panic("boom")
-	})
-	b.SetEntryPoint("panic")
-	b.AllowNoOutgoingRoute("panic")
-	g, _ := b.Compile()
-	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "panic-1", state{})
-	if err == nil {
-		t.Fatal("expected error from recovered panic")
-	}
-}
-
 func TestNodeMiddlewareContextReachesWrappedNode(t *testing.T) {
 	t.Parallel()
 	type state struct {
