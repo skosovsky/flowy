@@ -15,10 +15,10 @@ cd examples/react_agent && go run main.go
 - Conditional edge после reason: пока `!Done` → `react_action`, иначе `EndNode`.
 - **react_action** использует `Retry(maxReActSteps)` + `AddRetryRoute` → `EndNode` при исчерпании budget (`ErrRetryBudgetExceeded`).
 
-Глобальный лимит шагов: `flowy.WithMaxSteps` на `Compile()` (в patterns по умолчанию 64).
+Лимит вызовов handler на один compute segment: `flowy.WithMaxSteps` на `Compile()` (по умолчанию 1000; Resume начинает новый segment).
 
 ## Protection against infinite loops
 
-Цикл reason ↔ action ограничен `Retry` budget на action-узле и global `maxSteps`. Для tool-failure отдельно можно добавить `AddRetryRoute` на кастомный fallback-узел.
+Цикл reason ↔ action ограничен `Retry` budget на action-узле и segment `maxSteps`. Для tool-failure отдельно можно добавить `AddRetryRoute` на кастомный fallback-узел.
 
 Routing: `Completed()` + declarative edges. Lifecycle/lease: `runner_lifecycle_test.go`, `examples/README.md`.

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"time"
 )
 
@@ -28,6 +29,8 @@ type RunOption[T, E any] interface {
 }
 
 type runInvocationOptions[T, E any] struct {
+	cloneState         ValueCloner[T]
+	cloneEffect        ValueCloner[E]
 	bindings           *RunBindings
 	overlay            *T
 	overlayMerger      StateMerger[T]
@@ -127,21 +130,47 @@ func applyRunOptions[T, E any](opts ...RunOption[T, E]) (runInvocationOptions[T,
 	return out, nil
 }
 
-// UseBudget records consumption of a named budget in run metadata.
-// See also BudgetUsed for read access.
+// ErrBudgetInvalid rejects invalid names, negative units and counter overflow.
+var ErrBudgetInvalid = errors.New("flowy: invalid budget accounting")
+
+// ErrBudgetContext reports accounting outside an execution metadata context.
+var ErrBudgetContext = errors.New("flowy: budget metadata unavailable")
+
+// UseBudget records actual host units; it never reserves external resources.
+// Valid new names create counters. Only declared graph limits are enforced.
+// Host calls within a node must be serialized.
 func UseBudget(ctx context.Context, name string, amount int) error {
-	meta, ok := runMetadataFromContext(ctx)
-	if !ok {
-		return nil
+	if name == "" || !validRuntimeText(name) || amount < 0 {
+		return ErrBudgetInvalid
 	}
-	if amount < 0 {
+	meta, ok := runMetadataFromContext(ctx)
+	if !ok || meta == nil {
+		return ErrBudgetContext
+	}
+	used := meta.BudgetCounts[name]
+	if used < 0 || amount > math.MaxInt-used {
+		return ErrBudgetInvalid
+	}
+	if amount == 0 {
 		return nil
 	}
 	if meta.BudgetCounts == nil {
 		meta.BudgetCounts = map[string]int{}
 	}
-	meta.BudgetCounts[name] += amount
+	meta.BudgetCounts[name] = used + amount
 	return nil
+}
+
+// ValueCloner detaches a host value without mutation, I/O or panics.
+// A nil cloner requires immutable values across shared boundaries.
+type ValueCloner[T any] func(T) T
+
+// WithEventCloners isolates stream state/effects using pure host cloners.
+// It does not clone node inputs or change checkpoint storage ownership.
+func WithEventCloners[T, E any](state ValueCloner[T], effect ValueCloner[E]) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.cloneState, opts.cloneEffect = state, effect
+	})
 }
 
 // BudgetUsed returns the consumed units for a named budget from the active execution context.

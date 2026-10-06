@@ -1070,6 +1070,7 @@ func TestSubgraphSeedSaveFailure(t *testing.T) {
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
 			return SubgraphSlot[childState, NoEffect]{
+				Contract:         InlineSlotContract,
 				ExecutionPointer: "work",
 				Revision:         1,
 				State:            s.Child,

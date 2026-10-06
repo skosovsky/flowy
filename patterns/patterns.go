@@ -23,7 +23,7 @@ func BuildReAct[T, E any](
 		if err != nil {
 			return update, directive, err
 		}
-		base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+		base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 		if unwrapErr != nil {
 			return update, flowy.End(), unwrapErr
 		}
@@ -31,23 +31,23 @@ func BuildReAct[T, E any](
 			return update, directive, nil
 		}
 		if hasPendingActions != nil && hasPendingActions(update) {
-			return update, flowy.Completed(), nil
+			return update, flowy.WithEffects(flowy.Completed(), effects), nil
 		}
-		return update, flowy.End(), nil
+		return update, flowy.WithEffects(flowy.End(), effects), nil
 	})
 	builder.AddNode("react_action", func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		update, directive, err := actionNode(ctx, state)
 		if err != nil {
 			return update, directive, err
 		}
-		base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+		base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 		if unwrapErr != nil {
 			return update, flowy.End(), unwrapErr
 		}
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		return update, flowy.Retry(maxSteps), nil
+		return update, flowy.WithEffects(flowy.Retry(maxSteps), effects), nil
 	})
 	builder.AllowNoOutgoingRoute("react_action")
 	builder.AddConditionalEdge("react_reason", func(_ context.Context, state T) (string, error) {
@@ -76,14 +76,14 @@ func BuildSupervisor[T, E any](
 		if err != nil {
 			return update, directive, err
 		}
-		base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+		base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 		if unwrapErr != nil {
 			return update, flowy.End(), unwrapErr
 		}
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		return update, flowy.Completed(), nil
+		return update, flowy.WithEffects(flowy.Completed(), effects), nil
 	})
 
 	for nodeID, workerNode := range workerNodes {
@@ -94,14 +94,14 @@ func BuildSupervisor[T, E any](
 			if err != nil {
 				return update, directive, err
 			}
-			base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+			base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 			if unwrapErr != nil {
 				return update, flowy.End(), unwrapErr
 			}
 			if !base.IsCompleted() {
 				return update, directive, nil
 			}
-			return update, flowy.End(), nil
+			return update, flowy.WithEffects(flowy.End(), effects), nil
 		})
 		builder.AllowNoOutgoingRoute(localID)
 	}
@@ -145,21 +145,21 @@ func BuildEvaluatorOptimizer[T, E any](
 		if err != nil {
 			return update, directive, err
 		}
-		base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+		base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 		if unwrapErr != nil {
 			return update, flowy.End(), unwrapErr
 		}
 		if !base.IsCompleted() {
 			return update, directive, nil
 		}
-		return update, flowy.Completed(), nil
+		return update, flowy.WithEffects(flowy.Completed(), effects), nil
 	})
 	builder.AddNode("evaluator", func(ctx context.Context, state T) (T, flowy.Directive, error) {
 		update, directive, err := evaluatorNode(ctx, state)
 		if err != nil {
 			return update, directive, err
 		}
-		base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
+		base, effects, unwrapErr := flowy.UnwrapDirective[E](directive)
 		if unwrapErr != nil {
 			return update, flowy.End(), unwrapErr
 		}
@@ -167,9 +167,9 @@ func BuildEvaluatorOptimizer[T, E any](
 			return update, directive, nil
 		}
 		if isValid != nil && isValid(update) {
-			return update, flowy.End(), nil
+			return update, flowy.WithEffects(flowy.End(), effects), nil
 		}
-		return update, flowy.Retry(maxRetries), nil
+		return update, flowy.WithEffects(flowy.Retry(maxRetries), effects), nil
 	})
 	builder.AllowNoOutgoingRoute("evaluator")
 	builder.AddRetryRoute("evaluator", "generator")

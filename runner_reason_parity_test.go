@@ -360,12 +360,13 @@ func loopReasonPairGraphForCloseTests(t *testing.T) (*Graph[reasonPairState, NoE
 	t.Helper()
 	ready := make(chan struct{})
 	b := NewGraph[reasonPairState, NoEffect](func(_ reasonPairState, u reasonPairState) reasonPairState { return u })
-	b.AddNode("loop", func(_ context.Context, s reasonPairState) (reasonPairState, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s reasonPairState) (reasonPairState, Directive, error) {
 		select {
 		case <-ready:
 		default:
 			close(ready)
 		}
+		<-ctx.Done()
 		return s, Completed(), nil
 	})
 	b.AddEdge("loop", "loop")

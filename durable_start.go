@@ -77,6 +77,10 @@ func (r *DurableRunner[T, E]) preparedStream(
 	ctx context.Context, id string,
 	prepare func(context.Context, ExecutionLease) (ExecutionEnvelope, error), opts ...RunOption[T, E],
 ) (StreamHandle[T, E], error) {
+	inv, err := applyRunOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
 	session, err := r.acquireSession(ctx, id)
 	if err != nil {
 		return nil, err
@@ -98,6 +102,7 @@ func (r *DurableRunner[T, E]) preparedStream(
 	handle := base.startStream(
 		session.ctx,
 		id,
+		inv,
 		func(streamCtx context.Context, sink eventSink[T, E]) (*RunResult[T, E], error) {
 			defer session.finish()
 			return r.runWithSink(streamCtx, session.lease, envelope, sink, opts...)

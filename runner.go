@@ -44,15 +44,13 @@ const (
 )
 
 type streamHandle[T, E any] struct {
-	events   chan RunEvent[T, E]
-	stop     chan struct{}
-	drop     chan struct{}
-	done     chan struct{}
-	once     sync.Once
-	dropOnce sync.Once
-	err      error
-	result   *RunResult[T, E]
-	onStop   func()
+	events chan RunEvent[T, E]
+	stop   chan struct{}
+	done   chan struct{}
+	once   sync.Once
+	err    error
+	result *RunResult[T, E]
+	onStop func()
 }
 
 func streamConsumerClosed(ctx context.Context) bool {
@@ -77,13 +75,11 @@ func (s *streamHandle[T, E]) RequestStop() {
 }
 
 func (s *streamHandle[T, E]) Wait() error {
-	s.enableEventDrop()
 	<-s.done
 	return s.err
 }
 
 func (s *streamHandle[T, E]) WaitResult() (*RunResult[T, E], error) {
-	s.enableEventDrop()
 	<-s.done
 	return s.result, s.err
 }
@@ -95,12 +91,6 @@ func (s *streamHandle[T, E]) stopped() bool {
 	default:
 		return false
 	}
-}
-
-func (s *streamHandle[T, E]) enableEventDrop() {
-	s.dropOnce.Do(func() {
-		close(s.drop)
-	})
 }
 
 // NewRunner binds a compiled graph to persistence and returns a lifecycle runner.
@@ -241,7 +231,7 @@ func (r *graphRunner[T, E]) Stream(
 	meta := newRunMetadata()
 	mergeRunMetadataInput(&meta, inv.runMetadata)
 	runCtx := r.attachInvocation(ctx, inv, &meta)
-	return r.startStream(runCtx, threadID, func(
+	return r.startStream(runCtx, threadID, inv, func(
 		streamCtx context.Context,
 		sink eventSink[T, E],
 	) (*RunResult[T, E], error) {
@@ -290,7 +280,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 		return nil, err
 	}
 	runCtx := injectTelemetryContext(r.attachInvocation(ctx, inv, &decision.RunMeta), decision.RunMeta.TelemetryContext)
-	return r.startStream(runCtx, token.ThreadID, func(
+	return r.startStream(runCtx, token.ThreadID, inv, func(
 		streamCtx context.Context,
 		sink eventSink[T, E],
 	) (*RunResult[T, E], error) {
@@ -637,18 +627,17 @@ func (r *graphRunner[T, E]) cancelSessionForConsumerStop(threadID string) {
 func (r *graphRunner[T, E]) startStream(
 	ctx context.Context,
 	threadID string,
+	inv runInvocationOptions[T, E],
 	runFn func(context.Context, eventSink[T, E]) (*RunResult[T, E], error),
 ) StreamHandle[T, E] {
 	streamCtx, cancelStream := context.WithCancelCause(ctx)
 	stream := &streamHandle[T, E]{
-		events:   make(chan RunEvent[T, E], streamEventBufferSize),
-		stop:     make(chan struct{}),
-		drop:     make(chan struct{}),
-		done:     make(chan struct{}),
-		once:     sync.Once{},
-		dropOnce: sync.Once{},
-		err:      nil,
-		result:   nil,
+		events: make(chan RunEvent[T, E], streamEventBufferSize),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+		once:   sync.Once{},
+		err:    nil,
+		result: nil,
 		onStop: func() {
 			cancelStream(context.Canceled)
 			r.cancelSessionForConsumerStop(threadID)
@@ -664,9 +653,22 @@ func (r *graphRunner[T, E]) startStream(
 				return false
 			case <-eventCtx.Done():
 				return false
+			default:
+			}
+			if inv.cloneState != nil {
+				event.State = inv.cloneState(event.State)
+			}
+			if event.HasEffect && inv.cloneEffect != nil {
+				event.Effect = inv.cloneEffect(event.Effect)
+			}
+			select {
+			case <-stream.stop:
+				return false
+			case <-eventCtx.Done():
+				return false
 			case stream.events <- event:
 				return true
-			case <-stream.drop:
+			default:
 				return true
 			}
 		}
@@ -1063,6 +1065,22 @@ func (r *graphRunner[T, E]) execute(
 			)
 		}
 
+		if meta.StepCount >= limit {
+			markSegmentFailed(&meta)
+			emitTerminalEvent(
+				runCtx,
+				sink,
+				newRunEventFailed[T, E](current, state, ErrMaxStepsExceeded, ErrMaxStepsExceeded.Error()),
+			)
+			return failedResultWithReason(
+				state,
+				effects,
+				meta,
+				current,
+				ErrMaxStepsExceeded.Error(),
+			), ErrMaxStepsExceeded
+		}
+
 		nodeCtx := withNodeName(runCtx, current)
 		step, stepErr := r.runNodeStep(nodeCtx, runCtx, current, state, meta, effects, sink, inv)
 		if stepErr != nil {
@@ -1206,27 +1224,6 @@ func (r *graphRunner[T, E]) execute(
 		meta = step.meta
 		effects = step.effects
 		base := step.base
-
-		if meta.StepCount > limit {
-			markSegmentFailed(&meta)
-			emitTerminalEvent(
-				runCtx,
-				sink,
-				newRunEventFailed[T, E](
-					current,
-					state,
-					ErrMaxStepsExceeded,
-					ErrMaxStepsExceeded.Error(),
-				),
-			)
-			return failedResultWithReason(
-				state,
-				effects,
-				meta,
-				current,
-				ErrMaxStepsExceeded.Error(),
-			), ErrMaxStepsExceeded
-		}
 
 		if err := checkBudgetLimits(meta, r.graph.defaults.budgetLimits); err != nil {
 			markSegmentFailed(&meta)
@@ -1639,6 +1636,7 @@ func (r *graphRunner[T, E]) runNodeStep(
 		return canceledNodeStepOutcome(state, meta, effects), nil
 	}
 
+	meta.StepCount++
 	nodeStart := time.Now()
 	update, directive, err := node.handler(nodeCtx, state)
 	nodeDuration := time.Since(nodeStart)
@@ -1656,7 +1654,6 @@ func (r *graphRunner[T, E]) runNodeStep(
 	}
 
 	state = r.graph.reducer(state, update)
-	meta.StepCount++
 
 	if inv.invariantValidator != nil {
 		if invErr := inv.invariantValidator(state); invErr != nil {
@@ -2226,32 +2223,7 @@ func (r *graphRunner[T, E]) applyTerminalPolicies(
 // Suspend/Handoff inside AsNode are not resumable: inner ResumeToken is not propagated.
 // For suspend/handoff continuity use SubgraphNodeWithSlot.
 func (g *Graph[T, E]) AsNode() Node[T, E] {
-	return func(ctx context.Context, state T) (T, Directive, error) {
-		runner := g.NewRunner(newCaptureCheckpointer[T, E]())
-		result, err := runner.Start(ctx, "__inline__", state)
-		if err != nil {
-			return state, Fail("inline graph"), err
-		}
-		switch result.Status {
-		case RunStatusSuspended:
-			return result.State, Suspend(result.Reason), nil
-		case RunStatusHandoff:
-			return result.State, Handoff(result.Reason), nil
-		case RunStatusContextCanceled:
-			// Inline cancel maps to Completed directive; error return propagates context.Canceled.
-			return result.State, Completed(), context.Canceled
-		case RunStatusCompleted:
-			return result.State, Completed(), nil
-		case RunStatusFailed:
-			reason := result.Reason
-			if reason == "" {
-				reason = "inline graph failed"
-			}
-			return result.State, Fail(reason), nil
-		default:
-			return result.State, Fail("inline graph failed"), nil
-		}
-	}
+	return SubgraphNode(g, func(state T) T { return state }, func(_ T, updated T) T { return updated })
 }
 
 type captureCheckpointer[T, E any] struct {

@@ -67,8 +67,9 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 	runner := persistentReferenceRunner(t, store, referenceDescriptor("fault"), "node", request, nil)
 	// Act: interrupt exactly before intent, outcome or step commit and discard original pool/runner.
 	failed, startErr := runner.Start(ctx, id, intState{})
-	if startErr == nil || failed == nil || failed.State.Value != 0 || failed.RunMeta.StepCount != 0 ||
-		failed.ResumeToken.SnapshotRevision == 0 || calls.Load() != initialCalls {
+	if startErr == nil || failed == nil || failed.State.Value != 0 || failed.RunMeta.StepCount != expectedLiveSteps(failAt) ||
+		failed.ResumeToken.SnapshotRevision == 0 ||
+		calls.Load() != initialCalls {
 		t.Fatalf(
 			"fault did not interrupt expected boundary: result=%+v err=%v calls=%d",
 			failed,
@@ -85,7 +86,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 	if err != nil {
 		t.Fatal(err)
 	}
-	if source.Revision != uint64(failAt-1) || source.Terminal != nil {
+	if source.Revision != uint64(failAt-1) || source.Terminal != nil || source.RunMeta.StepCount != 0 {
 		t.Fatalf("partial transition or false terminal: %+v", source)
 	}
 	restarted := persistentReferenceRunner(t, restartedStore, referenceDescriptor("fault"), "node", request, nil)
@@ -164,4 +165,14 @@ func assertPersistentUnknownWithoutRedispatch(t *testing.T, result *flowy.RunRes
 	if !errors.Is(err, flowy.ErrActivityUnknown) || result == nil || calls != 1 {
 		t.Fatalf("abandoned remote write blindly retried: result=%+v err=%v calls=%d", result, err, calls)
 	}
+}
+
+// Before the step commit boundary the live handler has been admitted. A failed
+// step commit returns the authoritative prior checkpoint instead. Neither case
+// changes the committed entry counter asserted independently above.
+func expectedLiveSteps(failAt int32) int {
+	if failAt < 5 {
+		return 1
+	}
+	return 0
 }

@@ -36,7 +36,8 @@ type sanitizingSerializer[T any] struct {
 	sanitize func(*T)
 }
 
-// WithSanitizer wraps serializer with pre/post sanitize hook.
+// WithSanitizer sanitizes detached values using a base codec round trip.
+// Base Unmarshal must return a value isolated from prior inputs.
 func WithSanitizer[T any](
 	base flowy.StateSerializer[T],
 	sanitize func(*T),
@@ -45,10 +46,19 @@ func WithSanitizer[T any](
 }
 
 func (s *sanitizingSerializer[T]) Marshal(state T) ([]byte, error) {
-	if s.sanitize != nil {
-		s.sanitize(&state)
+	if s.sanitize == nil {
+		return s.base.Marshal(state)
 	}
-	return s.base.Marshal(state)
+	encoded, err := s.base.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	detached, err := s.base.Unmarshal(encoded)
+	if err != nil {
+		return nil, err
+	}
+	s.sanitize(&detached)
+	return s.base.Marshal(detached)
 }
 
 func (s *sanitizingSerializer[T]) Unmarshal(data []byte) (T, error) {

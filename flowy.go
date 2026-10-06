@@ -543,7 +543,8 @@ type RunEvent[T, E any] struct {
 
 // StreamHandle controls the lifecycle of asynchronous graph streaming.
 //
-// Events: best-effort progress/telemetry stream. When the buffer is full events may be dropped;
+// Events: bounded best-effort progress/telemetry stream. A full buffer immediately drops events;
+// execution never waits for a consumer. Values are immutable unless WithEventCloners detaches them.
 // terminal RunResult from WaitResult is authoritative.
 //
 // RequestStop: closes the event sink and cancels the in-flight run context (cancelSessionForConsumerStop).
@@ -551,7 +552,7 @@ type RunEvent[T, E any] struct {
 // [ErrNoActiveExecution]. A terminal event may be dropped after consumer stop; the checkpointer snapshot
 // is the source of truth for terminal state and reason (persist-vs-event semantics).
 //
-// Wait: call exactly once. WaitResult returns the same terminal error plus the RunResult.
+// Wait and WaitResult observe the same result and do not affect event delivery.
 // RequestStop after persisted cancel save returns nil; RequestStop with skip-on-save-error policy returns
 // [ErrCheckpointSkipped]; parent context cancel returns [context.Canceled]; retention or enqueue
 // enqueue failures return their respective errors.

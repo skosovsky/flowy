@@ -1159,7 +1159,10 @@ func TestStreamRequestStopPersistsSnapshot(t *testing.T) {
 	type state struct{ N int }
 	cp := newMemoryCP[state, NoEffect]()
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -1212,7 +1215,10 @@ func TestStreamRequestStopEmitsContextCanceled(t *testing.T) {
 	type state struct{ N int }
 	cp := newMemoryCP[state, NoEffect]()
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -1255,44 +1261,53 @@ func TestStreamRequestStopEmitsContextCanceled(t *testing.T) {
 }
 
 func TestStreamBufferFullCancelPersistsSnapshot(t *testing.T) {
+	// Arrange: fill the bounded buffer before cancellation, without a consumer.
 	type state struct{ N int }
+	ready := make(chan struct{})
 	cp := newMemoryCP[state, NoEffect]()
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N == 20 {
+			close(ready)
+			<-ctx.Done()
+			return s, Completed(), nil
+		}
 		s.N++
 		return s, Completed(), nil
-	})
-	b.AddEdge("loop", "loop")
-	b.SetEntryPoint("loop")
-	g, _ := b.Compile(WithMaxSteps(100_000))
-
+	}).AddEdge("loop", "loop").SetEntryPoint("loop")
+	g, err := b.Compile(WithMaxSteps(100))
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	handle, err := g.NewRunner(cp).Stream(ctx, "buffer-persist-th", state{})
 	if err != nil {
-		t.Fatalf("stream: %v", err)
+		t.Fatal(err)
 	}
-	out := BeginStreamCollect(handle)
-	waitForStreamBufferBackpressure()
+	// Act: the producer reaches this boundary despite an undrained full buffer.
+	select {
+	case <-ready:
+	case <-time.After(3 * time.Second):
+		t.Fatal("full buffer blocked producer")
+	}
 	cancel()
-	// Stream ctx is already canceled; use Background for await to avoid select race on done ctx.
-	events, waitErr := awaitStreamCollect(t, handle, out, 5*time.Second)
-	if !errors.Is(waitErr, context.Canceled) {
-		t.Fatalf("expected context canceled, got %v", waitErr)
+	result, waitErr := handle.WaitResult()
+	snapshot, _, loadErr := cp.Load(context.Background(), "buffer-persist-th")
+	var events []RunEvent[state, NoEffect]
+	for event := range handle.Events() {
+		events = append(events, event)
 	}
-	if _, _, loadErr := cp.Load(context.Background(), "buffer-persist-th"); loadErr != nil {
-		t.Fatalf("expected snapshot on buffer-full cancel, got %v", loadErr)
+	// Assert: delivery is best effort; cancellation and persistence are authoritative.
+	if !errors.Is(waitErr, context.Canceled) || loadErr != nil || result.Status != RunStatusContextCanceled ||
+		result.State != snapshot.State ||
+		snapshot.State.N != 20 ||
+		snapshot.ExecutionPointer != "loop" ||
+		snapshot.RunMeta.Segment.EndReason != SegmentEndContextCanceled {
+		t.Fatalf("result=%+v snapshot=%+v wait=%v load=%v", result, snapshot, waitErr, loadErr)
 	}
-	var terminal *RunEvent[state, NoEffect]
-	for i := range events {
-		if events[i].Type == EventContextCanceled {
-			terminal = &events[i]
-		}
-	}
-	if terminal == nil {
-		t.Fatalf("expected EventContextCanceled, got %+v", events)
-	}
-	if terminal.Reason != "context_canceled" {
-		t.Fatalf("expected context_canceled reason, got %q", terminal.Reason)
+	if len(events) != streamEventBufferSize {
+		t.Fatalf("bounded buffer size=%d", len(events))
 	}
 }
 
@@ -1302,7 +1317,10 @@ func TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError(t *testing
 	type state struct{ N int }
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -1366,7 +1384,10 @@ func TestResumeStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveError(t *t
 		}
 		return s, Completed(), nil
 	})
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -1432,7 +1453,10 @@ func TestStreamClosePersistVsEventDroppedTerminalEventRetentionFailed(t *testing
 		failPrune: true,
 	}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -1482,7 +1506,10 @@ func TestStreamClosePersistVsEventDroppedTerminalEventHardFailSave(t *testing.T)
 	type state struct{ N int }
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})
@@ -2157,6 +2184,9 @@ func TestStreamClosePersistVsEventDroppedTerminalEventSkipOnSaveErrorParentCance
 	cp := &failingMemoryCP[state, NoEffect]{failSave: true}
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		select {
 		case <-ready:
