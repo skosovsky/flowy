@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
@@ -23,6 +24,35 @@ type fakeDB struct {
 	saveRow        pgx.Row
 	rows           pgx.Rows
 }
+
+type testTxDB interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+}
+
+type fakeTx struct {
+	pgx.Tx
+
+	db testTxDB
+}
+
+func (f *fakeDB) BeginTx(_ context.Context, options pgx.TxOptions) (pgx.Tx, error) {
+	if options.IsoLevel != pgx.ReadCommitted {
+		return nil, errors.New("expected read committed")
+	}
+	return &fakeTx{db: f}, nil
+}
+
+func (tx *fakeTx) Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
+	return tx.db.Exec(ctx, sql, args...)
+}
+
+func (tx *fakeTx) QueryRow(ctx context.Context, sql string, args ...any) pgx.Row {
+	return tx.db.QueryRow(ctx, sql, args...)
+}
+
+func (*fakeTx) Commit(context.Context) error   { return nil }
+func (*fakeTx) Rollback(context.Context) error { return nil }
 
 func TestRevisionSchemaUsesBigint(t *testing.T) {
 	t.Parallel()
@@ -48,6 +78,9 @@ func (f *fakeDB) Exec(_ context.Context, _ string, _ ...any) (pgconn.CommandTag,
 
 func (f *fakeDB) QueryRow(_ context.Context, sql string, _ ...any) pgx.Row {
 	f.queryRowCalled = true
+	if strings.Contains(sql, "flowy:lease-fence") {
+		return fakeRow{values: []any{true}}
+	}
 	if strings.Contains(sql, "RETURNING revision") {
 		if f.saveRow != nil {
 			return f.saveRow
@@ -132,6 +165,7 @@ func (r *fakeRows) Scan(dest ...any) error {
 func (r *fakeRows) Values() ([]any, error) { return nil, nil }
 func (r *fakeRows) RawValues() [][]byte    { return nil }
 func (r *fakeRows) Conn() *pgx.Conn        { return nil }
+func (r *fakeRows) TypeMap() *pgtype.Map   { return pgtype.NewMap() }
 
 type sampleState struct {
 	Value string `json:"value"`
@@ -308,6 +342,10 @@ type deleteIfIdleDB struct {
 
 	deleteRows int64
 	leaseHeld  bool
+}
+
+func (d *deleteIfIdleDB) BeginTx(_ context.Context, _ pgx.TxOptions) (pgx.Tx, error) {
+	return &fakeTx{db: d}, nil
 }
 
 func (d *deleteIfIdleDB) Exec(_ context.Context, sql string, _ ...any) (pgconn.CommandTag, error) {

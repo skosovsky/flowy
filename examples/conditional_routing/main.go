@@ -37,9 +37,11 @@ func routeResumeTargetPolicy(
 	return state, flowy.ResumeCurrent(), nil
 }
 
+const queryFlowy = "what is flowy"
+
 func main() {
 	cache := map[string]string{
-		"what is flowy": "Flowy is a directive-based agent runtime for Go.",
+		queryFlowy: "Flowy is a directive-based agent runtime for Go.",
 	}
 
 	cp := testutil.NewMemoryCheckpointer[routeState, flowy.NoEffect]()
@@ -55,7 +57,7 @@ func main() {
 	}
 	fmt.Printf("miss status=%s answer=%q\n", miss.Status, miss.State.Answer)
 
-	hit, err := cacheRunner.Start(context.Background(), "route-hit", routeState{Query: "what is flowy"})
+	hit, err := cacheRunner.Start(context.Background(), "route-hit", routeState{Query: queryFlowy})
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -66,7 +68,7 @@ func main() {
 		log.Fatal(err)
 	}
 	lateRunner := lateGraph.NewRunner(cp)
-	pending, err := lateRunner.Start(context.Background(), "route-late", routeState{Query: "what is flowy"})
+	pending, err := lateRunner.Start(context.Background(), "route-late", routeState{Query: queryFlowy})
 	if err != nil {
 		log.Fatal(err)
 	}

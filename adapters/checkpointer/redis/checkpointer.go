@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
+	"strconv"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -19,15 +21,26 @@ import (
 const defaultPrefix = "flowy"
 
 const saveOccScript = `
+local activeLease = redis.call('GET', KEYS[2])
+if activeLease then
+  local ok, lease = pcall(cjson.decode, activeLease)
+  if not ok or type(lease) ~= 'table' then return -2 end
+  if not lease.owner or not lease.incarnation then return -2 end
+  if ARGV[4] == '' or lease.owner ~= ARGV[4] or lease.incarnation ~= ARGV[5] then return -1 end
+elseif ARGV[4] ~= '' then
+  return -1
+end
 local head = redis.call('LINDEX', KEYS[1], 0)
-local current = 0
+local current = '0'
 if head then
   local ok, stored = pcall(cjson.decode, head)
-  if ok and stored.revision then
-    current = tonumber(stored.revision)
-  end
+  if not ok or type(stored) ~= 'table' then return -3 end
+  if type(stored.revision) ~= 'string' then return -3 end
+  current = stored.revision
+  if not string.match(current, '^[1-9][0-9]*$') or string.len(current) > 20 or
+     (string.len(current) == 20 and current > '18446744073709551615') then return -3 end
 end
-local expected = tonumber(ARGV[1])
+local expected = ARGV[1]
 if current ~= expected then
   return 0
 end
@@ -84,13 +97,16 @@ func (c *Checkpointer[T, E]) Save(
 	expectedRevision uint64,
 	snapshot flowy.Snapshot[T, E],
 ) (uint64, error) {
+	if expectedRevision == math.MaxUint64 {
+		return 0, flowy.ErrExecutionCapability
+	}
 	newRevision := expectedRevision + 1
 	snapshot.Revision = newRevision
 	stored, err := checkpoint.EncodeRecord(snapshot, c.serializer)
 	if err != nil {
 		return 0, err
 	}
-	payload, err := json.Marshal(stored)
+	payload, err := marshalRecord(stored)
 	if err != nil {
 		return 0, fmt.Errorf("redis checkpoint marshal: %w", err)
 	}
@@ -99,14 +115,30 @@ func (c *Checkpointer[T, E]) Save(
 	if c.ttl > 0 {
 		ttlSec = int64(c.ttl.Seconds())
 	}
-	result, err := c.client.Eval(ctx, saveOccScript, []string{key},
-		expectedRevision, string(payload), ttlSec,
+	owner, incarnation := "", ""
+	if lease, supplied := flowy.ExecutionLeaseFromContext(ctx); supplied {
+		if lease.ExecutionID != snapshot.ThreadID || lease.Owner == "" || lease.Incarnation == 0 {
+			return 0, flowy.ErrLeaseLost
+		}
+		owner, incarnation = lease.Owner, strconv.FormatUint(lease.Incarnation, 10)
+	}
+	result, err := c.client.Eval(ctx, saveOccScript, []string{key, c.leaseKey(snapshot.ThreadID)},
+		strconv.FormatUint(expectedRevision, 10), string(payload), ttlSec, owner, incarnation,
 	).Int64()
 	if err != nil {
 		return 0, err
 	}
 	if result == 0 {
 		return 0, flowy.ErrConcurrencyConflict
+	}
+	if result == -1 {
+		return 0, flowy.ErrLeaseLost
+	}
+	if result == -2 {
+		return 0, flowy.ErrExecutionIncompatible
+	}
+	if result == -3 {
+		return 0, checkpoint.ErrInvalidRecord
 	}
 	return newRevision, nil
 }
@@ -187,12 +219,12 @@ func (c *Checkpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) 
 }
 
 func (c *Checkpointer[T, E]) decode(threadID string, raw string) (flowy.Snapshot[T, E], error) {
-	var stored checkpoint.Record
+	var stored redisRecord
 	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
 		return flowy.Snapshot[T, E]{}, fmt.Errorf("redis checkpoint unmarshal: %w", err)
 	}
 	snapshot, err := checkpoint.DecodeRecord[T, E](
-		stored,
+		stored.checkpointRecord(),
 		c.serializer,
 		checkpoint.DecodeRecordOptions{
 			ExpectedThreadID:         threadID,
@@ -204,6 +236,23 @@ func (c *Checkpointer[T, E]) decode(threadID string, raw string) (flowy.Snapshot
 		return flowy.Snapshot[T, E]{}, err
 	}
 	return snapshot, nil
+}
+
+// Redis uses a decimal string revision: Lua JSON numbers cannot represent all
+// uint64 values. Numeric legacy records require an explicit offline migration.
+type redisRecord struct {
+	checkpoint.Record
+
+	ExactRevision uint64 `json:"revision,string"`
+}
+
+func marshalRecord(record checkpoint.Record) ([]byte, error) {
+	return json.Marshal(redisRecord{Record: record, ExactRevision: record.Revision})
+}
+
+func (r redisRecord) checkpointRecord() checkpoint.Record {
+	r.Record.Revision = r.ExactRevision
+	return r.Record
 }
 
 func (c *Checkpointer[T, E]) historyKey(threadID string) string {

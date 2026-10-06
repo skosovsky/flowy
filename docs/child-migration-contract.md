@@ -1,0 +1,11 @@
+# Child-group migration references
+
+Migration changes host state/current cursor, not the identity or history of already planned children. A pure migration may supply ChildGroupReferences: current logical group key -> original immutable group identity. References are scoped to the same parent activation; each key must equal the original plan key and name an existing group in that activation. A reference never changes plan compatibility labels, input, allocations, child execution identities, revisions, outcomes, cancellation evidence, merged results or budget returns.
+
+Every unjoined group must remain reachable from the current cursor through its original address or an explicit reference. Dropping/forging a reference while moving the cursor fails with ErrMigrationInvalid wrapping ErrExecutionCorrupt before target commit, codec/node/dispatch. Runtime must not silently infer a binding or launch new children under the new cursor.
+
+Prepare/RunChildren at a bound cursor replay the original group and require exactly the original plan/capacity. Join, cancellation and budget return operate on the immutable group, with normal OCC/fencing. Child wait/cancel confirmation retain their original node/group/child addresses and additionally require a current binding; decisions are never relabelled to the migrated cursor. Unknown running children remain unknown; migration cannot authorize redispatch.
+
+Normal step/activation advancement clears group references, just as it clears activity references. Same-activation Retry preserves them. Fork clears references with all other runtime handles. Clones detach the binding map. Ordinary sequential composition is unchanged; host chooses whether and how to migrate, and no child discovery or dispatcher is added to core.
+
+Acceptance: cursor/descriptor migration with completed plus waiting siblings preserves exact IDs/results/allocations, performs no repeat dispatch, accepts addressed resolution under the new worker and joins once. Missing/wrong-key/foreign-activation references reject without source mutation or host callbacks. Changed plan/capacity cannot reset a bound group. Sync/stream, chained migration, commit faults, unknown/cancel/budget recovery and persistent pool restart require coverage before declaring completion.

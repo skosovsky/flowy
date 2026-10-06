@@ -1,5 +1,6 @@
 UPDATE flowy_leases
-SET expires_at = NOW() + (@ttl_seconds::int * INTERVAL '1 second')
+SET expires_at = clock_timestamp() + (@ttl_seconds::double precision * INTERVAL '1 second')
 WHERE thread_id = @thread_id
   AND owner = @owner
-  AND expires_at > NOW();
+  AND incarnation = @incarnation
+  AND expires_at > clock_timestamp();

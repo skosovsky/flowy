@@ -7,7 +7,7 @@ SELECT
     effects,
     updated_at
 FROM flowy_checkpoints
-WHERE thread_id = @thread_id::varchar(255)
+WHERE thread_id = @thread_id::TEXT
 ORDER BY revision DESC
 LIMIT CASE
     WHEN @limit <= 0 THEN 2147483647

@@ -36,13 +36,13 @@ type runInvocationOptions[T, E any] struct {
 	runMetadata        RunMetadataInput
 	leaseOwner         string
 	leaseTTL           time.Duration
+	lease              ExecutionLease
 	handoffOutbox      HandoffOutbox
 	checkpointPolicy   CheckpointFailurePolicy
 }
 
 type runOptionFunc[T, E any] func(*runInvocationOptions[T, E])
 
-//nolint:unused // invoked via RunOption interface in applyRunOptions
 func (f runOptionFunc[T, E]) apply(opts *runInvocationOptions[T, E]) {
 	f(opts)
 }

@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"fmt"
+	"slices"
 )
 
 func wrapNodeWithMiddlewares[T, E any](node Node[T, E], middlewares []NodeMiddleware[T, E]) Node[T, E] {
@@ -10,8 +11,7 @@ func wrapNodeWithMiddlewares[T, E any](node Node[T, E], middlewares []NodeMiddle
 		return node
 	}
 	wrapped := node
-	for i := len(middlewares) - 1; i >= 0; i-- {
-		mw := middlewares[i]
+	for _, mw := range slices.Backward(middlewares) {
 		if mw == nil {
 			continue
 		}

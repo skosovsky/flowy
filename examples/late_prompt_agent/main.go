@@ -215,7 +215,7 @@ func initialState() AgentRunState {
 			Goal:         "Book a follow-up call",
 		},
 		Tools: []Tool{
-			{Name: "book_slot", Description: "Book a calendar slot"},
+			{Name: toolBookSlot, Description: "Book a calendar slot"},
 			{Name: blockedToolName, Description: "Read prior appointments"},
 		},
 		History: []Message{
@@ -231,6 +231,8 @@ func toolNames(tools []Tool) []string {
 	}
 	return names
 }
+
+const toolBookSlot = "book_slot"
 
 func main() {
 	renderer := &spyRenderer{inner: SalesRenderer{}}

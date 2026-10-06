@@ -302,10 +302,10 @@ func TestLeaseContention(t *testing.T) {
 
 	lease := NewMemoryLeaseManager()
 	ctx := context.Background()
-	if err := lease.Acquire(ctx, "th", "worker-a", time.Minute); err != nil {
+	if _, err := lease.Acquire(ctx, "th", "worker-a", time.Minute); err != nil {
 		t.Fatalf("acquire a: %v", err)
 	}
-	err := lease.Acquire(ctx, "th", "worker-b", time.Minute)
+	_, err := lease.Acquire(ctx, "th", "worker-b", time.Minute)
 	if !errors.Is(err, ErrLeaseHeld) {
 		t.Fatalf("expected ErrLeaseHeld, got %v", err)
 	}
@@ -847,8 +847,14 @@ func TestConcurrentStartSameThreadReturnsThreadLeaseBusy(t *testing.T) {
 
 	type state struct{}
 
+	// Arrange: the first owner must enter its node before the competing Start.
+	started := make(chan struct{}, 1)
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
 		<-ctx.Done()
 		return s, Suspend("wait"), nil
 	})
@@ -863,15 +869,22 @@ func TestConcurrentStartSameThreadReturnsThreadLeaseBusy(t *testing.T) {
 	runner := g.NewRunnerWithOptions(nil, []RunnerOption[state, NoEffect]{WithLeaseManager[state, NoEffect](lease)})
 	leaseOpts := []RunOption[state, NoEffect]{WithRunLease[state, NoEffect]("worker-a", time.Minute)}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 	firstDone := make(chan error, 1)
 	go func() {
 		_, startErr := runner.Start(ctx, "busy-th", state{}, leaseOpts...)
 		firstDone <- startErr
 	}()
 
-	waitForHandoffCoordination()
-	_, err = runner.Start(context.Background(), "busy-th", state{}, leaseOpts...)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("first Start did not enter node: ", ctx.Err())
+	}
+	// Act: contend only after the first lease is demonstrably acquired.
+	_, err = runner.Start(ctx, "busy-th", state{}, leaseOpts...)
+	// Assert: same-owner acquisition is refused, and the first worker can exit.
 	if !errors.Is(err, ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
@@ -920,20 +933,24 @@ type renewFailLease struct {
 	failAfter int
 }
 
-func (r *renewFailLease) Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) error {
+func (r *renewFailLease) Acquire(
+	ctx context.Context,
+	threadID, owner string,
+	ttl time.Duration,
+) (ExecutionLease, error) {
 	return r.inner.Acquire(ctx, threadID, owner, ttl)
 }
 
-func (r *renewFailLease) Renew(ctx context.Context, threadID, owner string, ttl time.Duration) error {
+func (r *renewFailLease) Renew(ctx context.Context, lease ExecutionLease, ttl time.Duration) (ExecutionLease, error) {
 	r.renewals++
 	if r.failAfter > 0 && r.renewals >= r.failAfter {
-		return ErrLeaseLost
+		return ExecutionLease{}, ErrLeaseLost
 	}
-	return r.inner.Renew(ctx, threadID, owner, ttl)
+	return r.inner.Renew(ctx, lease, ttl)
 }
 
-func (r *renewFailLease) Release(ctx context.Context, threadID, owner string) error {
-	return r.inner.Release(ctx, threadID, owner)
+func (r *renewFailLease) Release(ctx context.Context, lease ExecutionLease) error {
+	return r.inner.Release(ctx, lease)
 }
 
 func (r *renewFailLease) IsHeld(ctx context.Context, threadID string) (bool, error) {
@@ -945,38 +962,42 @@ func (r *renewFailLease) Holder(ctx context.Context, threadID string) (string, b
 }
 
 type renewSignalLease struct {
-	inner   LeaseManager
-	renewCh chan struct{}
-	mu      sync.Mutex
-	renewal int
+	inner     LeaseManager
+	renewCh   chan struct{}
+	mu        sync.Mutex
+	expiresAt time.Time
 }
 
-func (r *renewSignalLease) Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) error {
+func (r *renewSignalLease) Acquire(
+	ctx context.Context,
+	threadID, owner string,
+	ttl time.Duration,
+) (ExecutionLease, error) {
 	return r.inner.Acquire(ctx, threadID, owner, ttl)
 }
 
-func (r *renewSignalLease) Renew(ctx context.Context, threadID, owner string, ttl time.Duration) error {
-	err := r.inner.Renew(ctx, threadID, owner, ttl)
+func (r *renewSignalLease) Renew(ctx context.Context, lease ExecutionLease, ttl time.Duration) (ExecutionLease, error) {
+	renewed, err := r.inner.Renew(ctx, lease, ttl)
 	if err == nil {
 		r.mu.Lock()
-		r.renewal++
+		r.expiresAt = renewed.ExpiresAt
 		r.mu.Unlock()
 		select {
 		case r.renewCh <- struct{}{}:
 		default:
 		}
 	}
-	return err
+	return renewed, err
 }
 
-func (r *renewSignalLease) renewals() int {
+func (r *renewSignalLease) renewedUntil() time.Time {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.renewal
+	return r.expiresAt
 }
 
-func (r *renewSignalLease) Release(ctx context.Context, threadID, owner string) error {
-	return r.inner.Release(ctx, threadID, owner)
+func (r *renewSignalLease) Release(ctx context.Context, lease ExecutionLease) error {
+	return r.inner.Release(ctx, lease)
 }
 
 func (r *renewSignalLease) IsHeld(ctx context.Context, threadID string) (bool, error) {
@@ -1059,9 +1080,9 @@ func TestLeaseHeartbeatPreventsTakeoverDuringActiveRun(t *testing.T) {
 	nowMu.Lock()
 	now = now.Add(30 * time.Millisecond)
 	nowMu.Unlock()
-	renewalBaseline := lease.renewals()
+	expectedExpiry := currentNow().Add(ttl)
 	timeout := time.After(time.Second)
-	for lease.renewals() <= renewalBaseline {
+	for lease.renewedUntil().Before(expectedExpiry) {
 		select {
 		case <-lease.renewCh:
 		case <-timeout:
@@ -1071,7 +1092,7 @@ func TestLeaseHeartbeatPreventsTakeoverDuringActiveRun(t *testing.T) {
 	nowMu.Lock()
 	now = now.Add(30 * time.Millisecond)
 	nowMu.Unlock()
-	takeoverErr := lease.Acquire(context.Background(), "hb-th", "worker-b", ttl)
+	_, takeoverErr := lease.Acquire(context.Background(), "hb-th", "worker-b", ttl)
 	if !errors.Is(takeoverErr, ErrLeaseHeld) && !errors.Is(takeoverErr, ErrThreadLeaseBusy) {
 		t.Fatalf("expected takeover to be denied while heartbeat renews, got %v", takeoverErr)
 	}
@@ -1131,7 +1152,7 @@ func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 	nowMu.Lock()
 	now = now.Add(ttl + 20*time.Millisecond)
 	nowMu.Unlock()
-	if acquireErr := lease.Acquire(context.Background(), "takeover-th", "worker-b", ttl); acquireErr != nil {
+	if _, acquireErr := lease.Acquire(context.Background(), "takeover-th", "worker-b", ttl); acquireErr != nil {
 		t.Fatalf("worker-b acquire after expiry: %v", acquireErr)
 	}
 
@@ -1150,15 +1171,16 @@ func TestLeaseTTLExpiryAllowsResumeByAnotherOwner(t *testing.T) {
 
 	ctx := context.Background()
 	const ttl = time.Minute
-	if err := lease.Acquire(ctx, "th", "worker-a", ttl); err != nil {
-		t.Fatalf("acquire a: %v", err)
+	old, acquireErr := lease.Acquire(ctx, "th", "worker-a", ttl)
+	if acquireErr != nil {
+		t.Fatalf("acquire a: %v", acquireErr)
 	}
 	now = now.Add(ttl + time.Second)
-	if err := lease.Acquire(ctx, "th", "worker-b", ttl); err != nil {
+	if _, err := lease.Acquire(ctx, "th", "worker-b", ttl); err != nil {
 		t.Fatalf("acquire b after expiry: %v", err)
 	}
-	if err := lease.Renew(ctx, "th", "worker-a", ttl); !errors.Is(err, ErrLeaseHeld) {
-		t.Fatalf("expected ErrLeaseHeld for expired owner, got %v", err)
+	if _, renewErr := lease.Renew(ctx, old, ttl); !errors.Is(renewErr, ErrLeaseLost) {
+		t.Fatalf("expected ErrLeaseLost for expired acquisition, got %v", renewErr)
 	}
 }
 
@@ -1454,7 +1476,7 @@ func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 
 	lease := NewMemoryLeaseManager()
 	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
-	if err := lease.Acquire(context.Background(), "lease-del-th", "worker-a", time.Minute); err != nil {
+	if _, err := lease.Acquire(context.Background(), "lease-del-th", "worker-a", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 
@@ -1727,7 +1749,7 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 	}
 	lease := NewMemoryLeaseManager()
 	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
-	if acquireErr := lease.Acquire(
+	if _, acquireErr := lease.Acquire(
 		context.Background(), "del-busy-th", "other-worker", time.Minute,
 	); acquireErr != nil {
 		t.Fatalf("acquire other: %v", acquireErr)
@@ -1819,7 +1841,7 @@ func TestResumeStreamReleasesLeaseOnPrepareResumeError(t *testing.T) {
 		t.Fatalf("expected ErrThreadNotFound, got %v", err)
 	}
 
-	if err := lease.Acquire(context.Background(), "missing-stream-resume-th", "worker-2", time.Minute); err != nil {
+	if _, err := lease.Acquire(context.Background(), "missing-stream-resume-th", "worker-2", time.Minute); err != nil {
 		t.Fatalf("lease should be released after prepareResume error, acquire worker-2 failed: %v", err)
 	}
 }
@@ -1861,9 +1883,12 @@ func TestHandoffWhenNodeReturnsContextErr(t *testing.T) {
 
 	type state struct{ N int }
 
+	// Arrange: node entry proves active execution registration, without a timing guess.
+	entered := make(chan struct{})
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
 		s.N++
+		close(entered)
 		<-ctx.Done()
 		return s, Completed(), ctx.Err()
 	})
@@ -1889,12 +1914,14 @@ func TestHandoffWhenNodeReturnsContextErr(t *testing.T) {
 		}{res, runErr}
 	}()
 
-	waitForHandoffCoordination()
+	// Act.
+	<-entered
 	if handoffErr := runner.RequestLocalHandoff(context.Background(), "handoff-ctx-err"); handoffErr != nil {
 		t.Fatalf("handoff: %v", handoffErr)
 	}
 
 	out := <-done
+	// Assert.
 	if out.err != nil {
 		t.Fatalf("start: %v", out.err)
 	}

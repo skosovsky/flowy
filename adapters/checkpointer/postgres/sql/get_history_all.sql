@@ -7,5 +7,5 @@ SELECT
     state_data::text AS state_data,
     created_at
 FROM flowy_checkpoints
-WHERE thread_id = @thread_id::varchar(255)
+WHERE thread_id = @thread_id::TEXT
 ORDER BY created_at DESC, id DESC;

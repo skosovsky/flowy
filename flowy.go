@@ -29,6 +29,7 @@ const (
 	directiveEffect
 	directiveFail
 	directiveHandoff
+	directiveWait
 	// directiveNext is reserved; nodes must not route by node id.
 	directiveNext directiveKind = 99
 )
@@ -41,6 +42,7 @@ type Directive struct {
 	resumeAt    ExecutionPointer
 	base        *Directive
 	effect      any
+	wait        *DurableWaitSpec
 }
 
 func directiveWithKind(kind directiveKind) Directive {
@@ -51,6 +53,7 @@ func directiveWithKind(kind directiveKind) Directive {
 		resumeAt:    "",
 		base:        nil,
 		effect:      nil,
+		wait:        nil,
 	}
 }
 
@@ -87,6 +90,14 @@ func Suspend(reason string, opts ...DirectiveOption) Directive {
 	d := directiveWithKind(directiveSuspend)
 	d.reason = reason
 	applyDirectiveOptions(&d, opts)
+	return d
+}
+
+// Await commits node state and an explicit durable wait before registration.
+// It requires the opt-in durable backend/profile; ordinary Suspend is unchanged.
+func Await(spec DurableWaitSpec) Directive {
+	d := directiveWithKind(directiveWait)
+	d.wait = &spec
 	return d
 }
 
@@ -133,7 +144,9 @@ func (d Directive) Type() string {
 	case directiveEnd:
 		return "end"
 	case directiveSuspend:
-		return "suspend"
+		return string(SegmentEndSuspend)
+	case directiveWait:
+		return "durable_wait"
 	case directiveRetry:
 		return "retry"
 	case directiveEffect:
@@ -141,7 +154,7 @@ func (d Directive) Type() string {
 	case directiveFail:
 		return "fail"
 	case directiveHandoff:
-		return "handoff"
+		return string(RunStatusHandoff)
 	case directiveNext:
 		return "next"
 	default:

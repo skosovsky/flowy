@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"errors"
+	"slices"
 )
 
 // StreamCollectResult holds events and terminal outcome after AwaitStreamCollect.
@@ -28,9 +29,9 @@ func isTerminalEventType(t EventType) bool {
 
 // terminalEventFromEvents returns the last terminal event in the slice, if any.
 func terminalEventFromEvents[T, E any](events []RunEvent[T, E]) (RunEvent[T, E], bool) {
-	for i := len(events) - 1; i >= 0; i-- {
-		if isTerminalEventType(events[i].Type) {
-			return events[i], true
+	for _, event := range slices.Backward(events) {
+		if isTerminalEventType(event.Type) {
+			return event, true
 		}
 	}
 	return RunEvent[T, E]{}, false

@@ -43,10 +43,14 @@ func TestLeaseGuardCheckpointerDelegatesSaveWithOutbox(t *testing.T) {
 
 type noopLeaseManager struct{}
 
-func (noopLeaseManager) Acquire(context.Context, string, string, time.Duration) error { return nil }
-func (noopLeaseManager) Renew(context.Context, string, string, time.Duration) error   { return nil }
-func (noopLeaseManager) Release(context.Context, string, string) error                { return nil }
-func (noopLeaseManager) IsHeld(context.Context, string) (bool, error)                 { return false, nil }
+func (noopLeaseManager) Acquire(context.Context, string, string, time.Duration) (ExecutionLease, error) {
+	return ExecutionLease{}, nil
+}
+func (noopLeaseManager) Renew(context.Context, ExecutionLease, time.Duration) (ExecutionLease, error) {
+	return ExecutionLease{}, nil
+}
+func (noopLeaseManager) Release(context.Context, ExecutionLease) error { return nil }
+func (noopLeaseManager) IsHeld(context.Context, string) (bool, error)  { return false, nil }
 func (noopLeaseManager) Holder(context.Context, string) (string, bool, error) {
 	return "", false, nil
 }

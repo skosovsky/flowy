@@ -8,15 +8,15 @@ INSERT INTO flowy_checkpoints (
     updated_at
 )
 SELECT
-    @thread_id::varchar(255),
+    @thread_id::TEXT,
     (@expected_revision::bigint + 1),
-    @node_id::varchar(255),
+    @node_id::TEXT,
     @state_payload,
     @run_meta,
     @effects,
     @updated_at
 WHERE COALESCE(
-    (SELECT MAX(revision) FROM flowy_checkpoints WHERE thread_id = @thread_id::varchar(255)),
+    (SELECT MAX(revision) FROM flowy_checkpoints WHERE thread_id = @thread_id::TEXT),
     0
 ) = @expected_revision::bigint
 RETURNING revision;

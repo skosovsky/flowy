@@ -150,7 +150,7 @@ func newRunResultContextCanceled[T, E any](state T, effects []E, meta RunMetadat
 		Effects:          append([]E(nil), effects...),
 		RunMeta:          meta,
 		ExecutionPointer: ExecutionPointer(pointer),
-		Reason:           "context_canceled",
+		Reason:           string(RunStatusContextCanceled),
 	}
 }
 

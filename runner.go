@@ -31,11 +31,17 @@ type graphRunner[T, E any] struct {
 	handoffStaleAfter time.Duration
 	logger            *slog.Logger
 	sessions          sync.Map // threadID -> *runSession
+	durable           *executionCheckpointer[T, E]
 }
 
 type eventSink[T, E any] func(ctx context.Context, event RunEvent[T, E]) bool
 
 type streamCloseKey struct{}
+
+const (
+	resumeReasonInvalidPointer       = "invalid_pointer"
+	resumeReasonInvalidHandoffStatus = "invalid_handoff_status"
+)
 
 type streamHandle[T, E any] struct {
 	events   chan RunEvent[T, E]
@@ -111,7 +117,7 @@ func (g *Graph[T, E]) NewRunnerWithOptions(
 	runnerOpts []RunnerOption[T, E],
 	interceptors ...StateInterceptor[T],
 ) Runner[T, E] {
-	r := &graphRunner[T, E]{ //nolint:exhaustruct // handoffOutbox defaults nil until WithRunnerHandoffOutbox
+	r := &graphRunner[T, E]{ //nolint:exhaustruct_v5 // handoffOutbox and durable default nil until configured
 		graph:             g,
 		checkpointer:      checkpointer,
 		interceptors:      append([]StateInterceptor[T](nil), interceptors...),
@@ -149,7 +155,7 @@ func (r *graphRunner[T, E]) Start(
 	if optErr != nil {
 		return nil, optErr
 	}
-	if leaseErr := r.acquireLease(ctx, threadID, inv); leaseErr != nil {
+	if leaseErr := r.acquireLease(ctx, threadID, &inv); leaseErr != nil {
 		return nil, leaseErr
 	}
 
@@ -187,7 +193,7 @@ func (r *graphRunner[T, E]) Resume(
 	if optErr != nil {
 		return nil, optErr
 	}
-	if leaseErr := r.acquireLease(ctx, token.ThreadID, inv); leaseErr != nil {
+	if leaseErr := r.acquireLease(ctx, token.ThreadID, &inv); leaseErr != nil {
 		return nil, leaseErr
 	}
 
@@ -229,7 +235,7 @@ func (r *graphRunner[T, E]) Stream(
 	if optErr != nil {
 		return nil, optErr
 	}
-	if leaseErr := r.acquireLease(ctx, threadID, inv); leaseErr != nil {
+	if leaseErr := r.acquireLease(ctx, threadID, &inv); leaseErr != nil {
 		return nil, leaseErr
 	}
 	meta := newRunMetadata()
@@ -271,7 +277,7 @@ func (r *graphRunner[T, E]) ResumeStream(
 	if optErr != nil {
 		return nil, optErr
 	}
-	if leaseErr := r.acquireLease(ctx, token.ThreadID, inv); leaseErr != nil {
+	if leaseErr := r.acquireLease(ctx, token.ThreadID, &inv); leaseErr != nil {
 		return nil, leaseErr
 	}
 	decision, err := r.evaluateResume(ctx, token, inv)
@@ -326,6 +332,9 @@ func (r *graphRunner[T, E]) RequestLocalHandoff(ctx context.Context, threadID st
 	}
 	select {
 	case <-session.done:
+		if err := waitCtx.Err(); err != nil {
+			return fmt.Errorf("%w: %w", ErrHandoffNotCompleted, err)
+		}
 		if err := session.completionError(); err != nil {
 			return err
 		}
@@ -387,7 +396,7 @@ func (r *graphRunner[T, E]) EvaluateHandoffRecovery(
 		return decision, err
 	}
 	if ptrErr := r.validateExecutionPointer(snapshot.ExecutionPointer); ptrErr != nil {
-		reason := "invalid_pointer"
+		reason := resumeReasonInvalidPointer
 		if snapshot.ExecutionPointer == "" {
 			reason = string(ResumeDecisionInvalidSnapshot)
 		}
@@ -414,7 +423,7 @@ func (r *graphRunner[T, E]) EvaluateHandoffRecovery(
 	switch snapshot.RunMeta.HandoffStatus {
 	case HandoffStatusOrphaned:
 		decision.Status = ResumeDecisionHandoffRecoverable
-		decision.Reason = "handoff_orphaned"
+		decision.Reason = ReasonHandoffOrphaned
 		decision.Err = ErrHandoffOrphaned
 	case HandoffStatusPending:
 		if isHandoffPendingStale(snapshot.RunMeta.HandoffPendingAt, cfg.staleAfter) {
@@ -422,9 +431,9 @@ func (r *graphRunner[T, E]) EvaluateHandoffRecovery(
 			decision.Reason = "handoff_pending_stale"
 			decision.Err = ErrHandoffPending
 		} else {
-			emitResumeRejected(ctx, threadID, snapshot.ExecutionPointer, "handoff_pending")
+			emitResumeRejected(ctx, threadID, snapshot.ExecutionPointer, string(ResumeDecisionHandoffPending))
 			decision.Status = ResumeDecisionHandoffPending
-			decision.Reason = "handoff_pending"
+			decision.Reason = string(ResumeDecisionHandoffPending)
 			decision.Err = ErrHandoffPending
 		}
 	case HandoffStatusEnqueued:
@@ -443,7 +452,7 @@ func (r *graphRunner[T, E]) EvaluateHandoffRecovery(
 		decision.Err = ErrHandoffNotRecoverable
 	default:
 		decision.Status = ResumeDecisionHandoffNotRecoverable
-		decision.Reason = "invalid_handoff_status"
+		decision.Reason = resumeReasonInvalidHandoffStatus
 		decision.Err = errors.Join(
 			ErrHandoffNotRecoverable,
 			fmt.Errorf("%w: handoff status %q", ErrInvalidSnapshot, snapshot.RunMeta.HandoffStatus),
@@ -504,7 +513,7 @@ func (r *graphRunner[T, E]) attachInvocation(
 		runCtx = inv.bindings.WithContext(runCtx)
 	}
 	if inv.leaseOwner != "" {
-		runCtx = WithLeaseOwner(runCtx, inv.leaseOwner)
+		runCtx = WithExecutionLease(runCtx, inv.lease)
 	}
 	return runCtx
 }
@@ -512,9 +521,12 @@ func (r *graphRunner[T, E]) attachInvocation(
 func (r *graphRunner[T, E]) acquireLease(
 	ctx context.Context,
 	threadID string,
-	inv runInvocationOptions[T, E],
+	inv *runInvocationOptions[T, E],
 ) error {
 	if r.leaseManager == nil {
+		if inv.leaseOwner != "" {
+			return ErrExecutionCapability
+		}
 		return nil
 	}
 	if _, nativeCP := r.checkpointer.(NativeDeleteIfIdleCheckpointer); nativeCP {
@@ -531,7 +543,15 @@ func (r *graphRunner[T, E]) acquireLease(
 	if ttl <= 0 {
 		ttl = defaultLeaseTTL
 	}
-	return r.leaseManager.Acquire(ctx, threadID, inv.leaseOwner, ttl)
+	lease, err := r.leaseManager.Acquire(ctx, threadID, inv.leaseOwner, ttl)
+	if err != nil {
+		return err
+	}
+	if lease.ExecutionID != threadID || lease.Owner != inv.leaseOwner || lease.Incarnation == 0 {
+		return ErrExecutionCapability
+	}
+	inv.lease = lease
+	return nil
 }
 
 func (r *graphRunner[T, E]) releaseLease(
@@ -542,7 +562,10 @@ func (r *graphRunner[T, E]) releaseLease(
 	if r.leaseManager == nil || inv.leaseOwner == "" {
 		return nil
 	}
-	return r.leaseManager.Release(ctx, threadID, inv.leaseOwner)
+	if inv.lease.ExecutionID != threadID {
+		return ErrLeaseLost
+	}
+	return r.leaseManager.Release(ctx, inv.lease)
 }
 
 func (r *graphRunner[T, E]) leaseTTL(inv runInvocationOptions[T, E]) time.Duration {
@@ -555,7 +578,6 @@ func (r *graphRunner[T, E]) leaseTTL(inv runInvocationOptions[T, E]) time.Durati
 
 func (r *graphRunner[T, E]) startLeaseHeartbeat(
 	ctx context.Context,
-	threadID string,
 	inv runInvocationOptions[T, E],
 	cancelRun context.CancelCauseFunc,
 ) func() {
@@ -570,7 +592,7 @@ func (r *graphRunner[T, E]) startLeaseHeartbeat(
 	go func() {
 		defer close(done)
 		renew := func() bool {
-			if err := r.leaseManager.Renew(hbCtx, threadID, inv.leaseOwner, ttl); err != nil {
+			if _, err := r.leaseManager.Renew(hbCtx, inv.lease, ttl); err != nil {
 				if cancelRun != nil {
 					cancelRun(ErrLeaseLost)
 				}
@@ -734,7 +756,7 @@ func (r *graphRunner[T, E]) evaluateResume(
 		// Resume allowed after handoff enqueue completed or for non-handoff snapshots.
 	case HandoffStatusPending:
 		status := ResumeDecisionHandoffPending
-		reason := "handoff_pending"
+		reason := string(ResumeDecisionHandoffPending)
 		if isHandoffPendingStale(snapshot.RunMeta.HandoffPendingAt, r.handoffStaleAfter) {
 			status = ResumeDecisionHandoffRecoverable
 			reason = "handoff_pending_stale"
@@ -751,15 +773,15 @@ func (r *graphRunner[T, E]) evaluateResume(
 		)
 		return decision, decision.Err
 	case HandoffStatusOrphaned:
-		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "handoff_orphaned")
+		emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, ReasonHandoffOrphaned)
 		decision := newResumeDecision(
 			ResumeDecisionHandoffRecoverable, token, snapshot, revision, snapshot.ExecutionPointer,
-			"handoff_orphaned", ErrHandoffOrphaned,
+			ReasonHandoffOrphaned, ErrHandoffOrphaned,
 		)
 		return decision, decision.Err
 	default:
 		if snapshot.RunMeta.HandoffStatus != HandoffStatusNone {
-			emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, "invalid_handoff_status")
+			emitResumeRejected(ctx, token.ThreadID, snapshot.ExecutionPointer, resumeReasonInvalidHandoffStatus)
 			err := fmt.Errorf(
 				"%w: handoff status %q",
 				ErrInvalidSnapshot,
@@ -767,7 +789,7 @@ func (r *graphRunner[T, E]) evaluateResume(
 			)
 			decision := newResumeDecision(
 				ResumeDecisionInvalidSnapshot, token, snapshot, revision, snapshot.ExecutionPointer,
-				"invalid_handoff_status", err,
+				resumeReasonInvalidHandoffStatus, err,
 			)
 			return decision, err
 		}
@@ -835,11 +857,11 @@ func (r *graphRunner[T, E]) evaluateResume(
 	startNode := string(activePointer)
 
 	if _, ok := r.graph.nodes[startNode]; !ok {
-		emitResumeRejected(ctx, token.ThreadID, activePointer, "invalid_pointer")
+		emitResumeRejected(ctx, token.ThreadID, activePointer, resumeReasonInvalidPointer)
 		err := invalidResumePointerError(startNode)
 		decision := newResumeDecision(
 			ResumeDecisionInvalidSnapshot, token, snapshot, revision, activePointer,
-			"invalid_pointer", err,
+			resumeReasonInvalidPointer, err,
 		)
 		decision.State = state
 		decision.RunMeta = meta
@@ -1010,7 +1032,7 @@ func (r *graphRunner[T, E]) execute(
 		limit = defaultMaxSteps
 	}
 
-	stopHeartbeat := r.startLeaseHeartbeat(runCtx, threadID, inv, cancelRun)
+	stopHeartbeat := r.startLeaseHeartbeat(runCtx, inv, cancelRun)
 	defer stopHeartbeat()
 
 	for {
@@ -1235,6 +1257,16 @@ func (r *graphRunner[T, E]) execute(
 		stepOut := r.applyDirective(
 			runCtx, nodeCtx, threadID, current, state, meta, effects, revision, base, sink, inv,
 		)
+		if r.durable != nil {
+			var commitErr error
+			revision, commitErr = r.durable.commitStep(runCtx, stepOut, base.kind, state, meta, effects)
+			if commitErr != nil {
+				return r.failedDurableStep(runCtx, threadID, current, state, meta, effects, commitErr)
+			}
+			if stepOut.result != nil {
+				stepOut.result.ResumeToken = ResumeToken{ThreadID: threadID, SnapshotRevision: revision}
+			}
+		}
 		if stepOut.terminal {
 			return stepOut.result, stepOut.err
 		}
@@ -1254,6 +1286,12 @@ func (r *graphRunner[T, E]) handleContextCancellation(
 	inv runInvocationOptions[T, E],
 	consumerClose bool,
 ) (*RunResult[T, E], error) {
+	snapshot, restoreErr := r.interruptionSnapshot(runCtx, threadID, current, state, meta, effects)
+	if restoreErr != nil {
+		return failedResultWithReason(state, effects, meta, current, restoreErr.Error()), restoreErr
+	}
+	state, meta, effects = snapshot.State, snapshot.RunMeta, snapshot.Effects
+	current = string(snapshot.ExecutionPointer)
 	meta.TelemetryContext = extractTelemetryContext(runCtx)
 	meta.Segment.EndTime = time.Now().UTC()
 	meta.Segment.EndReason = SegmentEndContextCanceled
@@ -1551,6 +1589,12 @@ func (r *graphRunner[T, E]) handleHandoff(
 	sink eventSink[T, E],
 	inv runInvocationOptions[T, E],
 ) (*RunResult[T, E], error) {
+	snapshot, restoreErr := r.interruptionSnapshot(runCtx, threadID, current, state, meta, effects)
+	if restoreErr != nil {
+		return failedResultWithReason(state, effects, meta, current, restoreErr.Error()), restoreErr
+	}
+	state, meta, effects = snapshot.State, snapshot.RunMeta, snapshot.Effects
+	current = string(snapshot.ExecutionPointer)
 	reason := "background_handoff"
 	if cause := context.Cause(runCtx); cause != nil && !errors.Is(cause, ErrHandoffRequested) {
 		reason = cause.Error()
@@ -1663,6 +1707,8 @@ func (r *graphRunner[T, E]) applyDirective(
 	inv runInvocationOptions[T, E],
 ) directiveStep[T, E] {
 	switch base.kind {
+	case directiveWait:
+		return r.applyDirectiveWait(runCtx, threadID, current, state, meta, effects, revision, base, sink)
 	case directiveCompleted:
 		return r.applyDirectiveCompleted(
 			runCtx,

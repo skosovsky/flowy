@@ -16,23 +16,25 @@ var ErrThreadLeaseBusy = errors.New("flowy: thread already has an active lease")
 
 // LeaseManager provides exclusive ownership of a thread for safe handoff.
 type LeaseManager interface {
-	Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) error
-	Renew(ctx context.Context, threadID, owner string, ttl time.Duration) error
-	Release(ctx context.Context, threadID, owner string) error
+	Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) (ExecutionLease, error)
+	Renew(ctx context.Context, lease ExecutionLease, ttl time.Duration) (ExecutionLease, error)
+	Release(ctx context.Context, lease ExecutionLease) error
 	IsHeld(ctx context.Context, threadID string) (bool, error)
 	// Holder returns the active lease owner when held.
 	Holder(ctx context.Context, threadID string) (owner string, held bool, err error)
 }
 
 type leaseRecord struct {
-	owner     string
-	expiresAt time.Time
+	owner       string
+	expiresAt   time.Time
+	incarnation uint64
 }
 
 // MemoryLeaseManager is a dev-only in-process lease store with TTL.
 type MemoryLeaseManager struct {
 	mu      sync.Mutex
 	leases  map[string]leaseRecord
+	fences  map[string]uint64
 	nowFunc func() time.Time
 }
 
@@ -41,6 +43,7 @@ func NewMemoryLeaseManager() *MemoryLeaseManager {
 	return &MemoryLeaseManager{
 		mu:      sync.Mutex{},
 		leases:  make(map[string]leaseRecord),
+		fences:  make(map[string]uint64),
 		nowFunc: time.Now,
 	}
 }
@@ -52,12 +55,16 @@ func (m *MemoryLeaseManager) now() time.Time {
 	return time.Now()
 }
 
-func (m *MemoryLeaseManager) Acquire(_ context.Context, threadID, owner string, ttl time.Duration) error {
+func (m *MemoryLeaseManager) Acquire(
+	_ context.Context,
+	threadID, owner string,
+	ttl time.Duration,
+) (ExecutionLease, error) {
 	if threadID == "" || owner == "" {
-		return errors.New("flowy: lease acquire requires threadID and owner")
+		return ExecutionLease{}, errors.New("flowy: lease acquire requires threadID and owner")
 	}
 	if ttl <= 0 {
-		return errors.New("flowy: lease ttl must be positive")
+		return ExecutionLease{}, errors.New("flowy: lease ttl must be positive")
 	}
 
 	m.mu.Lock()
@@ -66,26 +73,40 @@ func (m *MemoryLeaseManager) Acquire(_ context.Context, threadID, owner string, 
 	now := m.now()
 	if rec, ok := m.leases[threadID]; ok && rec.expiresAt.After(now) {
 		if rec.owner != owner {
-			return fmt.Errorf("%w: %s", ErrLeaseHeld, rec.owner)
+			return ExecutionLease{}, fmt.Errorf("%w: %s", ErrLeaseHeld, rec.owner)
 		}
-		return fmt.Errorf("%w: %s", ErrThreadLeaseBusy, rec.owner)
+		return ExecutionLease{}, fmt.Errorf("%w: %s", ErrThreadLeaseBusy, rec.owner)
 	}
-	m.leases[threadID] = leaseRecord{owner: owner, expiresAt: now.Add(ttl)}
-	return nil
+	if m.fences[threadID] == ^uint64(0) {
+		return ExecutionLease{}, ErrExecutionCapability
+	}
+	m.fences[threadID]++
+	record := leaseRecord{owner: owner, expiresAt: now.Add(ttl), incarnation: m.fences[threadID]}
+	m.leases[threadID] = record
+	return ExecutionLease{
+		ExecutionID: threadID,
+		Owner:       owner,
+		Incarnation: record.incarnation,
+		ExpiresAt:   record.expiresAt,
+	}, nil
 }
 
-func (m *MemoryLeaseManager) Renew(_ context.Context, threadID, owner string, ttl time.Duration) error {
+func (m *MemoryLeaseManager) Renew(_ context.Context, lease ExecutionLease, ttl time.Duration) (ExecutionLease, error) {
+	if lease.ExecutionID == "" || lease.Owner == "" || lease.Incarnation == 0 || ttl <= 0 {
+		return ExecutionLease{}, ErrLeaseLost
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	now := m.now()
-	rec, ok := m.leases[threadID]
-	if !ok || rec.expiresAt.Before(now) || rec.owner != owner {
-		return fmt.Errorf("%w: %s", ErrLeaseHeld, rec.owner)
+	rec, ok := m.leases[lease.ExecutionID]
+	if !ok || !rec.expiresAt.After(now) || rec.owner != lease.Owner || rec.incarnation != lease.Incarnation {
+		return ExecutionLease{}, ErrLeaseLost
 	}
 	rec.expiresAt = now.Add(ttl)
-	m.leases[threadID] = rec
-	return nil
+	m.leases[lease.ExecutionID] = rec
+	lease.ExpiresAt = rec.expiresAt
+	return lease, nil
 }
 
 func (m *MemoryLeaseManager) IsHeld(ctx context.Context, threadID string) (bool, error) {
@@ -104,30 +125,34 @@ func (m *MemoryLeaseManager) Holder(_ context.Context, threadID string) (string,
 	return rec.owner, true, nil
 }
 
-func (m *MemoryLeaseManager) Release(_ context.Context, threadID, owner string) error {
+func (m *MemoryLeaseManager) Release(_ context.Context, lease ExecutionLease) error {
+	if lease.ExecutionID == "" || lease.Owner == "" || lease.Incarnation == 0 {
+		return ErrLeaseLost
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	rec, ok := m.leases[threadID]
+	rec, ok := m.leases[lease.ExecutionID]
 	if !ok {
 		return nil
 	}
-	if rec.owner != owner {
-		return fmt.Errorf("%w: %s", ErrLeaseHeld, rec.owner)
+	if rec.owner != lease.Owner || rec.incarnation != lease.Incarnation {
+		return ErrLeaseLost
 	}
-	delete(m.leases, threadID)
+	delete(m.leases, lease.ExecutionID)
 	return nil
 }
 
-type leaseOwnerKey struct{}
+type executionLeaseKey struct{}
 
-// WithLeaseOwner stores the active lease owner id in ctx.
-func WithLeaseOwner(ctx context.Context, owner string) context.Context {
-	return context.WithValue(ctx, leaseOwnerKey{}, owner)
+// WithExecutionLease carries the acquisition handle for storage-fenced writes.
+// The handle is not authorization; the host owns access policy.
+func WithExecutionLease(ctx context.Context, lease ExecutionLease) context.Context {
+	return context.WithValue(ctx, executionLeaseKey{}, lease)
 }
 
-// LeaseOwnerFromContext returns lease owner id from ctx.
-func LeaseOwnerFromContext(ctx context.Context) string {
-	owner, _ := ctx.Value(leaseOwnerKey{}).(string)
-	return owner
+// ExecutionLeaseFromContext returns the acquisition handle, if supplied.
+func ExecutionLeaseFromContext(ctx context.Context) (ExecutionLease, bool) {
+	lease, ok := ctx.Value(executionLeaseKey{}).(ExecutionLease)
+	return lease, ok
 }

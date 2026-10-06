@@ -24,19 +24,24 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	const prefix = "flowy"
-	cp := NewCheckpointer[state, string](client, Options{Prefix: prefix, LeasePrefix: prefix}, checkpoint.JSONSerializer[state]{})
+	cp := NewCheckpointer[state, string](
+		client,
+		Options{Prefix: prefix, LeasePrefix: prefix},
+		checkpoint.JSONSerializer[state]{},
+	)
 	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: prefix})
 
 	if _, err := cp.Save(context.Background(), 0, testSnapshot(1, "v1")); err != nil {
 		t.Fatalf("save: %v", err)
 	}
-	if err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
-		t.Fatalf("acquire: %v", err)
+	lease, acquireErr := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute)
+	if acquireErr != nil {
+		t.Fatalf("acquire: %v", acquireErr)
 	}
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
-	if err := leaseMgr.Release(context.Background(), "t1", "worker"); err != nil {
+	if err := leaseMgr.Release(context.Background(), lease); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if err := cp.DeleteIfIdle(context.Background(), "t1"); err != nil {

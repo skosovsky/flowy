@@ -3,8 +3,10 @@ package redis
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
@@ -13,6 +15,8 @@ import (
 )
 
 const defaultPrefix = "flowy"
+
+const acquireReplyFields = 3
 
 // Options configures Redis lease keys. Use the same LeasePrefix as the Redis checkpointer.
 type Options struct {
@@ -35,84 +39,109 @@ func NewLeaseManager(client goredis.Cmdable, opts Options) *LeaseManager {
 }
 
 const acquireScript = `
-local key = KEYS[1]
-local owner = ARGV[1]
-local ttl = tonumber(ARGV[2])
-local current = redis.call('GET', key)
-if current == false then
-  redis.call('SET', key, owner, 'EX', ttl)
-  return 1
+local current = redis.call('GET', KEYS[1])
+if current then
+  if cjson.decode(current).owner == ARGV[1] then return {0, '', ''} end
+  return {-1, '', ''}
 end
-if current == owner then
-  return 0
-end
-return -1
+redis.call('INCR', KEYS[2])
+local fence = redis.call('GET', KEYS[2])
+if fence == '0' or string.sub(fence, 1, 1) == '-' then return {-2, '', ''} end
+local time = redis.call('TIME')
+local expiry = time[1] * 1000 + math.floor(time[2] / 1000) + tonumber(ARGV[2])
+redis.call('SET', KEYS[1], cjson.encode({owner=ARGV[1], incarnation=fence}), 'PX', ARGV[2])
+return {1, fence, string.format('%.0f', expiry)}
 `
 
-func (m *LeaseManager) Acquire(ctx context.Context, threadID, owner string, ttl time.Duration) error {
+func (m *LeaseManager) Acquire(
+	ctx context.Context,
+	threadID, owner string,
+	ttl time.Duration,
+) (flowy.ExecutionLease, error) {
 	if threadID == "" || owner == "" {
-		return errors.New("flowy: lease acquire requires threadID and owner")
+		return flowy.ExecutionLease{}, errors.New("flowy: lease acquire requires threadID and owner")
 	}
 	if ttl <= 0 {
-		return errors.New("flowy: lease ttl must be positive")
+		return flowy.ExecutionLease{}, errors.New("flowy: lease ttl must be positive")
 	}
-	secs := int(ttl.Seconds())
-	if secs <= 0 {
-		secs = 1
-	}
-	result, err := m.client.Eval(ctx, acquireScript, []string{m.leaseKey(threadID)}, owner, secs).Int64()
+	result, err := m.client.Eval(ctx, acquireScript, []string{m.leaseKey(threadID), m.fenceKey(threadID)}, owner, max(ttl.Milliseconds(), 1)).
+		Slice()
 	if err != nil {
-		return err
+		return flowy.ExecutionLease{}, err
 	}
-	switch result {
-	case 1:
-		return nil
-	case 0:
-		return fmt.Errorf("%w: %s", flowy.ErrThreadLeaseBusy, owner)
+	if len(result) != acquireReplyFields {
+		return flowy.ExecutionLease{}, flowy.ErrExecutionCapability
+	}
+	switch result[0] {
+	case int64(1):
+		return decodeAcquiredLease(threadID, owner, result)
+	case int64(0):
+		return flowy.ExecutionLease{}, fmt.Errorf("%w: %s", flowy.ErrThreadLeaseBusy, owner)
+	case int64(-2):
+		return flowy.ExecutionLease{}, flowy.ErrExecutionCapability
 	default:
-		holder, held, holderErr := m.Holder(ctx, threadID)
-		if holderErr != nil {
-			return holderErr
-		}
-		if held {
-			return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, holder)
-		}
-		return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, holder)
+		return flowy.ExecutionLease{}, flowy.ErrLeaseHeld
 	}
 }
 
-func (m *LeaseManager) Renew(ctx context.Context, threadID, owner string, ttl time.Duration) error {
-	key := m.leaseKey(threadID)
-	current, err := m.client.Get(ctx, key).Result()
-	if errors.Is(err, goredis.Nil) {
-		return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, owner)
+const renewScript = `
+local current = redis.call('GET', KEYS[1])
+if not current then return '' end
+local record = cjson.decode(current)
+if record.owner ~= ARGV[1] or record.incarnation ~= ARGV[2] then return '' end
+local time = redis.call('TIME')
+local expiry = time[1] * 1000 + math.floor(time[2] / 1000) + tonumber(ARGV[3])
+redis.call('PEXPIRE', KEYS[1], ARGV[3])
+return string.format('%.0f', expiry)
+`
+
+const releaseScript = `
+local current = redis.call('GET', KEYS[1])
+if current == false then return 1 end
+local record = cjson.decode(current)
+if record.owner ~= ARGV[1] or record.incarnation ~= ARGV[2] then return 0 end
+redis.call('DEL', KEYS[1])
+return 1
+`
+
+func (m *LeaseManager) Renew(
+	ctx context.Context,
+	lease flowy.ExecutionLease,
+	ttl time.Duration,
+) (flowy.ExecutionLease, error) {
+	if lease.ExecutionID == "" || lease.Owner == "" || lease.Incarnation == 0 || ttl <= 0 {
+		return flowy.ExecutionLease{}, flowy.ErrLeaseLost
 	}
+	millis := max(ttl.Milliseconds(), 1)
+	result, err := m.client.Eval(ctx, renewScript, []string{m.leaseKey(lease.ExecutionID)}, lease.Owner, strconv.FormatUint(lease.Incarnation, 10), millis).
+		Text()
 	if err != nil {
-		return err
+		return flowy.ExecutionLease{}, err
 	}
-	if current != owner {
-		return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, current)
+	if result == "" {
+		return flowy.ExecutionLease{}, flowy.ErrLeaseLost
 	}
-	secs := int(ttl.Seconds())
-	if secs <= 0 {
-		secs = 1
+	expiry, err := strconv.ParseInt(result, 10, 64)
+	if err != nil {
+		return flowy.ExecutionLease{}, err
 	}
-	return m.client.Set(ctx, key, owner, time.Duration(secs)*time.Second).Err()
+	lease.ExpiresAt = time.UnixMilli(expiry).UTC()
+	return lease, nil
 }
 
-func (m *LeaseManager) Release(ctx context.Context, threadID, owner string) error {
-	key := m.leaseKey(threadID)
-	current, err := m.client.Get(ctx, key).Result()
-	if errors.Is(err, goredis.Nil) {
-		return nil
+func (m *LeaseManager) Release(ctx context.Context, lease flowy.ExecutionLease) error {
+	if lease.ExecutionID == "" || lease.Owner == "" || lease.Incarnation == 0 {
+		return flowy.ErrLeaseLost
 	}
+	result, err := m.client.Eval(ctx, releaseScript, []string{m.leaseKey(lease.ExecutionID)}, lease.Owner, strconv.FormatUint(lease.Incarnation, 10)).
+		Int64()
 	if err != nil {
 		return err
 	}
-	if current != owner {
-		return fmt.Errorf("%w: %s", flowy.ErrLeaseHeld, current)
+	if result != 1 {
+		return flowy.ErrLeaseLost
 	}
-	return m.client.Del(ctx, key).Err()
+	return nil
 }
 
 func (m *LeaseManager) IsHeld(ctx context.Context, threadID string) (bool, error) {
@@ -128,11 +157,47 @@ func (m *LeaseManager) Holder(ctx context.Context, threadID string) (string, boo
 	if err != nil {
 		return "", false, err
 	}
-	return owner, true, nil
+	var record struct {
+		Owner       string `json:"owner"`
+		Incarnation uint64 `json:"incarnation,string"`
+	}
+	if decodeErr := json.Unmarshal([]byte(owner), &record); decodeErr != nil {
+		return "", false, decodeErr
+	}
+	if record.Owner == "" || record.Incarnation == 0 {
+		return "", false, flowy.ErrExecutionIncompatible
+	}
+	return record.Owner, true, nil
 }
 
 func (m *LeaseManager) leaseKey(threadID string) string {
 	return fmt.Sprintf("%s:lease:%s", m.prefix, threadID)
+}
+
+func (m *LeaseManager) fenceKey(threadID string) string {
+	return fmt.Sprintf("%s:lease-fence:%s", m.prefix, threadID)
+}
+
+func decodeAcquiredLease(threadID, owner string, reply []any) (flowy.ExecutionLease, error) {
+	fenceText, fenceOK := reply[1].(string)
+	expiryText, expiryOK := reply[2].(string)
+	if !fenceOK || !expiryOK {
+		return flowy.ExecutionLease{}, flowy.ErrExecutionCapability
+	}
+	fence, err := strconv.ParseUint(fenceText, 10, 64)
+	if err != nil {
+		return flowy.ExecutionLease{}, err
+	}
+	expiry, err := strconv.ParseInt(expiryText, 10, 64)
+	if err != nil {
+		return flowy.ExecutionLease{}, err
+	}
+	return flowy.ExecutionLease{
+		ExecutionID: threadID,
+		Owner:       owner,
+		Incarnation: fence,
+		ExpiresAt:   time.UnixMilli(expiry).UTC(),
+	}, nil
 }
 
 // NativeLeaseManager marks storage-backed lease keys in Redis.

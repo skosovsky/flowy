@@ -195,10 +195,21 @@ func leaseLostBlockingGraph(t *testing.T, ready chan struct{}) *Graph[struct{}, 
 
 func forceLeaseTakeover(t *testing.T, lease *MemoryLeaseManager, threadID string) {
 	t.Helper()
-	if relErr := lease.Release(context.Background(), threadID, "worker-a"); relErr != nil {
-		t.Fatalf("release %q: %v", threadID, relErr)
+	lease.mu.Lock()
+	record, present := lease.leases[threadID]
+	lease.mu.Unlock()
+	if present {
+		old := ExecutionLease{
+			ExecutionID: threadID,
+			Owner:       record.owner,
+			Incarnation: record.incarnation,
+			ExpiresAt:   record.expiresAt,
+		}
+		if relErr := lease.Release(context.Background(), old); relErr != nil {
+			t.Fatalf("release %q: %v", threadID, relErr)
+		}
 	}
-	if acqErr := lease.Acquire(context.Background(), threadID, "worker-b", time.Minute); acqErr != nil {
+	if _, acqErr := lease.Acquire(context.Background(), threadID, "worker-b", time.Minute); acqErr != nil {
 		t.Fatalf("acquire b %q: %v", threadID, acqErr)
 	}
 }

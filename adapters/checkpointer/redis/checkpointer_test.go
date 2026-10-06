@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -142,7 +141,7 @@ func TestLoadRejectsRecordThreadMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	payload, err := json.Marshal(record)
+	payload, err := marshalRecord(record)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -174,7 +173,7 @@ func TestGetHistoryRejectsRecordThreadMismatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	payload, err := json.Marshal(record)
+	payload, err := marshalRecord(record)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -197,7 +196,7 @@ func TestSaveAfterLargeRevision(t *testing.T) {
 	defer func() { _ = client.Close() }()
 
 	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
-	const largeRevision = uint64(3_000_000_000)
+	const largeRevision = uint64(9_007_199_254_740_992)
 	record, err := checkpoint.EncodeRecord(flowy.Snapshot[state, string]{
 		ThreadID:         "t1",
 		Revision:         largeRevision,
@@ -207,7 +206,7 @@ func TestSaveAfterLargeRevision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode: %v", err)
 	}
-	payload, err := json.Marshal(record)
+	payload, err := marshalRecord(record)
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
@@ -233,6 +232,17 @@ func TestSaveAfterLargeRevision(t *testing.T) {
 	}
 	if loaded.Revision != largeRevision+1 {
 		t.Fatalf("loaded revision: got %d want %d", loaded.Revision, largeRevision+1)
+	}
+	// Adjacent values alias under Lua tonumber; exact comparison must reject this.
+	if _, err := cp.Save(
+		context.Background(),
+		largeRevision,
+		testSnapshot(0, "stale"),
+	); !errors.Is(
+		err,
+		flowy.ErrConcurrencyConflict,
+	) {
+		t.Fatalf("aliased stale revision accepted: %v", err)
 	}
 }
 
@@ -331,7 +341,7 @@ func TestDeleteIfIdleLeasePrefixMismatch(t *testing.T) {
 	leaseMgr := redislease.NewLeaseManager(client, redislease.Options{Prefix: "app"})
 
 	saveTestSnapshot(t, cp, 0, 1, "v1")
-	if err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
+	if _, err := leaseMgr.Acquire(context.Background(), "t1", "worker", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 

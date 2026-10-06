@@ -51,24 +51,25 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	leaseMgr := pglease.NewLeaseManager(pool)
 	threadID := testThreadID(t)
 
-	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
-		t.Fatalf("save: %v", err)
+	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
+		t.Fatalf("save: %v", saveErr)
 	}
-	if err := leaseMgr.Acquire(ctx, threadID, "worker", time.Minute); err != nil {
-		t.Fatalf("acquire: %v", err)
+	lease, acquireErr := leaseMgr.Acquire(ctx, threadID, "worker", time.Minute)
+	if acquireErr != nil {
+		t.Fatalf("acquire: %v", acquireErr)
 	}
 	if err := cp.DeleteIfIdle(ctx, threadID); !errors.Is(err, flowy.ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)
 	}
-	if err := leaseMgr.Release(ctx, threadID, "worker"); err != nil {
+	if err := leaseMgr.Release(ctx, lease); err != nil {
 		t.Fatalf("release: %v", err)
 	}
 	if err := cp.DeleteIfIdle(ctx, threadID); err != nil {
@@ -89,14 +90,14 @@ func TestOCCConcurrencyConflict(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
-	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
-		t.Fatalf("initial save: %v", err)
+	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
+		t.Fatalf("initial save: %v", saveErr)
 	}
 	_, err = cp.Save(ctx, 0, testSnapshot(threadID, 2, 2))
 	if !errors.Is(err, flowy.ErrConcurrencyConflict) {
@@ -117,8 +118,8 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
@@ -154,11 +155,11 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
-	if _, err := pool.Exec(ctx, OutboxSchemaSQL()); err != nil {
-		t.Fatalf("outbox schema: %v", err)
+	if _, execErr := pool.Exec(ctx, OutboxSchemaSQL()); execErr != nil {
+		t.Fatalf("outbox schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
@@ -226,17 +227,17 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
-	if _, err := pool.Exec(ctx, OutboxSchemaSQL()); err != nil {
-		t.Fatalf("outbox schema: %v", err)
+	if _, execErr := pool.Exec(ctx, OutboxSchemaSQL()); execErr != nil {
+		t.Fatalf("outbox schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
 	threadID := testThreadID(t)
-	if _, err := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); err != nil {
-		t.Fatalf("initial save: %v", err)
+	if _, saveErr := cp.Save(ctx, 0, testSnapshot(threadID, 1, 1)); saveErr != nil {
+		t.Fatalf("initial save: %v", saveErr)
 	}
 	snap := testSnapshot(threadID, 2, 2)
 	snap.RunMeta = flowy.RunMetadata{HandoffStatus: flowy.HandoffStatusEnqueued}
@@ -272,11 +273,11 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 	}
 	defer pool.Close()
 
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
-	if _, err := pool.Exec(ctx, OutboxSchemaSQL()); err != nil {
-		t.Fatalf("outbox schema: %v", err)
+	if _, execErr := pool.Exec(ctx, OutboxSchemaSQL()); execErr != nil {
+		t.Fatalf("outbox schema: %v", execErr)
 	}
 
 	cp := NewCheckpointer[intState, string](pool, checkpoint.JSONSerializer[intState]{})
@@ -306,7 +307,8 @@ func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
 		t.Fatalf("expected no checkpoint after outbox rollback, got %v", loadErr)
 	}
 	var outboxCount int
-	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1`, threadID).Scan(&outboxCount)
+	_ = pool.QueryRow(ctx, `SELECT COUNT(*) FROM flowy_handoff_outbox WHERE thread_id = $1`, threadID).
+		Scan(&outboxCount)
 	if outboxCount != 0 {
 		t.Fatalf("expected no outbox rows after rollback, got %d", outboxCount)
 	}
@@ -359,11 +361,11 @@ func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(func() { pool.Close() })
-	if _, err := pool.Exec(ctx, SchemaSQL()); err != nil {
-		t.Fatalf("schema: %v", err)
+	if _, execErr := pool.Exec(ctx, SchemaSQL()); execErr != nil {
+		t.Fatalf("schema: %v", execErr)
 	}
-	if _, err := pool.Exec(ctx, OutboxSchemaSQL()); err != nil {
-		t.Fatalf("outbox schema: %v", err)
+	if _, execErr := pool.Exec(ctx, OutboxSchemaSQL()); execErr != nil {
+		t.Fatalf("outbox schema: %v", execErr)
 	}
 	cp := NewCheckpointer[runnerHandoffState, flowy.NoEffect](pool, checkpoint.JSONSerializer[runnerHandoffState]{})
 	return pool, cp
@@ -371,7 +373,9 @@ func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState
 
 func pgHandoffGraph(t *testing.T) *flowy.Graph[runnerHandoffState, flowy.NoEffect] {
 	t.Helper()
-	b := flowy.NewGraph[runnerHandoffState, flowy.NoEffect](func(s, u runnerHandoffState) runnerHandoffState { return u })
+	b := flowy.NewGraph[runnerHandoffState, flowy.NoEffect](
+		func(_, u runnerHandoffState) runnerHandoffState { return u },
+	)
 	b.AddNode("work", func(_ context.Context, s runnerHandoffState) (runnerHandoffState, flowy.Directive, error) {
 		return s, flowy.Handoff("bg"), nil
 	})

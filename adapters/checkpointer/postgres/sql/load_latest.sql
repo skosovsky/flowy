@@ -7,6 +7,6 @@ SELECT
     effects,
     updated_at
 FROM flowy_checkpoints
-WHERE thread_id = @thread_id::varchar(255)
+WHERE thread_id = @thread_id::TEXT
 ORDER BY revision DESC
 LIMIT 1;

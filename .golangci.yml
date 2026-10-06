@@ -1,7 +1,7 @@
 # This file is licensed under the terms of the MIT license https://opensource.org/license/mit
 # Copyright (c) 2021-2025 Marat Reimers
 
-## Golden config for golangci-lint v2.11.3
+## Golden config for golangci-lint v2.14.0
 #
 # This is the best config for golangci-lint based on my experience and opinion.
 # It is very strict, but not extremely strict.
@@ -126,7 +126,7 @@ linters:
     ## you may want to enable
     #- arangolint # opinionated best practices for arangodb client
     - decorder # checks declaration order and count of types, constants, variables and functions
-    - exhaustruct # [highly recommend to enable] checks if all structure fields are initialized
+    - exhaustruct_v5 # [highly recommend to enable] checks if all structure fields are initialized
     #- ginkgolinter # [if you use ginkgo/gomega] enforces standards of using ginkgo and gomega
     #- godox # detects usage of FIXME, TODO and other keywords inside comments
     #- goheader # checks is file header matches to pattern
@@ -241,15 +241,15 @@ linters:
       # A default branch is enough for switches over open sets (e.g. reflect.Kind).
       default-signifies-exhaustive: true
 
-    exhaustruct:
+    exhaustruct_v5:
       # List of regular expressions to match type names that should be excluded from processing.
       # Anonymous structs can be matched by '<anonymous>' alias.
-      # Has precedence over `include`.
+      # Has precedence over `enforce-patterns`.
       # Each regular expression must match the full type name, including package path.
       # For example, to match type `net/http.Cookie` regular expression should be `.*/http\.Cookie`,
       # but not `http\.Cookie`.
       # Default: []
-      exclude:
+      ignore-patterns:
         # std libs
         - ^net/http.Client$
         - ^net/http.Cookie$
@@ -478,7 +478,7 @@ linters:
       - path: '.*_test\.go$'
         linters: [ forbidigo ]
       - path: 'examples/'
-        linters: [ forbidigo, exhaustruct ]
+        linters: [ forbidigo, exhaustruct_v5 ]
       - path: '_test\.go'
         linters:
           - bodyclose
@@ -489,7 +489,7 @@ linters:
           - gosec
           - noctx
           - wrapcheck
-          - exhaustruct
+          - exhaustruct_v5
       # Adapter modules use replace github.com/skosovsky/ragy => ../.. for local workspace dev.
       - path: '^adapters/.*/go\.mod$'
         linters: [ gomoddirectives ]

@@ -20,17 +20,18 @@ func TestLeaseManagerAcquireRelease(t *testing.T) {
 
 	lm := NewLeaseManager(client, Options{Prefix: "flowy"})
 	ctx := context.Background()
-	if err := lm.Acquire(ctx, "th-1", "worker-a", time.Minute); err != nil {
+	lease, err := lm.Acquire(ctx, "th-1", "worker-a", time.Minute)
+	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
 	held, err := lm.IsHeld(ctx, "th-1")
 	if err != nil || !held {
 		t.Fatalf("expected held, held=%v err=%v", held, err)
 	}
-	if acquireErr := lm.Acquire(ctx, "th-1", "worker-b", time.Minute); !errors.Is(acquireErr, flowy.ErrLeaseHeld) {
+	if _, acquireErr := lm.Acquire(ctx, "th-1", "worker-b", time.Minute); !errors.Is(acquireErr, flowy.ErrLeaseHeld) {
 		t.Fatalf("expected ErrLeaseHeld, got %v", acquireErr)
 	}
-	if releaseErr := lm.Release(ctx, "th-1", "worker-a"); releaseErr != nil {
+	if releaseErr := lm.Release(ctx, lease); releaseErr != nil {
 		t.Fatalf("release: %v", releaseErr)
 	}
 	held, err = lm.IsHeld(ctx, "th-1")

@@ -9,7 +9,54 @@
 // asynchronous Runner.Stream/Runner.ResumeStream handles. Stream events are best-effort
 // progress/telemetry; WaitResult is authoritative for terminal outcome.
 //
-// Resume preflight pipeline:
+// # Durable execution
+//
+// [DurableRunner] is an explicit synchronous durable profile, separate from the
+// ordinary Runner semantics below. Bind a compiled BYOT graph, [ExecutionStore],
+// host state/effect codecs, an [ExecutionDescriptor] and [DurableOptions]. The
+// descriptor requires explicit graph, codec and execution-contract labels and a
+// named replay-safe step policy. Core has no mandatory infrastructure or domain
+// model. The host owns authentication, domain permissions, payloads and codecs.
+//
+// Durable execution commits the initial boundary before node calls, each step
+// before the next node, and terminal outcomes before announcing completion.
+// Every aggregate write checks OCC and a live lease incarnation. A stale owner
+// cannot write simply because its expected revision still matches. Resume checks
+// integrity and descriptor compatibility before selecting host codecs. Explicit
+// pure migrations validate target codecs/cursor/collections before publication;
+// failed preparation leaves latest and exact source history unchanged. Import is
+// an explicitly addressed pure conversion, not automatic legacy JSON detection.
+// Codecs and transforms must be pure; successful preparation may decode twice.
+//
+// External side effects require [CallActivity]. Its durable intent precedes
+// dispatch; completed outcomes replay without dispatch. An abandoned running
+// attempt becomes unknown, never an implicit retry. Reconciliation or addressed
+// manual evidence resolves unknown outcomes. Retry needs a named downstream safe
+// contract, bounded attempts and a persisted deadline. Storage confirmation
+// failures expose [ErrActivityJournalUnavailable] with the original cause; they
+// do not prove rollback. Runtime does not promise exactly-once external delivery
+// or intercept arbitrary node I/O. Identity strings and compatibility labels
+// must be valid UTF-8; opaque host payload bytes need not be text.
+//
+// [PrepareChildren], [RunChildren] and [JoinChildren] provide opt-in persisted
+// structured groups, bounded dispatch and deterministic join. Host projections
+// isolate inputs; completed siblings and pending waits survive recovery.
+// Cancellation is a durable request until confirmed; unknown work retains its
+// allocation and cannot be blindly relaunched. Domain monetary reservations are
+// host-owned external operations, not runtime budget counters.
+//
+// Durable waits commit armed state before registration and release the worker.
+// The explicit capability profile assigns one recovery owner; event/timer
+// arbitration durably records the winner and loser decisions. Transport must
+// acknowledge only after acceptance and retry an early not-armed delivery.
+// [ExecutionHistoryStore] is optional: exact inspection invokes no host codecs
+// or nodes. Fork creates a fresh target with immutable lineage and reset runtime
+// handles without changing source. Fake execution never uses live dispatchers;
+// live forks require explicit current authorization and opaque-state projection.
+//
+// # Ordinary execution
+//
+// Ordinary Resume preflight pipeline:
 //  1. ResumeToken validation (ThreadID required)
 //  2. normalized Checkpointer.Load → OCC: token.SnapshotRevision == snapshot.Revision; mismatch or zero revision
 //     returns ErrConcurrencyConflict (use WithRunLease for exclusive resume against parallel workers)
