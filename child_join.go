@@ -61,7 +61,10 @@ func (c *executionCheckpointer[T, E]) joinChildren(ctx context.Context, expected
 		return nil, errors.Join(ErrChildRevision, err)
 	}
 	if len(group.MergedIDs) == len(group.Children) {
+		event := childObservation(c.envelope, LifecycleChildJoin, identity, "")
+		event.Stage, event.Revision = LifecycleReplayed, c.envelope.Revision
 		c.mu.Unlock()
+		observeLifecycle(ctx, event)
 		return bytes.Clone(group.MergedResult), nil
 	}
 	for _, child := range group.Children {
@@ -71,17 +74,26 @@ func (c *executionCheckpointer[T, E]) joinChildren(ctx context.Context, expected
 		}
 	}
 	revision := c.envelope.Revision
+	event := childObservation(c.envelope, LifecycleChildJoin, identity, "")
+	event.Stage = LifecycleStarted
 	c.mu.Unlock()
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
 	if contextErr := ctx.Err(); contextErr != nil {
+		observeLifecycle(ctx, event)
 		return nil, contextErr
 	}
 	result, err := merge(ctx, detachedChildGroup(group).Children)
 	if err != nil {
+		observeLifecycle(ctx, event)
 		return nil, errors.Join(ErrChildMergeConflict, err)
 	}
 	result = bytes.Clone(result)
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	defer func() {
+		c.mu.Unlock()
+		observeLifecycle(ctx, event)
+	}()
 	if contextErr := ctx.Err(); contextErr != nil {
 		return nil, contextErr
 	}
@@ -97,5 +109,6 @@ func (c *executionCheckpointer[T, E]) joinChildren(ctx context.Context, expected
 	if err := c.persistChildGroupsLocked(ctx, groups); err != nil {
 		return nil, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, c.envelope.Revision
 	return bytes.Clone(result), nil
 }

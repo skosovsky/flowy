@@ -59,6 +59,24 @@ func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token Res
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := childObservation(
+		source,
+		LifecycleChildResolve,
+		childExecutionIdentity(
+			source.ExecutionID,
+			resolution.Node,
+			resolution.Activation,
+			resolution.GroupKey,
+			"",
+		),
+		resolution.ChildID,
+	)
+	event.Stage, event.ChildExecutionID, event.DecisionID = LifecycleStarted, resolution.ExecutionID, resolution.DecisionID
+	event.Node = resolution.Node
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	groups, err := executionChildGroups(source)
 	if err != nil {
 		return ResumeToken{}, err
@@ -89,7 +107,9 @@ func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token Res
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
+	event.Code = childObservationCode(resolution.Result.State)
 	if replay {
+		event.Stage, event.Revision = LifecycleReplayed, source.Revision
 		return token, nil
 	}
 	groups[identity] = group
@@ -101,10 +121,11 @@ func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token Res
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 

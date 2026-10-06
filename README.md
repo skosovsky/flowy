@@ -1,6 +1,25 @@
 # Flowy
 
-Flowy — production-ready framework для управляемых agentic state machine на Go.
+Flowy — BYOT-библиотека исполнения графов состояния и durable orchestration на Go.
+
+## Границы возможностей
+
+| Область | Контракт |
+| --- | --- |
+| Ordinary runner | Typed snapshots, OCC, optional leases, suspend/resume и handoff outbox. Snapshot не является journal внешних действий |
+| Durable runner | Sealed execution aggregate, fencing, activity journal, structured children, waits и явное recovery. Store должен поддерживать соответствующие capabilities |
+| PostgreSQL | Snapshot/lease adapters и отдельный durable ExecutionStore; opt-in wait profile, indexed wait/retry discovery и lifecycle maintenance |
+| Redis | Snapshot/lease adapters для standalone server. Durable ExecutionStore не поставляется; Cluster/Ring отклоняются |
+| Inline subgraph | Композиция узлов и state/effects с parent execution; сама по себе не создаёт изолированный durable child |
+| Structured children | Отдельные execution identities, BYOT input/result, persisted launch/outcome/join/cancellation; host выполняет child dispatch и подтверждает unknown outcomes |
+| Stream | События исполнения и typed effects; terminal authority — `WaitResult()`. Token/chunk streaming model provider реализует host |
+| Budget | `UseBudget` учитывает заявленные host units; declared limits проверяются до следующего dispatch. Это не резервирование денег или downstream resources |
+| Supervisor helper | Supervisor выбирает route; worker с `Completed()` завершает граф. Planner, автоматический возврат к supervisor и агентный scheduler не встроены |
+
+Host задаёт state/effects, model/tool adapters, авторизацию, правдивость usage,
+downstream idempotency, transport и scheduling. Lease expiry и timeout не
+доказывают отсутствие внешнего действия. Telemetry не является journal или
+подтверждением commit.
 
 ## Core Concept: `[T, E]` Generics
 
@@ -144,7 +163,7 @@ res, err := runner.Resume(ctx, suspended.ResumeToken,
 - **Handoff Outbox FSM:** `WithHandoffOutbox` — 3-phase: Save `pending` → patch `enqueued` → `EnqueueIntent(HandoffIntent)`; если enqueue падает, core патчит `orphaned`. `HandoffIntent` carries `PendingSnapshotRevision`, `CommittedSnapshotRevision`, `SnapshotRevision`, `ResumeToken`, `HandoffStatus`, reason, and execution pointer; normal consumers receive the committed enqueued revision and do not guess `revision` vs `revision+1`. При ошибке enqueue snapshot **сохраняется**; terminal reason `handoff_orphaned` только если patch в `orphaned` успешен (иначе directive reason, snapshot может остаться `enqueued`). `RunResult.ResumeToken` для retry (`ErrHandoffEnqueueFailed`). Transactional path требует `TransactionalCheckpointer.SaveWithOutbox` и `TransactionalHandoffOutbox.EnqueueIntentTx(ctx, tx, intent)`: checkpointer callback передает explicit transaction handle и saved revision, а core строит authoritative enqueued `HandoffIntent`; context-carried transaction state не используется. Lease guard делегирует TX только при inner `TransactionalCheckpointer`, иначе используется 3-phase FSM. At-least-once consumer начинает с `EvaluateResume`: stale-token decision возвращает текущий core-issued token, pending/orphaned уводит в recovery contract.
 - **Recovery:** `RecoverStaleHandoff` для `orphaned` и stale `pending` (TTL `WithHandoffStaleAfter`, default 5m) — всегда 3-phase FSM. Возвращает `HandoffRecoveryResult` + error; result содержит typed `Decision`, `ResumeToken`, snapshot revision, recovered status и persisted handoff status. `WithRecoverForceReenqueue(true)` — force re-enqueue для `enqueued` без сообщения в outbox. Cron recovery должен быть **single-leader** или защищен external lock; `RecoverStaleHandoff` сам не берет run lease. Свежий `pending` → `ErrHandoffPending`; уже `enqueued` → `ErrHandoffAlreadyEnqueued`; `HandoffStatusNone`/unknown → `ErrHandoffNotRecoverable`; direct Resume на `orphaned` → `ErrHandoffOrphaned`. Пустой `HandoffPendingAt` считается stale сразу.
 - **Worst-case runbook:** patch `enqueued` OK + enqueue fail + orphan patch fail → snapshot остается `enqueued`, но outbox message отсутствует. Recovery scanner can use `RecoverStaleHandoff(..., WithRecoverForceReenqueue(true))` for known false-enqueued rows. Pending checkpoints remain recoverable after TTL when the run crashed before the enqueued patch.
-- **LifecycleObserver:** process-wide hook (`SetLifecycleObserver`) receives handoff/recovery/checkpoint-soft events. Метрики `handoff_enqueued_total{status}`: `success`, `enqueue_failed`, `patch_enqueued_failed`, `patch_orphan_failed`, `save_failed`, `commit_failed`.
+- **LifecycleObserver:** `SetLifecycleObserver` installs one synchronous `ObserveLifecycle` callback receiving value-only operation/stage observations. Panic is contained; blocking callbacks block their caller. Default OTel metrics use `flowy.lifecycle_total{operation,stage}` with bounded dimensions; runtime IDs and diagnostic codes belong to traces. See [observation contract](docs/runtime-observation-contract.md).
 - **Skip-on-save-error checkpoint policy:** `WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError)` эмитит `EventCheckpointFailed` в stream без прерывания terminal flow; reason suffixes `*_checkpoint_skipped` при неуспешном persist. `EventCheckpointFailed.ExecutionPointer` совпадает с persisted pointer в snapshot, как и terminal events.
 - **Retention / cancel reasons:** `*_retention_failed` при ошибке Prune после save; `context_canceled_save_failed` при HardFail cancel save; Stream `Event.Reason` совпадает с `RunResult.Reason`.
 - **Dual retention:** in-loop Prune (suspend/handoff/cancel) возвращает ошибку caller; `postRunCleanup` Prune (Completed/Failed) — log only.
@@ -303,6 +322,13 @@ The operation checks latest revision and a live fenced lease, and never calls no
 ### Runnable durable examples and migration guidance
 
 Run `go run ./examples/durable_runtime` for self-verifying BYOT examples covering activity unknown/reconciliation/replay, bounded retry/deadlines, explicit migration/import, typed children/join/budgets, armed wait delivery/dedup and fake historical fork. The examples use memory storage and a demonstration registration capability, not a production persistent backend or scheduler. Their AAA test is included in the root suite.
+
+The separate [PostgreSQL blueprint](examples/durable_agent/README.md) verifies lost
+commit replies, approval arbitration, isolated child recovery and final replay on
+six fresh workers/pools with host-owned types and deterministic external fakes.
+Its integration test requires PostgreSQL; memory smoke is a separate gate.
+[Performance gates](docs/performance-gates.md) require actual measured workloads
+and fixed allocation ceilings, including negative fixtures for missing benchmarks.
 
 See [consumer migration guide](docs/durable-migration-guide.md) for replacing owner-only lease APIs, converting stored formats explicitly, assigning descriptor/codecs, moving external writes to activities, configuring child/wait ownership and avoiding inherited fork authority. Core/runtime and backend guarantees must be checked separately; successful memory examples do not prove persistence after process loss.
 

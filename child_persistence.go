@@ -43,13 +43,11 @@ func detachedChildGroup(group ChildGroupRecord) ChildGroupRecord {
 	return result
 }
 
-func (c *executionCheckpointer[T, E]) prepareChildren(
+func (c *executionCheckpointer[T, E]) prepareChildrenLocked(
 	ctx context.Context,
 	plan ChildGroupPlan,
 	available map[string]int,
 ) (ChildGroupRecord, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	groups, err := executionChildGroups(c.envelope)
 	if err != nil {
 		return ChildGroupRecord{}, err
@@ -83,7 +81,7 @@ func (c *executionCheckpointer[T, E]) prepareChildren(
 	if err != nil {
 		return ChildGroupRecord{}, err
 	}
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return ChildGroupRecord{}, err
@@ -190,7 +188,7 @@ func (c *executionCheckpointer[T, E]) persistChildGroupsLocked(
 		return err
 	}
 	target.ChildrenPayload = payload
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return err

@@ -70,7 +70,7 @@ func datapointMatchesAttr(dp metricdata.DataPoint[int64], key, want string) bool
 func counterAttributeValue(
 	t *testing.T,
 	reader *sdkmetric.ManualReader,
-	name, key, want string,
+	operation, key, want string,
 ) int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
@@ -79,16 +79,16 @@ func counterAttributeValue(
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != name {
+			if m.Name != "flowy.lifecycle_total" {
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
 			if !ok {
-				t.Fatalf("metric %q: expected Sum[int64], got %T", name, m.Data)
+				t.Fatalf("operation %q: expected Sum[int64], got %T", operation, m.Data)
 			}
 			var total int64
 			for _, dp := range sum.DataPoints {
-				if datapointMatchesAttr(dp, key, want) {
+				if datapointMatchesAttr(dp, "operation", operation) && datapointMatchesAttr(dp, key, want) {
 					total += dp.Value
 				}
 			}
@@ -98,7 +98,7 @@ func counterAttributeValue(
 	return 0
 }
 
-func counterValue(t *testing.T, reader *sdkmetric.ManualReader, name string) int64 {
+func counterValue(t *testing.T, reader *sdkmetric.ManualReader, operation string) int64 {
 	t.Helper()
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
@@ -106,16 +106,18 @@ func counterValue(t *testing.T, reader *sdkmetric.ManualReader, name string) int
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			if m.Name != name {
+			if m.Name != "flowy.lifecycle_total" {
 				continue
 			}
 			sum, ok := m.Data.(metricdata.Sum[int64])
 			if !ok {
-				t.Fatalf("metric %q: expected Sum[int64], got %T", name, m.Data)
+				t.Fatalf("operation %q: expected Sum[int64], got %T", operation, m.Data)
 			}
 			var total int64
 			for _, dp := range sum.DataPoints {
-				total += dp.Value
+				if datapointMatchesAttr(dp, "operation", operation) {
+					total += dp.Value
+				}
 			}
 			return total
 		}
@@ -166,10 +168,8 @@ func TestHandoffOrphanObservabilityContract(t *testing.T) {
 	if snap.RunMeta.HandoffStatus != flowy.HandoffStatusOrphaned {
 		t.Fatalf("expected orphaned status, got %q", snap.RunMeta.HandoffStatus)
 	}
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "enqueue_failed",
-	); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=enqueue_failed=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=failed=1, got %d", got)
 	}
 
 	foundHandoff := false
@@ -231,10 +231,8 @@ func TestStreamHandoffOrphanLifecycleMetric(t *testing.T) {
 	if !errors.Is(waitErr, flowy.ErrHandoffEnqueueFailed) {
 		t.Fatalf("expected ErrHandoffEnqueueFailed, got %v", waitErr)
 	}
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "enqueue_failed",
-	); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=enqueue_failed=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=failed=1, got %d", got)
 	}
 
 	snap, _, loadErr := cp.Load(context.Background(), "otel-stream-orphan-th")
@@ -296,11 +294,11 @@ func TestLifecycleObserverHandoffEnqueuedCounter(t *testing.T) {
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{err: errors.New("down")}),
 	)
 
-	if got := counterValue(t, reader, "flowy.handoff_enqueued_total"); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total=1, got %d", got)
+	if got := counterValue(t, reader, "handoff"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff=1, got %d", got)
 	}
-	if got := counterAttributeValue(t, reader, "flowy.handoff_enqueued_total", "status", "enqueue_failed"); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=enqueue_failed=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=failed=1, got %d", got)
 	}
 }
 
@@ -332,8 +330,8 @@ func TestLifecycleObserverHandoffEnqueuedSuccess(t *testing.T) {
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	)
 
-	if got := counterAttributeValue(t, reader, "flowy.handoff_enqueued_total", "status", "success"); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=success=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "committed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=committed=1, got %d", got)
 	}
 }
 
@@ -377,8 +375,8 @@ func TestLifecycleObserverResumeRejectedStaleToken(t *testing.T) {
 	}
 	_, _ = runner.Resume(context.Background(), staleToken)
 
-	if got := counterAttributeValue(t, reader, "flowy.resume_rejected_total", "reason", "stale_token"); got != 1 {
-		t.Fatalf("expected resume_rejected_total reason=stale_token=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=resume stage=failed=1, got %d", got)
 	}
 }
 
@@ -419,8 +417,8 @@ func TestLifecycleObserverResumeRejectedZeroRevision(t *testing.T) {
 		ThreadID: "otel-zero-rev-th",
 	})
 
-	if got := counterAttributeValue(t, reader, "flowy.resume_rejected_total", "reason", "zero_revision"); got != 1 {
-		t.Fatalf("expected resume_rejected_total reason=zero_revision=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=resume stage=failed=1, got %d", got)
 	}
 }
 
@@ -470,11 +468,11 @@ func TestLifecycleObserverResumeRejectedCounter(t *testing.T) {
 		SnapshotRevision: rev,
 	})
 
-	if got := counterValue(t, reader, "flowy.resume_rejected_total"); got != 1 {
-		t.Fatalf("expected resume_rejected_total=1, got %d", got)
+	if got := counterValue(t, reader, "resume"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=resume=1, got %d", got)
 	}
-	if got := counterAttributeValue(t, reader, "flowy.resume_rejected_total", "reason", "handoff_pending"); got != 1 {
-		t.Fatalf("expected resume_rejected_total reason=handoff_pending=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=resume stage=failed=1, got %d", got)
 	}
 }
 
@@ -507,18 +505,18 @@ func TestLifecycleObserverCheckpointSoftErrorCounter(t *testing.T) {
 		flowy.WithCheckpointErrorPolicy[state, flowy.NoEffect](flowy.CheckpointPolicySkipOnSaveError),
 	)
 
-	if got := counterValue(t, reader, "flowy.checkpoint_soft_error_total"); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error_total=1, got %d", got)
+	if got := counterValue(t, reader, "checkpoint"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=checkpoint=1, got %d", got)
 	}
 	if got := counterAttributeValue(
-		t, reader, "flowy.checkpoint_soft_error_total", "thread_id", "otel-soft-error-th",
-	); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error thread_id=otel-soft-error-th, got %d", got)
+		t, reader, "checkpoint", "thread_id", "otel-soft-error-th",
+	); got != 0 {
+		t.Fatalf("forbidden identity metric label has value %d", got)
 	}
 	if got := counterAttributeValue(
-		t, reader, "flowy.checkpoint_soft_error_total", "node", "work",
-	); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error node=work, got %d", got)
+		t, reader, "checkpoint", "node", "work",
+	); got != 0 {
+		t.Fatalf("forbidden identity metric label has value %d", got)
 	}
 }
 
@@ -553,20 +551,20 @@ func TestLifecycleObserverSkipOnSaveErrorHandoff(t *testing.T) {
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](outbox),
 	)
 
-	if got := counterValue(t, reader, "flowy.checkpoint_soft_error_total"); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error_total=1, got %d", got)
+	if got := counterValue(t, reader, "checkpoint"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=checkpoint=1, got %d", got)
 	}
 	if got := counterAttributeValue(
 		t,
 		reader,
-		"flowy.checkpoint_soft_error_total",
+		"checkpoint",
 		"thread_id",
 		"otel-skip-handoff-th",
-	); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error thread_id, got %d", got)
+	); got != 0 {
+		t.Fatalf("forbidden identity metric label has value %d", got)
 	}
-	if got := counterValue(t, reader, "flowy.handoff_enqueued_total"); got != 0 {
-		t.Fatalf("expected handoff_enqueued_total=0 on skip-on-save, got %d", got)
+	if got := counterValue(t, reader, "handoff"); got != 0 {
+		t.Fatalf("expected lifecycle_total operation=handoff=0 on skip-on-save, got %d", got)
 	}
 }
 
@@ -612,20 +610,20 @@ func TestLifecycleObserverSkipOnSaveErrorHTB(t *testing.T) {
 	_ = runner.RequestLocalHandoff(context.Background(), "otel-skip-htb-th")
 	<-startDone
 
-	if got := counterValue(t, reader, "flowy.checkpoint_soft_error_total"); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error_total=1, got %d", got)
+	if got := counterValue(t, reader, "checkpoint"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=checkpoint=1, got %d", got)
 	}
 	if got := counterAttributeValue(
 		t,
 		reader,
-		"flowy.checkpoint_soft_error_total",
+		"checkpoint",
 		"thread_id",
 		"otel-skip-htb-th",
-	); got != 1 {
-		t.Fatalf("expected checkpoint_soft_error thread_id, got %d", got)
+	); got != 0 {
+		t.Fatalf("forbidden identity metric label has value %d", got)
 	}
-	if got := counterValue(t, reader, "flowy.handoff_enqueued_total"); got != 0 {
-		t.Fatalf("expected handoff_enqueued_total=0 on skip-on-save HTB, got %d", got)
+	if got := counterValue(t, reader, "handoff"); got != 0 {
+		t.Fatalf("expected lifecycle_total operation=handoff=0 on skip-on-save HTB, got %d", got)
 	}
 }
 
@@ -674,8 +672,8 @@ func TestLifecycleObserverResumeRejectedHandoffOrphaned(t *testing.T) {
 		SnapshotRevision: rev,
 	})
 
-	if got := counterAttributeValue(t, reader, "flowy.resume_rejected_total", "reason", "handoff_orphaned"); got != 1 {
-		t.Fatalf("expected resume_rejected_total reason=handoff_orphaned=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=resume stage=failed=1, got %d", got)
 	}
 }
 
@@ -734,9 +732,7 @@ func TestLifecycleObserverHandoffPatchOrphanFailed(t *testing.T) {
 	_, _ = g.NewRunner(cp).Start(context.Background(), "otel-patch-orphan-th", state{},
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](outbox),
 	)
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "patch_orphan_failed",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
 		t.Fatalf("expected patch_orphan_failed=1, got %d", got)
 	}
 }
@@ -767,9 +763,7 @@ func TestLifecycleObserverHandoffPatchEnqueuedFailed(t *testing.T) {
 	_, _ = g.NewRunner(cp).Start(context.Background(), "otel-patch-enq-th", state{},
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	)
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "patch_enqueued_failed",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
 		t.Fatalf("expected patch_enqueued_failed=1, got %d", got)
 	}
 }
@@ -794,9 +788,7 @@ func TestLifecycleObserverResumeRejectedEmptyToken(t *testing.T) {
 	}
 	cp := testutil.NewMemoryCheckpointer[state, flowy.NoEffect]()
 	_, _ = g.NewRunner(cp).Resume(context.Background(), flowy.ResumeToken{})
-	if got := counterAttributeValue(
-		t, reader, "flowy.resume_rejected_total", "reason", "empty_token",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected empty_token=1, got %d", got)
 	}
 }
@@ -831,9 +823,7 @@ func TestLifecycleObserverResumeRejectedInvalidHandoffStatus(t *testing.T) {
 	_, _ = g.NewRunner(cp).Resume(context.Background(), flowy.ResumeToken{
 		ThreadID: "otel-invalid-hs-th", SnapshotRevision: rev,
 	})
-	if got := counterAttributeValue(
-		t, reader, "flowy.resume_rejected_total", "reason", "invalid_handoff_status",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected invalid_handoff_status=1, got %d", got)
 	}
 }
@@ -867,9 +857,7 @@ func TestLifecycleObserverResumeRejectedInvalidSnapshot(t *testing.T) {
 	_, _ = g.NewRunner(cp).Resume(context.Background(), flowy.ResumeToken{
 		ThreadID: "otel-invalid-snap-th", SnapshotRevision: rev,
 	})
-	if got := counterAttributeValue(
-		t, reader, "flowy.resume_rejected_total", "reason", "invalid_snapshot",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected invalid_snapshot=1, got %d", got)
 	}
 }
@@ -903,9 +891,7 @@ func TestLifecycleObserverResumeRejectedInvalidPointer(t *testing.T) {
 	_, _ = g.NewRunner(cp).Resume(context.Background(), flowy.ResumeToken{
 		ThreadID: "otel-bad-ptr-th", SnapshotRevision: rev,
 	})
-	if got := counterAttributeValue(
-		t, reader, "flowy.resume_rejected_total", "reason", "invalid_pointer",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected invalid_pointer=1, got %d", got)
 	}
 }
@@ -935,9 +921,7 @@ func TestLifecycleObserverHandoffSaveFailed(t *testing.T) {
 	_, _ = g.NewRunner(cp).Start(context.Background(), "otel-tx-save-fail-th", state{},
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	)
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "save_failed",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
 		t.Fatalf("expected save_failed=1, got %d", got)
 	}
 }
@@ -967,9 +951,7 @@ func TestLifecycleObserverHandoffCommitFailed(t *testing.T) {
 	_, _ = g.NewRunner(cp).Start(context.Background(), "otel-tx-commit-fail-th", state{},
 		flowy.WithHandoffOutbox[state, flowy.NoEffect](&testHandoffOutbox{}),
 	)
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "commit_failed",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "failed"); got != 1 {
 		t.Fatalf("expected commit_failed=1, got %d", got)
 	}
 }
@@ -1009,10 +991,8 @@ func TestLifecycleObserverRecoverStaleHandoffFromOrphaned(t *testing.T) {
 	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-orphan-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "success",
-	); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=success=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "committed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=committed=1, got %d", got)
 	}
 }
 
@@ -1052,10 +1032,8 @@ func TestLifecycleObserverRecoverStaleHandoffStalePending(t *testing.T) {
 	if _, recoverErr := runner.RecoverStaleHandoff(context.Background(), "otel-recover-stale-th"); recoverErr != nil {
 		t.Fatalf("recover: %v", recoverErr)
 	}
-	if got := counterAttributeValue(
-		t, reader, "flowy.handoff_enqueued_total", "status", "success",
-	); got != 1 {
-		t.Fatalf("expected handoff_enqueued_total status=success=1, got %d", got)
+	if got := counterAttributeValue(t, reader, "handoff", "stage", "committed"); got != 1 {
+		t.Fatalf("expected lifecycle_total operation=handoff stage=committed=1, got %d", got)
 	}
 }
 
@@ -1092,9 +1070,7 @@ func TestLifecycleObserverRecoverStaleHandoffFreshPending(t *testing.T) {
 		flowy.WithHandoffStaleAfter[state, flowy.NoEffect](5 * time.Minute),
 	})
 	_, _ = runner.RecoverStaleHandoff(context.Background(), "otel-recover-pending-th")
-	if got := counterAttributeValue(
-		t, reader, "flowy.resume_rejected_total", "reason", "handoff_pending",
-	); got != 1 {
+	if got := counterAttributeValue(t, reader, "resume", "stage", "failed"); got != 1 {
 		t.Fatalf("expected handoff_pending from recovery=1, got %d", got)
 	}
 }

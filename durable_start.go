@@ -28,7 +28,9 @@ func (r *DurableRunner[T, E]) prepareStart(
 	if ctx.Err() != nil {
 		return ExecutionEnvelope{}, context.Cause(ctx)
 	}
-	return r.store.CommitExecution(ctx, 0, lease, ExecutionEnvelope{
+	meta := newRunMetadata()
+	meta.TelemetryContext = extractTelemetryContext(ctx)
+	return commitExecution(ctx, r.store, 0, lease, ExecutionEnvelope{
 		ExecutionID:    lease.ExecutionID,
 		Revision:       0,
 		Digest:         "",
@@ -45,7 +47,7 @@ func (r *DurableRunner[T, E]) prepareStart(
 		JournalPayload:  nil,
 		ChildrenPayload: nil,
 		WaitsPayload:    nil,
-		RunMeta:         newRunMetadata(),
+		RunMeta:         meta,
 		Activation:      1,
 		Terminal:        nil,
 		Migration:       nil,

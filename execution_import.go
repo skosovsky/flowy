@@ -91,6 +91,11 @@ func (r *DurableRunner[T, E]) Import(
 	if ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(ctx)
 	}
+	event := lifecycleObservation(LifecycleImport, LifecycleStarted, id, "")
+	event.SourceExecutionID, event.SourceRevision, event.TargetExecutionID = source.ID, source.Revision, id
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(ctx, event) }()
 	state, err := importer.Transform(bytes.Clone(source.Payload))
 	if err != nil {
 		return ResumeToken{}, fmt.Errorf("%w: %w", ErrExecutionImportInvalid, err)
@@ -134,9 +139,10 @@ func (r *DurableRunner[T, E]) Import(
 	if metadataErr := validateExecutionSourceMetadata(envelope); metadataErr != nil {
 		return ResumeToken{}, errors.Join(ErrExecutionImportInvalid, metadataErr)
 	}
-	committed, err := r.store.CommitExecution(ctx, 0, session.lease, envelope)
+	committed, err := commitExecution(ctx, r.store, 0, session.lease, envelope)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.TargetRevision = LifecycleCommitted, committed.Revision, committed.Revision
 	return ResumeToken{ThreadID: id, SnapshotRevision: committed.Revision}, nil
 }

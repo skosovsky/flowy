@@ -50,12 +50,16 @@ func (r *DurableRunner[T, E]) Rollover(
 		return ResumeToken{}, err
 	}
 	defer session.finish()
+	event := rolloverOperationObservation(token, request)
+	defer func() { observeLifecycle(session.ctx, event) }()
 	prior, err := store.LoadRollover(session.ctx, token.ThreadID)
 	if err != nil {
 		return ResumeToken{}, err
 	}
 	if prior != nil {
-		return r.replayRollover(token, request, *prior)
+		result, replayErr := r.replayRollover(token, request, *prior)
+		event = rolloverReplayObservation(event, *prior, replayErr)
+		return result, replayErr
 	}
 	source, err := r.store.LoadExecution(session.ctx, token.ThreadID)
 	if err != nil {
@@ -76,43 +80,26 @@ func (r *DurableRunner[T, E]) Rollover(
 	if err = validateRolloverRecordLimit(source, request.Policy); err != nil {
 		return ResumeToken{}, err
 	}
-	payload, err := request.Project(
-		RolloverPayload{
-			Progress:       cloneMigrationState(source.Progress),
-			EffectsPayload: bytes.Clone(source.EffectsPayload),
-		},
-	)
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event.Node, event.SegmentID, event.Stage = source.Progress.ExecutionPointer, source.RunMeta.Segment.SegmentID, LifecycleStarted
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	reference, target, err := r.prepareRolloverTarget(source, request)
 	if err != nil {
-		return ResumeToken{}, errors.Join(ErrExecutionLifecycleUnsafe, err)
-	}
-	payload.Progress = cloneMigrationState(payload.Progress)
-	payload.EffectsPayload = bytes.Clone(payload.EffectsPayload)
-	if len(payload.Progress.ChildCursors) != 0 || len(payload.Progress.JournalReferences) != 0 ||
-		len(payload.Progress.ChildGroupReferences) != 0 {
-		return ResumeToken{}, ErrExecutionLifecycleUnsafe
-	}
-	if err = r.validatePointer(payload.Progress.ExecutionPointer); err != nil {
 		return ResumeToken{}, err
-	}
-	reference := HistoricalCheckpointReference{
-		ExecutionID: source.ExecutionID,
-		Revision:    source.Revision,
-		Digest:      source.Digest,
-	}
-	target := r.rolloverTarget(source, request, payload, reference)
-	if err = r.validateTargetCodecs(target); err != nil {
-		return ResumeToken{}, errors.Join(ErrExecutionIncompatible, err)
 	}
 	if err = session.ctx.Err(); err != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
 	receipt, err := store.CommitRollover(session.ctx, session.lease, reference, target)
+	session.noteLeaseFailure(err)
 	if err != nil {
 		return ResumeToken{}, err
 	}
 	if err = receipt.Validate(); err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.TargetRevision = LifecycleCommitted, receipt.SourceRevision, receipt.Target.Revision
 	return ResumeToken{ThreadID: receipt.Target.ExecutionID, SnapshotRevision: receipt.Target.Revision}, nil
 }
 
@@ -190,4 +177,38 @@ func (r *DurableRunner[T, E]) rolloverTarget(
 	target.RunMeta.BudgetCounts = source.RunMeta.BudgetCounts
 	target.RunMeta.TelemetryContext = source.RunMeta.TelemetryContext
 	return target
+}
+
+func (r *DurableRunner[T, E]) prepareRolloverTarget(
+	source ExecutionEnvelope,
+	request RolloverRequest,
+) (HistoricalCheckpointReference, ExecutionEnvelope, error) {
+	payload, err := request.Project(
+		RolloverPayload{
+			Progress:       cloneMigrationState(source.Progress),
+			EffectsPayload: bytes.Clone(source.EffectsPayload),
+		},
+	)
+	if err != nil {
+		return HistoricalCheckpointReference{}, ExecutionEnvelope{}, errors.Join(ErrExecutionLifecycleUnsafe, err)
+	}
+	payload.Progress = cloneMigrationState(payload.Progress)
+	payload.EffectsPayload = bytes.Clone(payload.EffectsPayload)
+	if len(payload.Progress.ChildCursors) != 0 || len(payload.Progress.JournalReferences) != 0 ||
+		len(payload.Progress.ChildGroupReferences) != 0 {
+		return HistoricalCheckpointReference{}, ExecutionEnvelope{}, ErrExecutionLifecycleUnsafe
+	}
+	if err = r.validatePointer(payload.Progress.ExecutionPointer); err != nil {
+		return HistoricalCheckpointReference{}, ExecutionEnvelope{}, err
+	}
+	reference := HistoricalCheckpointReference{
+		ExecutionID: source.ExecutionID,
+		Revision:    source.Revision,
+		Digest:      source.Digest,
+	}
+	target := r.rolloverTarget(source, request, payload, reference)
+	if err = r.validateTargetCodecs(target); err != nil {
+		return HistoricalCheckpointReference{}, ExecutionEnvelope{}, errors.Join(ErrExecutionIncompatible, err)
+	}
+	return reference, target, nil
 }

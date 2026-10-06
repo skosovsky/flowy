@@ -77,16 +77,15 @@ func (c *executionCheckpointer[T, E]) cancelChildren(ctx context.Context, expect
 		if notifyErr := notify(ctx, ChildCancelNotice{ParentID: group.ParentID, GroupKey: group.Plan.Key,
 			ChildID: child.Spec.ID, ExecutionID: child.ExecutionID, ChildRevision: child.Revision,
 			RequestID: request.ID, Reason: request.Reason}); notifyErr != nil {
+			c.observeChildNotificationFailure(ctx, identity, child, request)
 			return c.currentChildGroup(identity), notifyErr
 		}
 	}
 	return c.currentChildGroup(identity), nil
 }
 
-func (c *executionCheckpointer[T, E]) requestChildCancellation(ctx context.Context, identity string,
+func (c *executionCheckpointer[T, E]) requestChildCancellationLocked(ctx context.Context, identity string,
 	expected ChildGroupRecord, request ChildCancelRequest) (ChildGroupRecord, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	groups, err := executionChildGroups(c.envelope)
 	if err != nil {
 		return ChildGroupRecord{}, err

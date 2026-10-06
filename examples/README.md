@@ -4,6 +4,10 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 
 ## Lifecycle API
 
+Эта таблица описывает ordinary runner. Durable `Stream` возвращает handle после
+initial checkpoint commit; обе модели используют `WaitResult()` как terminal
+authority. Stream содержит события исполнения и effects, а не model tokens.
+
 | Entry point    | Sync result              | Stream events | Terminal authority      |
 | -------------- | ------------------------ | ------------- | ----------------------- |
 | `Start`        | `RunResult` + error      | —             | returned error / result |
@@ -25,7 +29,7 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 | Stream RequestStop (anti-deadlock) | `stream_request_stop`  | `cd examples/stream_request_stop && go run main.go`  |
 | Human-in-the-Loop                  | `hitl_agent`           | `cd examples/hitl_agent && go run main.go`           |
 | Middleware + panic recovery        | `middleware_agent`     | `cd examples/middleware_agent && go run main.go`     |
-| Supervisor / multi-agent           | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
+| Supervisor route → terminal worker | `multi_agent`          | `cd examples/multi_agent && go run main.go`          |
 | Context deadline + emergency save  | `context_deadline`     | `cd examples/context_deadline && go run main.go`     |
 | Cache routing + late binding       | `conditional_routing`  | `cd examples/conditional_routing && go run main.go`  |
 | Parent + subgraph suspend/resume   | `subgraph_agent`       | `cd examples/subgraph_agent && go run main.go`       |
@@ -33,7 +37,15 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 | Lease + WithRunLease               | `lease_agent`          | `cd examples/lease_agent && go run main.go`          |
 | Typed BindingKey                   | `bindings_agent`       | `cd examples/bindings_agent && go run main.go`       |
 | Semantic cache routing             | `semantic_cache_agent` | `cd examples/semantic_cache_agent && go run main.go` |
-| Late prompt policy (compile-time)  | `late_prompt_agent`    | `cd examples/late_prompt_agent && go run main.go`    |
+| Late prompt policy (runtime tools filter) | `late_prompt_agent` | `cd examples/late_prompt_agent && go run .` |
+| Ordinary handoff outbox + recovery | `handoff_outbox` | `cd examples/handoff_outbox && go run .` |
+| Durable activities/children/waits/fork, memory smoke | `durable_runtime` | `cd examples/durable_runtime && go run .` |
+
+`durable_runtime` использует memory storage: это исполняемый контрактный пример,
+а не доказательство восстановления PostgreSQL после потери процесса.
+Остальные agent examples используют host stubs и не подтверждают реальные model
+integrations. BYOT и границы ordinary/durable, storage, subgraphs/children и
+accounting/reservation описаны в [матрице возможностей](../README.md#границы-возможностей).
 
 ## Покрытие API
 
@@ -74,7 +86,14 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 
 ## Smoke-валидация
 
-Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (15 каталогов, `go run .`).
+`durable_agent` — отдельный PostgreSQL module с fake model/tool ports. Его
+`go test -race -tags=integration ./...` требует `FLOWY_TEST_DATABASE_URL` и
+проверяет потерю commit reply, approval, isolated children, адресное recovery,
+join и итоговый token на шести новых workers/pools. См.
+[blueprint](durable_agent/README.md). Он не входит в ordinary smoke matrix.
+
+[`examples_smoke_test.go`](../examples_smoke_test.go) запускает 15 ordinary examples
+через `go run .`; отдельный test в `durable_runtime` проверяет memory smoke.
 
 ```bash
 go test ./... -run TestExamplesSmoke -count=1

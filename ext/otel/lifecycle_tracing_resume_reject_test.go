@@ -65,7 +65,7 @@ func assertTracingResumeRejected(
 	_, _ = runner.Resume(context.Background(), token)
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume_rejected" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume.failed" {
 		t.Fatalf("expected resume_rejected span, got %+v", spans)
 	}
 	if !hasResumeRejectedReason(spans[0].Attributes(), wantReason) {

@@ -56,6 +56,24 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 	if source.Activation != decision.Activation {
 		return ResumeToken{}, ErrChildRevision
 	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := childObservation(
+		source,
+		LifecycleChildCancel,
+		childExecutionIdentity(
+			source.ExecutionID,
+			decision.Node,
+			decision.Activation,
+			decision.GroupKey,
+			"",
+		),
+		decision.ChildID,
+	)
+	event.Stage, event.ChildExecutionID, event.DecisionID = LifecycleStarted, decision.ExecutionID, decision.DecisionID
+	event.Node = decision.Node
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	groups, err := executionChildGroups(source)
 	if err != nil {
 		return ResumeToken{}, err
@@ -75,6 +93,7 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 	); confirmErr != nil {
 		return ResumeToken{}, confirmErr
 	}
+	event.Code = "child_canceled"
 	groups[identity] = group
 	target := cloneExecutionEnvelope(source)
 	target.ChildrenPayload, err = json.Marshal(groups)
@@ -84,10 +103,11 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 

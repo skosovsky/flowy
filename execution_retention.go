@@ -71,3 +71,34 @@ func ExecutionRevisionRetained(request ExecutionRetentionRequest, revision uint6
 	}
 	return revision <= request.Revision && request.Revision-revision < uint64(request.Policy.KeepLast)
 }
+
+// RetainExecution observes explicit maintenance over an optional store capability.
+// It does not load payloads, acquire leases or interpret host archive policy.
+// Direct calls to store.RetainExecution bypass runtime observation.
+func RetainExecution(
+	ctx context.Context,
+	store ExecutionRetentionStore,
+	request ExecutionRetentionRequest,
+) (ExecutionRetentionReceipt, error) {
+	if store == nil {
+		return ExecutionRetentionReceipt{}, ErrExecutionLifecycleUnsupported
+	}
+	if err := request.Validate(); err != nil {
+		return ExecutionRetentionReceipt{}, err
+	}
+	request.Policy.ProtectedRevisions = slices.Clone(request.Policy.ProtectedRevisions)
+	event := lifecycleObservation(LifecycleRetention, LifecycleStarted, request.ExecutionID, "")
+	event.SourceRevision = request.Revision
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	receipt, err := store.RetainExecution(ctx, request)
+	if err == nil && (receipt.ExecutionID != request.ExecutionID || receipt.Revision != request.Revision ||
+		receipt.DeletedBytes < 0 || receipt.DeletedRevisions < 0) {
+		err = ErrExecutionCorrupt
+	}
+	if err == nil {
+		event.Stage, event.Revision = LifecycleCommitted, receipt.Revision
+	}
+	observeLifecycle(ctx, event)
+	return receipt, err
+}

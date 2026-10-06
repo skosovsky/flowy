@@ -1,7 +1,7 @@
 GO      := go
 MODULES := $(shell find . -type d \( -name ".*" -not -name "." -o -name "vendor" \) -prune -o -type f -name "go.mod" -exec dirname {} \;)
 
-.PHONY: lint fix test test-race test-goleak verify-stress bench bench-hotpath fuzz cover release-patch release-break
+.PHONY: lint fix test test-race test-goleak verify-stress bench fuzz cover release-patch release-break
 
 lint:
 	@for dir in $(MODULES); do \

@@ -105,8 +105,12 @@ func TestTelemetryBridgeRoundTrip(t *testing.T) {
 	if restoredSC.TraceID() != traceID {
 		t.Fatalf("trace id mismatch: got %s want %s", restoredSC.TraceID(), traceID)
 	}
-	if baggage.FromContext(restored).Member("tenant").Value() != "acme" {
-		t.Fatalf("expected baggage tenant=acme, got %+v", baggage.FromContext(restored))
+	if _, exported := metadata["baggage"]; exported || baggage.FromContext(restored).Member("tenant").Value() != "" {
+		t.Fatalf(
+			"default bridge exported private baggage: carrier=%v restored=%+v",
+			metadata,
+			baggage.FromContext(restored),
+		)
 	}
 }
 

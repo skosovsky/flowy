@@ -44,17 +44,12 @@ func (c *executionCheckpointer[T, E]) finalizeRunOutcome(
 
 // Node failures outside directive handling also need a terminal commit. A
 // recoverable journal/storage/ownership failure is not a definitive node result.
-func (c *executionCheckpointer[T, E]) commitRunFailure(
+func (c *executionCheckpointer[T, E]) commitRunFailureLocked(
 	ctx context.Context,
 	result *RunResult[T, E],
 	runErr error,
 ) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if ctx.Err() != nil || c.persistenceFailed || c.envelope.Terminal != nil || recoverableExecutionFailure(runErr) {
-		return nil
-	}
-	if c.resolvedActivitiesLocked() != nil {
+	if !c.canCommitRunFailureLocked(ctx, runErr) {
 		return nil
 	}
 	target := cloneExecutionEnvelope(c.envelope)
@@ -87,4 +82,11 @@ func recoverableExecutionFailure(err error) bool {
 		}
 	}
 	return false
+}
+
+func (c *executionCheckpointer[T, E]) canCommitRunFailureLocked(ctx context.Context, runErr error) bool {
+	// No-op is deliberate for already-published terminals and unresolved work.
+	// Diagnostics must not turn recoverable or canceled work into a terminal.
+	return ctx.Err() == nil && !c.persistenceFailed && c.envelope.Terminal == nil &&
+		!recoverableExecutionFailure(runErr) && c.resolvedActivitiesLocked() == nil
 }

@@ -1,0 +1,65 @@
+{
+  "baseline": "Go 1.27.1 darwin/arm64 Apple M1 Max, hot/stream steady state, growth 1x; 35% growth allocation margin; see docs/performance-gates.md",
+  "benchmarks": {
+    "BenchmarkExecuteNode_NoMiddleware": {
+      "B/op": 0,
+      "allocs/op": 0
+    },
+    "BenchmarkExecuteNode_With5Middlewares": {
+      "B/op": 0,
+      "allocs/op": 0
+    },
+    "BenchmarkOrdinaryStreaming": {
+      "B/op": 8192,
+      "allocs/op": 60
+    },
+    "BenchmarkExecutionGrowth/fanout=false/records=16": {
+      "B/op": 14821769,
+      "allocs/op": 22161
+    },
+    "BenchmarkExecutionGrowth/fanout=false/records=64": {
+      "B/op": 212349363,
+      "allocs/op": 243137
+    },
+    "BenchmarkExecutionGrowth/fanout=false/records=256": {
+      "B/op": 3250464315,
+      "allocs/op": 3531632
+    },
+    "BenchmarkExecutionGrowth/fanout=true/records=16": {
+      "B/op": 48465411,
+      "allocs/op": 36696
+    },
+    "BenchmarkExecutionGrowth/fanout=true/records=64": {
+      "B/op": 678016257,
+      "allocs/op": 399923
+    },
+    "BenchmarkExecutionGrowth/fanout=true/records=256": {
+      "B/op": 10610590767,
+      "allocs/op": 5764645
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=false/records=16": {
+      "B/op": 14464549,
+      "allocs/op": 22105
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=false/records=64": {
+      "B/op": 64178709,
+      "allocs/op": 109436
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=false/records=256": {
+      "B/op": 263136817,
+      "allocs/op": 455991
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=true/records=16": {
+      "B/op": 48593704,
+      "allocs/op": 37840
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=true/records=64": {
+      "B/op": 206164268,
+      "allocs/op": 177233
+    },
+    "BenchmarkExecutionGrowthRollover/fanout=true/records=256": {
+      "B/op": 836631299,
+      "allocs/op": 734919
+    }
+  }
+}

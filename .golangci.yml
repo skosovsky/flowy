@@ -490,6 +490,6 @@ linters:
           - noctx
           - wrapcheck
           - exhaustruct_v5
-      # Adapter modules use replace github.com/skosovsky/ragy => ../.. for local workspace dev.
-      - path: '^adapters/.*/go\.mod$'
+      # Adapter and executable example modules bind this checkout for workspace development.
+      - path: '^(adapters|examples)/.*/go\.mod$'
         linters: [ gomoddirectives ]

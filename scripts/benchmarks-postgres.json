@@ -1,0 +1,75 @@
+{
+  "baseline": "Go 1.27.1 darwin/arm64 Apple M1 Max, PostgreSQL 17 container over loopback; all workloads 1x; 35% allocation margin; see docs/performance-gates.md",
+  "benchmarks": {
+    "BenchmarkIndexedDiscoveryTerminalArchive/terminal-0": {
+      "B/op": 77609,
+      "allocs/op": 692,
+      "heads/poll": 1
+    },
+    "BenchmarkIndexedDiscoveryTerminalArchive/terminal-20000": {
+      "B/op": 90947,
+      "allocs/op": 746,
+      "heads/poll": 1
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=false/records=16": {
+      "B/op": 20618496,
+      "allocs/op": 33138,
+      "retained-revisions/op": 50.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=false/records=64": {
+      "B/op": 306180886,
+      "allocs/op": 292783,
+      "retained-revisions/op": 194.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=false/records=256": {
+      "B/op": 4932907679,
+      "allocs/op": 3793519,
+      "retained-revisions/op": 770.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=true/records=16": {
+      "B/op": 65783233,
+      "allocs/op": 48935,
+      "retained-revisions/op": 52.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=true/records=64": {
+      "B/op": 964622791,
+      "allocs/op": 457956,
+      "retained-revisions/op": 196.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=false/fanout=true/records=256": {
+      "B/op": 15256659118,
+      "allocs/op": 6031390,
+      "retained-revisions/op": 772.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=false/records=16": {
+      "B/op": 20743452,
+      "allocs/op": 33475,
+      "retained-revisions/op": 1.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=false/records=64": {
+      "B/op": 93502707,
+      "allocs/op": 157351,
+      "retained-revisions/op": 1.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=false/records=256": {
+      "B/op": 386419346,
+      "allocs/op": 653552,
+      "retained-revisions/op": 1.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=true/records=16": {
+      "B/op": 65171521,
+      "allocs/op": 49257,
+      "retained-revisions/op": 1.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=true/records=64": {
+      "B/op": 275557605,
+      "allocs/op": 225884,
+      "retained-revisions/op": 1.0
+    },
+    "BenchmarkPostgresExecutionGrowth/rollover=true/fanout=true/records=256": {
+      "B/op": 1119035002,
+      "allocs/op": 933291,
+      "retained-revisions/op": 1.0
+    }
+  }
+}

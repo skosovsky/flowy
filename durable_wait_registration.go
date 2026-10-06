@@ -18,6 +18,9 @@ func registerDurableWait(ctx context.Context, backend DurableWaitBackend, record
 		return context.Cause(ctx)
 	}
 	if err := backend.RegisterWait(ctx, cloneDurableWait(record)); err != nil {
+		event := lifecycleObservation(LifecycleWaitArm, LifecycleFailed, record.ExecutionID, record.Node)
+		event.WorkID, event.SourceRevision, event.Code = record.Generation, record.ArmRevision, "wait_registration_failed"
+		observeLifecycle(ctx, event)
 		return errors.Join(ErrWaitRegistration, err)
 	}
 	if ctx.Err() != nil {
@@ -26,11 +29,9 @@ func registerDurableWait(ctx context.Context, backend DurableWaitBackend, record
 	return nil
 }
 
-func (c *executionCheckpointer[T, E]) armWait(ctx context.Context, expectedRevision uint64,
+func (c *executionCheckpointer[T, E]) armWaitLocked(ctx context.Context, expectedRevision uint64,
 	snapshot Snapshot[T, E], spec DurableWaitSpec,
 ) (DurableWaitRecord, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.waitBackend == nil || c.waitProfile == nil || c.waitBackend.WaitCapabilities() != *c.waitProfile {
 		return DurableWaitRecord{}, ErrExecutionCapability
 	}
@@ -151,6 +152,9 @@ func (r *DurableRunner[T, E]) recoverArmedWait(ctx context.Context, envelope Exe
 		if registrationErr := registerDurableWait(ctx, r.waitBackend, record); registrationErr != nil {
 			return *result, true, registrationErr
 		}
+		event := waitObservation(envelope, LifecycleWaitArm, record.Generation, "")
+		event.Stage, event.Revision = LifecycleReplayed, envelope.Revision
+		observeLifecycle(ctx, event)
 		if sink != nil {
 			sink(
 				ctx,

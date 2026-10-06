@@ -209,6 +209,11 @@ func (r *DurableRunner[T, E]) prepareResume(
 func (r *DurableRunner[T, E]) prepareMigratedTarget(
 	ctx context.Context, lease ExecutionLease, source ExecutionEnvelope,
 ) (ExecutionEnvelope, error) {
+	ctx = restoreExecutionTelemetry(ctx, source)
+	event := executionObservation(source, LifecycleMigration, LifecycleStarted)
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(ctx, event) }()
 	target, migrationErr := PrepareExecutionMigration(source, r.descriptor, r.options.Migrations, r.validatePointer)
 	if migrationErr != nil {
 		return ExecutionEnvelope{}, errors.Join(ErrExecutionIncompatible, migrationErr)
@@ -222,7 +227,11 @@ func (r *DurableRunner[T, E]) prepareMigratedTarget(
 	if ctx.Err() != nil {
 		return ExecutionEnvelope{}, context.Cause(ctx)
 	}
-	return r.store.CommitExecution(ctx, source.Revision, lease, target)
+	committed, err := commitExecution(ctx, r.store, source.Revision, lease, target)
+	if err == nil {
+		event.Stage, event.Revision = LifecycleCommitted, committed.Revision
+	}
+	return committed, err
 }
 
 func (r *DurableRunner[T, E]) validateTargetCodecs(envelope ExecutionEnvelope) error {
@@ -265,7 +274,7 @@ func (r *DurableRunner[T, E]) runWithSink(
 	if inv.checkpointPolicy == CheckpointPolicySkipOnSaveError || inv.leaseOwner != "" {
 		return nil, ErrExecutionCapability
 	}
-	runCtx := ctx
+	runCtx := injectTelemetryContext(ctx, envelope.RunMeta.TelemetryContext)
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}
@@ -293,23 +302,14 @@ func (r *DurableRunner[T, E]) runWithSink(
 	if err != nil {
 		return nil, err
 	}
+	attachSessionObservation(runCtx, envelope)
 	if ctx.Err() != nil {
 		return nil, context.Cause(ctx)
 	}
 	if envelope.Terminal != nil {
-		result := &RunResult[T, E]{
-			State:            snapshot.State,
-			Effects:          snapshot.Effects,
-			Status:           envelope.Terminal.Status,
-			Reason:           envelope.Terminal.Reason,
-			RunMeta:          snapshot.RunMeta,
-			ExecutionPointer: snapshot.ExecutionPointer,
-			ResumeToken:      ResumeToken{ThreadID: envelope.ExecutionID, SnapshotRevision: envelope.Revision},
-		}
-		emitCachedDurableTerminal(ctx, sink, envelope, snapshot)
-		return result, terminalFailureError(envelope.Terminal)
+		return cachedDurableResult(runCtx, sink, envelope, snapshot)
 	}
-	if waiting, found, waitingErr := r.recoverArmedWait(ctx, envelope, snapshot, sink); found || waitingErr != nil {
+	if waiting, found, waitingErr := r.recoverArmedWait(runCtx, envelope, snapshot, sink); found || waitingErr != nil {
 		return &waiting, waitingErr
 	}
 	base, ok := r.graph.NewRunner(cp).(*graphRunner[T, E])
@@ -340,6 +340,9 @@ func (r *DurableRunner[T, E]) runWithSink(
 			return sink(eventCtx, event)
 		}
 	}
+	event := executionObservation(envelope, LifecycleExecution, LifecycleStarted)
+	event.SegmentID = decision.RunMeta.Segment.SegmentID
+	observeLifecycle(attached, event)
 	result, runErr := base.execute(
 		attached,
 		envelope.ExecutionID,
@@ -351,7 +354,8 @@ func (r *DurableRunner[T, E]) runWithSink(
 		buffered,
 		inv,
 	)
-	runErr = cp.finalizeRunOutcome(ctx, result, runErr, sink, terminal)
+	runErr = cp.finalizeRunOutcome(runCtx, result, runErr, sink, terminal)
+	observeInvocationOutcome(runCtx, event, result, runErr)
 	return result, runErr
 }
 
@@ -361,6 +365,13 @@ func emitCachedDurableTerminal[T, E any](
 	envelope ExecutionEnvelope,
 	snapshot Snapshot[T, E],
 ) {
+	event := executionObservation(envelope, LifecycleTerminal, LifecycleReplayed)
+	event.Code = lifecycleOutcomeCompleted
+	if envelope.Terminal.Status == RunStatusFailed {
+		event.Code = lifecycleOutcomeFailed
+	}
+	event.Revision = envelope.Revision
+	observeLifecycle(ctx, event)
 	if sink == nil {
 		return
 	}
@@ -392,9 +403,13 @@ func (*DurableRunner[T, E]) validateRunOptions(opts ...RunOption[T, E]) error {
 }
 
 type executionSession struct {
-	ctx    context.Context
-	lease  ExecutionLease
-	finish func()
+	ctx                context.Context
+	lease              ExecutionLease
+	finish             func()
+	observationMu      sync.Mutex
+	observationContext context.Context
+	observation        LifecycleObservation
+	lossConfirmed      bool
 }
 
 func (r *DurableRunner[T, E]) acquireSession(ctx context.Context, id string) (*executionSession, error) {
@@ -409,21 +424,29 @@ func (r *DurableRunner[T, E]) acquireSession(ctx context.Context, id string) (*e
 		return nil, err
 	}
 	ownedCtx, cancel := context.WithCancelCause(ctx)
+	session := &executionSession{ctx: ownedCtx, lease: lease, finish: nil,
+		observationMu: sync.Mutex{}, observationContext: ownedCtx,
+		observation: lifecycleObservation(LifecycleLease, LifecycleFailed, id, ""), lossConfirmed: false}
+	session.observation.LeaseIncarnation = lease.Incarnation
+	ownedCtx = context.WithValue(ownedCtx, executionSessionContextKey{}, session)
+	session.ctx = ownedCtx
 	stop := r.heartbeat(ownedCtx, cancel, lease)
 	var once sync.Once
-	return &executionSession{ctx: ownedCtx, lease: lease, finish: func() {
+	session.finish = func() {
 		once.Do(func() {
 			cancel(context.Canceled)
 			stop()
-			r.release(ctx, lease)
+			session.noteLeaseFailure(r.release(ctx, lease))
+			session.observeLeaseLoss(ownedCtx)
 		})
-	}}, nil
+	}
+	return session, nil
 }
 
-func (r *DurableRunner[T, E]) release(ctx context.Context, lease ExecutionLease) {
+func (r *DurableRunner[T, E]) release(ctx context.Context, lease ExecutionLease) error {
 	releaseCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
 	defer cancel()
-	_ = r.store.ReleaseExecution(releaseCtx, lease)
+	return r.store.ReleaseExecution(releaseCtx, lease)
 }
 
 func (r *DurableRunner[T, E]) heartbeat(
@@ -444,6 +467,7 @@ func (r *DurableRunner[T, E]) heartbeat(
 				return
 			case <-ticker.C:
 				if _, err := r.store.RenewExecution(ctx, lease, r.options.LeaseTTL); err != nil {
+					noteSessionLeaseFailure(ctx, ErrLeaseLost)
 					cancel(ErrLeaseLost)
 					return
 				}

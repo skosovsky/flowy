@@ -18,6 +18,12 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	ctx = injectTelemetryContext(ctx, source.RunMeta.TelemetryContext)
+	event := executionObservation(source, LifecycleFork, LifecycleStarted)
+	event.SourceExecutionID, event.ExecutionID, event.TargetExecutionID = source.ExecutionID, request.TargetID, request.TargetID
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(ctx, event) }()
 	lineage, err := r.prepareForkLineage(ctx, source, request)
 	if err != nil {
 		return ResumeToken{}, err
@@ -52,10 +58,12 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 		Activation: 1, RunMeta: newRunMetadata(), Fork: &lineage,
 		Revision: 0, Digest: "", JournalPayload: nil, ChildrenPayload: nil, WaitsPayload: nil,
 		Terminal: nil, Migration: nil, Import: nil, Rollover: nil, Transfer: nil}
-	committed, err := r.store.CommitExecution(session.ctx, 0, session.lease, target)
+	target.RunMeta.TelemetryContext = extractTelemetryContext(session.ctx)
+	committed, err := commitExecution(session.ctx, r.store, 0, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.TargetRevision = LifecycleCommitted, committed.Revision, committed.Revision
 	return ResumeToken{ThreadID: request.TargetID, SnapshotRevision: committed.Revision}, nil
 }
 

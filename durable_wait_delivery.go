@@ -59,6 +59,11 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := waitObservation(source, LifecycleWaitWinner, delivery.Generation, delivery.ID)
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	waits, err := executionWaits(source)
 	if err != nil {
 		return WaitDeliveryResult{}, err
@@ -74,7 +79,9 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
+	event.Code = "wait_" + string(decision.Status)
 	if replay {
+		event.Stage, event.Revision = LifecycleReplayed, source.Revision
 		return WaitDeliveryResult{Decision: decision, Replay: true,
 			ResumeToken: ResumeToken{ThreadID: executionID, SnapshotRevision: source.Revision}}, nil
 	}
@@ -93,10 +100,11 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if session.ctx.Err() != nil {
 		return WaitDeliveryResult{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return WaitDeliveryResult{Decision: decision, Replay: false,
 		ResumeToken: ResumeToken{ThreadID: executionID, SnapshotRevision: committed.Revision}}, nil
 }

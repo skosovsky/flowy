@@ -414,6 +414,22 @@ type spyLifecycleObserver struct {
 	checkpointSofts int
 }
 
+func (s *spyLifecycleObserver) ObserveLifecycle(ctx context.Context, event LifecycleObservation) {
+	switch event.Operation {
+	case LifecycleHandoff:
+		s.HandoffEnqueued(ctx, event.ExecutionID, event.Node, event.Code)
+	case LifecycleResume:
+		s.ResumeRejected(ctx, event.ExecutionID, event.Node, event.Code)
+	case LifecycleCheckpoint:
+		s.CheckpointSoftError(ctx, event.ExecutionID, event.Node)
+	case LifecycleExecution, LifecycleTerminal, LifecycleActivity, LifecycleReconcile, LifecycleRetry,
+		LifecycleChildLaunch, LifecycleChildResolve, LifecycleChildJoin, LifecycleChildCancel,
+		LifecycleWaitArm, LifecycleWaitWinner, LifecycleWaitCancel, LifecycleLease,
+		LifecycleMigration, LifecycleImport, LifecycleFork, LifecycleRollover, LifecycleRetention:
+		return
+	}
+}
+
 func (s *spyLifecycleObserver) HandoffEnqueued(_ context.Context, _ string, _ ExecutionPointer, status string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -19,7 +19,6 @@ type bridge struct{}
 func (bridge) Extract(ctx context.Context) map[string]string {
 	carrier := mapCarrier{}
 	propagation.TraceContext{}.Inject(ctx, carrier)
-	propagation.Baggage{}.Inject(ctx, carrier)
 	if len(carrier) == 0 {
 		return nil
 	}
@@ -35,7 +34,6 @@ func (bridge) Inject(ctx context.Context, metadata map[string]string) context.Co
 	carrier := mapCarrier{}
 	maps.Copy(carrier, metadata)
 	ctx = propagation.TraceContext{}.Extract(ctx, carrier)
-	ctx = propagation.Baggage{}.Extract(ctx, carrier)
 	return ctx
 }
 

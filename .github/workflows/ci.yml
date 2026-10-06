@@ -54,9 +54,24 @@ jobs:
       - name: Run tests
         working-directory: ${{ matrix.module }}
         run: go test -v -race ./...
-      - name: Hot-path benchmarks (alloc check)
-        working-directory: ${{ matrix.module }}
-        run: go test -bench='BenchmarkExecuteNode_(NoMiddleware|With5Middlewares)' -benchmem -count=1 -run=^$$ .
+
+  benchmarks:
+    name: Benchmark presence and allocations
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Verify benchmark gate rejection fixtures
+        run: python3 -m unittest discover -s scripts -p 'test_check_benchmarks.py'
+      - name: Measure root workloads and enforce allocation ceilings
+        run: |
+          set -o pipefail
+          go test -run='^$' -bench='BenchmarkExecuteNode_|BenchmarkOrdinaryStreaming' -benchtime=100ms -benchmem . | tee /tmp/flowy-root-bench.txt
+          go test -run='^$' -bench='BenchmarkExecutionGrowth' -benchtime=1x -benchmem . | tee -a /tmp/flowy-root-bench.txt
+          python3 scripts/check_benchmarks.py scripts/benchmarks-root.json /tmp/flowy-root-bench.txt
 
   verify-stress:
     name: Verify stress
@@ -76,6 +91,15 @@ jobs:
     needs: lint
     runs-on: ubuntu-latest
     services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
       postgres:
         image: postgres:16
         env:
@@ -97,6 +121,7 @@ jobs:
           - adapters/checkpointer/postgres
           - adapters/lease/redis
           - adapters/lease/postgres
+          - examples/durable_agent
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-go@v6
@@ -107,4 +132,14 @@ jobs:
         working-directory: ${{ matrix.module }}
         env:
           FLOWY_TEST_DATABASE_URL: postgres://flowy:flowy@localhost:5432/flowy_test?sslmode=disable
+          FLOWY_TEST_REDIS_ADDR: localhost:6379
         run: go test -v -race -tags=integration ./...
+      - name: Measure PostgreSQL workloads and enforce allocation ceilings
+        if: matrix.module == 'adapters/checkpointer/postgres'
+        working-directory: adapters/checkpointer/postgres
+        env:
+          FLOWY_TEST_DATABASE_URL: postgres://flowy:flowy@localhost:5432/flowy_test?sslmode=disable
+        run: |
+          set -o pipefail
+          go test -tags=integration -run='^$' -bench='BenchmarkPostgresExecutionGrowth|BenchmarkIndexedDiscoveryTerminalArchive' -benchtime=1x -benchmem . | tee /tmp/flowy-postgres-bench.txt
+          python3 ../../../scripts/check_benchmarks.py ../../../scripts/benchmarks-postgres.json /tmp/flowy-postgres-bench.txt

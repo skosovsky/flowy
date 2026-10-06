@@ -25,14 +25,12 @@ func TracingMiddleware[T, E any](tracer trace.Tracer) flowy.NodeMiddleware[T, E]
 			out, directive, err := next(ctx, state)
 			base, _, unwrapErr := flowy.UnwrapDirective[E](directive)
 			if unwrapErr != nil {
-				span.RecordError(unwrapErr)
-				span.SetStatus(codes.Error, unwrapErr.Error())
+				span.SetStatus(codes.Error, "directive_invalid")
 			} else {
 				span.SetAttributes(attribute.String("flowy.directive", base.Type()))
 			}
 			if err != nil {
-				span.RecordError(err)
-				span.SetStatus(codes.Error, err.Error())
+				span.SetStatus(codes.Error, "node_failed")
 			}
 			return out, directive, err
 		}

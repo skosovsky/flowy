@@ -88,7 +88,7 @@
 // Recovery cron should be single-leader or protected by an external lock.
 // RecoverStaleHandoff itself does not acquire run leases.
 // Checkpointer Save/Load use strict OCC (expectedRevision uint64); ErrConcurrencyConflict on conflict.
-// LifecycleObserver (SetLifecycleObserver) receives handoff/resume/checkpoint-soft events.
+// LifecycleObserver (SetLifecycleObserver) receives value-only runtime observations through ObserveLifecycle.
 // Soft checkpoint: WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError) emits EventCheckpointFailed on
 // Stream/ResumeStream without aborting terminal flow; sync Start/Resume have no event sink.
 // ResumeToken is set only after a persisted Suspend/Handoff terminal save. When skip-on-save-error

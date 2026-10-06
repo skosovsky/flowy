@@ -167,14 +167,7 @@ func (c *executionCheckpointer[T, E]) callActivity(
 		return ActivityOutcome{}, ErrActivityConflict
 	}
 	if exists && record.State == ActivityCompleted {
-		result := ActivityOutcome{
-			Payload:  bytes.Clone(record.Outcome),
-			Origin:   ActivityReplayed,
-			Revision: c.envelope.Revision,
-			Identity: identity,
-		}
-		c.mu.Unlock()
-		return result, nil
+		return c.replayActivityLocked(ctx, record), nil
 	}
 	if exists && (record.State == ActivityRunning || record.State == ActivityUnknown) {
 		return c.recoverActivityLocked(ctx, request, journal, record)
@@ -204,7 +197,9 @@ func (c *executionCheckpointer[T, E]) callActivity(
 			Resolutions:    nil,
 		}
 		if err := c.persistActivity(ctx, journal, record); err != nil {
+			event := c.activityObservationLocked(LifecycleActivity, LifecycleFailed, identity)
 			c.mu.Unlock()
+			observeLifecycle(ctx, event)
 			return ActivityOutcome{}, err
 		}
 	}
@@ -227,10 +222,15 @@ func (c *executionCheckpointer[T, E]) callActivity(
 		},
 	)
 	if err := c.persistActivity(ctx, journal, record); err != nil {
+		event := c.activityObservationLocked(LifecycleActivity, LifecycleFailed, identity)
 		c.mu.Unlock()
+		observeLifecycle(ctx, event)
 		return ActivityOutcome{}, err
 	}
+	event := c.activityObservationLocked(LifecycleActivity, LifecycleStarted, identity)
+	event.Attempt = len(record.Attempts)
 	c.mu.Unlock()
+	observeLifecycle(ctx, event)
 	payload, dispatchErr := request.Dispatch(ctx, ActivityInvocation{
 		Identity: identity,
 		Input:    bytes.Clone(request.Input),
@@ -269,12 +269,17 @@ func (c *executionCheckpointer[T, E]) recoverActivityLocked(
 			return ActivityOutcome{}, err
 		}
 	}
+	event := c.activityObservationLocked(LifecycleReconcile, LifecycleStarted, record.Identity)
+	event.Attempt = len(record.Attempts)
 	c.mu.Unlock()
 	if request.Reconcile == nil {
 		return ActivityOutcome{}, ErrActivityUnknown
 	}
+	observeLifecycle(ctx, event)
 	payload, err := request.Reconcile(ctx, record)
 	if err != nil {
+		event.Stage = LifecycleFailed
+		observeLifecycle(ctx, event)
 		return ActivityOutcome{}, errors.Join(ErrActivityUnknown, err)
 	}
 	var decision ActivityFailureDecision
@@ -300,7 +305,7 @@ func (c *executionCheckpointer[T, E]) persistActivity(
 	}
 	target := cloneExecutionEnvelope(c.envelope)
 	target.JournalPayload = payload
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return activityJournalCommitError(err)
@@ -321,7 +326,9 @@ func activityJournalCommitError(err error) error {
 	return errors.Join(ErrActivityJournalUnavailable, err)
 }
 
-func (c *executionCheckpointer[T, E]) finishActivity(
+// finishActivityLocked is called with the checkpointer mutex held. Observation
+// is published by finishActivity after releasing it.
+func (c *executionCheckpointer[T, E]) finishActivityLocked(
 	ctx context.Context,
 	identity string,
 	payload []byte,
@@ -329,8 +336,6 @@ func (c *executionCheckpointer[T, E]) finishActivity(
 	origin ActivityOrigin,
 	classification ActivityFailureDecision,
 ) (ActivityOutcome, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	journal, err := c.readJournal()
 	if err != nil {
 		return ActivityOutcome{}, err

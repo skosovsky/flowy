@@ -50,6 +50,11 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := waitObservation(source, LifecycleWaitCancel, request.Generation, request.ID)
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	waits, err := executionWaits(source)
 	if err != nil {
 		return ResumeToken{}, err
@@ -61,7 +66,9 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if cancelErr := validateWaitCancellationRequest(source, record, token, request); cancelErr != nil {
 		return ResumeToken{}, cancelErr
 	}
+	event.Code = "wait_canceled"
 	if record.State == WaitCanceled {
+		event.Stage, event.Revision = LifecycleReplayed, source.Revision
 		return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: source.Revision}, nil
 	}
 	now := r.options.Clock.Now().UTC()
@@ -83,10 +90,11 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 
