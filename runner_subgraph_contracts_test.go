@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestAsNodeSuspendNotResumable(t *testing.T) {
+func TestStatelessNodeRestartsInnerAfterSuspend(t *testing.T) {
 	t.Parallel()
 
 	type innerState struct{ Step int }
@@ -30,7 +30,7 @@ func TestAsNodeSuspendNotResumable(t *testing.T) {
 
 	outerBuilder := NewGraph[outerState, NoEffect](func(_ outerState, u outerState) outerState { return u })
 	outerBuilder.AddNode("inline", func(ctx context.Context, s outerState) (outerState, Directive, error) {
-		_, d, runErr := inner.AsNode()(ctx, innerState{})
+		_, d, runErr := inner.AsStatelessNode()(ctx, innerState{})
 		return s, d, runErr
 	})
 	outerBuilder.SetEntryPoint("inline")
@@ -59,7 +59,7 @@ func TestAsNodeSuspendNotResumable(t *testing.T) {
 		t.Fatalf("parent resume: %v", err)
 	}
 	if second.Status != RunStatusSuspended {
-		t.Fatalf("AsNode inner suspend is not resumable; inline graph restarts, got %s", second.Status)
+		t.Fatalf("AsStatelessNode inner suspend is not resumable; inline graph restarts, got %s", second.Status)
 	}
 }
 func TestSubgraphDoesNotInheritHandoffOutbox(t *testing.T) {
@@ -683,7 +683,7 @@ func TestSubgraphInnerHandoffParentOutboxRunsAtParentLevel(t *testing.T) {
 	}
 }
 
-func TestAsNodeStartErrorReturnsFailDirective(t *testing.T) {
+func TestStatelessNodeStartErrorReturnsFailDirective(t *testing.T) {
 	t.Parallel()
 
 	type state struct{}
@@ -700,7 +700,7 @@ func TestAsNodeStartErrorReturnsFailDirective(t *testing.T) {
 	}
 
 	outer := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	outer.AddNode("inline", innerGraph.AsNode())
+	outer.AddNode("inline", innerGraph.AsStatelessNode())
 	outer.AllowNoOutgoingRoute("inline")
 	outer.SetEntryPoint("inline")
 	outerGraph, err := outer.Compile()
@@ -808,7 +808,7 @@ func TestSubgraphDoesNotInheritCheckpointErrorPolicy(t *testing.T) {
 	loadSlot := func(p parentState) (SubgraphSlot[childState, NoEffect], bool) {
 		return p.Slot, p.Slot.ExecutionPointer != ""
 	}
-	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+	parentBuilder.AddNode("sub", faultSubgraphNodeWithSlot(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		loadSlot,
@@ -916,7 +916,7 @@ func TestSubgraphSeedSaveBypassesParentCheckpointPolicy(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+	parentBuilder.AddNode("sub", faultSubgraphNodeWithSlot(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
@@ -983,7 +983,7 @@ func TestSubgraphStaleInnerSlotRevisionRejected(t *testing.T) {
 	loadSlot := func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
 		return s.Slot, s.Slot.ExecutionPointer != ""
 	}
-	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+	parentBuilder.AddNode("sub", faultSubgraphNodeWithSlot(
 		sub,
 		func(s parentState) childState { return s.Child },
 		loadSlot,
@@ -1071,7 +1071,7 @@ func TestSubgraphInnerContextCanceledMapsToCompleted(t *testing.T) {
 		t.Fatalf("expected context.Canceled from subgraph inner cancel mapping, got %v", err)
 	}
 }
-func TestAsNodeInnerContextCanceledMapsToCompleted(t *testing.T) {
+func TestStatelessNodeInnerContextCanceledMapsToCompleted(t *testing.T) {
 	t.Parallel()
 
 	type state struct{ N int }
@@ -1089,7 +1089,7 @@ func TestAsNodeInnerContextCanceledMapsToCompleted(t *testing.T) {
 	}
 
 	outerBuilder := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	outerBuilder.AddNode("inline", inner.AsNode())
+	outerBuilder.AddNode("inline", inner.AsStatelessNode())
 	outerBuilder.AllowNoOutgoingRoute("inline")
 	outerBuilder.SetEntryPoint("inline")
 	outer, err := outerBuilder.Compile()
@@ -1101,6 +1101,6 @@ func TestAsNodeInnerContextCanceledMapsToCompleted(t *testing.T) {
 	cancel()
 	_, err = outer.NewRunner(newMemoryCP[state, NoEffect]()).Start(ctx, "asnode-cancel-th", state{})
 	if err == nil || !errors.Is(err, context.Canceled) {
-		t.Fatalf("expected context.Canceled from AsNode inner cancel, got %v", err)
+		t.Fatalf("expected context.Canceled from AsStatelessNode inner cancel, got %v", err)
 	}
 }

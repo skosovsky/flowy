@@ -27,7 +27,7 @@ func TestSubgraphHandoffPropagates(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(s parentState, _ childState) parentState {
@@ -87,7 +87,7 @@ func TestSubgraphHandoffEnqueueFailureOrphansSnapshot(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(s parentState, _ childState) parentState {
@@ -140,7 +140,7 @@ func TestComposeHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(s parentState, _ childState) parentState {
@@ -195,7 +195,7 @@ func TestComposeHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(s parentState, _ childState) parentState {
@@ -252,7 +252,7 @@ func TestComposeHandoffEnqueueOkBothPatchesFail(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(s parentState, _ childState) parentState {
@@ -310,7 +310,7 @@ func composeHandoffParentGraph(t *testing.T) (
 	parentBuilder := NewGraph[composeParentState, NoEffect](
 		func(_ composeParentState, u composeParentState) composeParentState { return u },
 	)
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ composeParentState) composeChildState { return composeChildState{} },
 		func(s composeParentState, _ composeChildState) composeParentState {
@@ -383,7 +383,7 @@ func TestComposeStreamHandoffEnqueueFailPatchOrphanFails(t *testing.T) {
 	)
 	parentBuilder.AddNode(
 		"sub",
-		SubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
+		StatelessSubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
 			func(s composeParentState, _ composeChildState) composeParentState { s.HandedOff = true; return s }),
 	)
 	parentBuilder.SetEntryPoint("sub")
@@ -438,7 +438,7 @@ func TestComposeStreamHandoffEnqueueOkPatchEnqueuedFails(t *testing.T) {
 	)
 	parentBuilder.AddNode(
 		"sub",
-		SubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
+		StatelessSubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
 			func(s composeParentState, _ composeChildState) composeParentState { s.HandedOff = true; return s }),
 	)
 	parentBuilder.SetEntryPoint("sub")
@@ -502,7 +502,7 @@ func TestComposeStreamHandoffEnqueueOkBothPatchesFail(t *testing.T) {
 	)
 	parentBuilder.AddNode(
 		"sub",
-		SubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
+		StatelessSubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
 			func(s composeParentState, _ composeChildState) composeParentState { s.HandedOff = true; return s }),
 	)
 	parentBuilder.SetEntryPoint("sub")
@@ -560,7 +560,7 @@ func TestComposeTransactionalHandoffSuccess(t *testing.T) {
 	)
 	parentBuilder.AddNode(
 		"sub",
-		SubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
+		StatelessSubgraphNode(sub, func(_ composeParentState) composeChildState { return composeChildState{} },
 			func(s composeParentState, _ composeChildState) composeParentState { s.HandedOff = true; return s }),
 	)
 	parentBuilder.SetEntryPoint("sub")
@@ -615,7 +615,7 @@ func TestSubgraphContextCancelPropagates(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState, child childState) parentState {
@@ -1009,7 +1009,7 @@ func TestSubgraphSlotStoreFailure(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+	parentBuilder.AddNode("sub", faultSubgraphNodeWithSlot(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
@@ -1065,7 +1065,7 @@ func TestSubgraphSeedSaveFailure(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNodeWithSlot(
+	parentBuilder.AddNode("sub", faultSubgraphNodeWithSlot(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState) (SubgraphSlot[childState, NoEffect], bool) {
@@ -1123,7 +1123,7 @@ func TestSubgraphDoesNotInheritParentRunMetadata(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(_ parentState) childState { return childState{} },
 		func(_ parentState, child childState) parentState {

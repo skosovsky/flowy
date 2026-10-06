@@ -52,7 +52,7 @@ func main() {
 			s.Log = append(s.Log, "parent_start")
 			return s, flowy.Completed(), nil
 		}).
-		AddNode("subgraph", flowy.SubgraphNode(
+		AddNode("subgraph", flowy.StatelessSubgraphNode(
 			subgraph,
 			func(s parentState) childState { return s.Child },
 			func(s parentState, child childState) parentState {

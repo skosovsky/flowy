@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
+	"strings"
 )
 
 type nodeDef[T, E any] struct {
@@ -122,6 +124,7 @@ func (b *GraphBuilder[T, E]) SetEntryPoint(name string) *GraphBuilder[T, E] {
 func (b *GraphBuilder[T, E]) Compile(opts ...BuildOption) (*Graph[T, E], error) {
 	errs := b.collectCompileErrors()
 	if len(errs) > 0 {
+		slices.SortFunc(errs, func(a, b error) int { return strings.Compare(a.Error(), b.Error()) })
 		return nil, errors.Join(errs...)
 	}
 
@@ -209,6 +212,9 @@ func (b *GraphBuilder[T, E]) validateReferences() []error {
 func (b *GraphBuilder[T, E]) validateHandlers() []error {
 	var errs []error
 	for name, node := range b.nodes {
+		if name == EndNode {
+			errs = append(errs, fmt.Errorf("flowy: node %q is reserved for terminal routing", name))
+		}
 		if node.handler == nil {
 			errs = append(errs, fmt.Errorf("flowy: node %q has nil handler", name))
 		}

@@ -353,7 +353,7 @@ func TestTask23DurableInlineRejectsBeforeDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	parent := flowy.NewGraph[int, flowy.NoEffect](func(_, u int) int { return u })
-	parent.AddNode("sub", flowy.SubgraphNode(sub, func(s int) int { return s }, func(_ int, u int) int { return u })).
+	parent.AddNode("sub", flowy.StatelessSubgraphNode(sub, func(s int) int { return s }, func(_ int, u int) int { return u })).
 		SetEntryPoint("sub").
 		AllowNoOutgoingRoute("sub")
 	graph, err := parent.Compile()

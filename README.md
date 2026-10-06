@@ -214,7 +214,7 @@ Adapters should persist `checkpoint.Record` values through `checkpoint.EncodeRec
 
 Compile-time policies: `WithDeleteOnSuccess(true)` (использует `DeleteIfIdle`), `WithRetentionLimit(n)`.
 
-Native adapters should pair checkpointer and lease records in the same coordination domain. In-process dev auto-wraps `NewLeaseGuardCheckpointer` for non-native checkpointers.
+Native adapters should pair checkpointer and lease records in the same coordination domain. In-process dev auto-wraps `NewAdvisoryLeaseGuardCheckpointer` for non-native checkpointers.
 
 ## DX Recommendations
 

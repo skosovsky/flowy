@@ -21,7 +21,7 @@ func TestTask23AsNodeEffects(t *testing.T) {
 		t.Fatal(err)
 	}
 	outer := flowy.NewGraph[int, string](func(_, u int) int { return u })
-	outer.AddNode("inline", inner.AsNode()).AddEdge("inline", flowy.EndNode).SetEntryPoint("inline")
+	outer.AddNode("inline", inner.AsStatelessNode()).AddEdge("inline", flowy.EndNode).SetEntryPoint("inline")
 	g, err := outer.Compile()
 	if err != nil {
 		t.Fatal(err)

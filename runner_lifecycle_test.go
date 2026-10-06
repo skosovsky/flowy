@@ -1475,7 +1475,7 @@ func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 	}
 
 	lease := NewMemoryLeaseManager()
-	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	guarded := NewAdvisoryLeaseGuardCheckpointer[state, NoEffect](cp, lease)
 	if _, err := lease.Acquire(context.Background(), "lease-del-th", "worker-a", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -1748,7 +1748,7 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 		t.Fatalf("seed snapshot: %v", saveErr)
 	}
 	lease := NewMemoryLeaseManager()
-	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	guarded := NewAdvisoryLeaseGuardCheckpointer[state, NoEffect](cp, lease)
 	if _, acquireErr := lease.Acquire(
 		context.Background(), "del-busy-th", "other-worker", time.Minute,
 	); acquireErr != nil {

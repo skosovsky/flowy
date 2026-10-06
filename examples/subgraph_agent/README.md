@@ -1,6 +1,6 @@
 # Subgraph Agent
 
-Демонстрирует сценарий, когда parent graph выполняет `SubgraphNode`, а child graph уходит в `Suspend`.
+Демонстрирует сценарий, когда parent graph выполняет `StatelessSubgraphNode`, а child graph уходит в `Suspend`.
 
 ## Что показывает пример
 
@@ -12,7 +12,7 @@
 
 ## Важный нюанс
 
-`SubgraphNode` (как в этом примере) поднимает child state в parent и при resume снова стартует subgraph с entrypoint — child должен быть restart-safe.
+`StatelessSubgraphNode` (как в этом примере) поднимает child state в parent и при resume снова стартует subgraph с entrypoint — child должен быть restart-safe.
 
 Для resume **внутри** child без повторного entrypoint используйте `SubgraphNodeWithSlot` + поле `SubgraphSlot` в parent state (см. `compose_test.go`, `TestSubgraphHandoffResumeContinuity`).
 

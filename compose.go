@@ -12,20 +12,25 @@ const InlineSlotContract = "flowy.inline-slot.v1"
 type SubgraphSlot[Sub, E any] struct {
 	Contract         string
 	ExecutionPointer ExecutionPointer
-	Revision         uint64
-	State            Sub
-	RunMeta          RunMetadata
-	Effects          []E
+	// Revision is invocation-local capture progress, not a separate OCC authority.
+	// Parent snapshot revision/fencing protects the slot. Each resume seeds a new
+	// capture checkpointer with expected revision zero.
+	Revision uint64
+	State    Sub
+	RunMeta  RunMetadata
+	Effects  []E
 	// ExportedEffects counts effects already published at a parent boundary.
 	ExportedEffects int
 }
 
-// SubgraphNode runs a subgraph with state mapped from parent to sub and back.
+// StatelessSubgraphNode starts the inner entry on each invocation with mapped parent state.
+// Suspend/Handoff pause only the parent; a subsequent invocation starts the inner
+// entry again. No inner cursor survives without the slot variant.
 // For suspend/handoff resume at the inner node, use SubgraphNodeWithSlot.
 // Nested subgraph runners do not inherit parent RunOptions (WithBindings, WithRunMetadata,
 // WithRunLease, WithStateOverlay, WithHandoffOutbox,
 // WithCheckpointErrorPolicy). Parent ctx values and BindingFromContext still apply in subgraph nodes.
-func SubgraphNode[Parent, Sub, E any](
+func StatelessSubgraphNode[Parent, Sub, E any](
 	sub *Graph[Sub, E],
 	mapIn func(Parent) Sub,
 	mapOut func(Parent, Sub) Parent,
@@ -40,14 +45,26 @@ func SubgraphNode[Parent, Sub, E any](
 }
 
 // SubgraphNodeWithSlot persists subgraph cursor in parent state for suspend/handoff continuity.
-//
-//nolint:gocognit // explicit inline continuation and terminal boundary handling
 func SubgraphNodeWithSlot[Parent, Sub, E any](
 	sub *Graph[Sub, E],
 	mapIn func(Parent) Sub,
 	loadSlot func(Parent) (SubgraphSlot[Sub, E], bool),
 	storeSlot func(Parent, SubgraphSlot[Sub, E]) Parent,
 	mapOut func(Parent, Sub) Parent,
+) Node[Parent, E] {
+	return subgraphNodeWithCheckpointer(sub, mapIn, loadSlot, storeSlot, mapOut,
+		func(context.Context) Checkpointer[Sub, E] { return newCaptureCheckpointer[Sub, E]() })
+}
+
+// The factory is an invocation-local seam; shipped constructors always use capture storage.
+//
+//nolint:gocognit // Explicit inline continuation and terminal boundary handling.
+func subgraphNodeWithCheckpointer[Parent, Sub, E any](
+	sub *Graph[Sub, E], mapIn func(Parent) Sub,
+	loadSlot func(Parent) (SubgraphSlot[Sub, E], bool),
+	storeSlot func(Parent, SubgraphSlot[Sub, E]) Parent,
+	mapOut func(Parent, Sub) Parent,
+	createCP func(context.Context) Checkpointer[Sub, E],
 ) Node[Parent, E] {
 	return func(ctx context.Context, parentState Parent) (Parent, Directive, error) {
 		if _, durable := ctx.Value(activityContextKey{}).(activityBackend); durable {
@@ -57,7 +74,7 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		ctx = context.WithValue(ctx, childGroupContextKey{}, struct{}{})
 		ctx = context.WithValue(ctx, executionLeaseKey{}, struct{}{})
 		exported := 0
-		cp := newSubgraphCheckpointer[Sub, E](ctx)
+		cp := createCP(ctx)
 		threadID := subgraphThreadID(ctx)
 
 		var result *RunResult[Sub, E]
@@ -139,47 +156,6 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		default:
 			return parentState, Fail("subgraph failed"), nil
 		}
-	}
-}
-
-type subgraphTestMode int
-
-const (
-	subgraphTestModeNone subgraphTestMode = iota
-	subgraphTestModeFailSeedSave
-	subgraphTestModeFailSlotLoad
-	subgraphTestModeStaleInnerRevision
-)
-
-type subgraphTestModeKey struct{}
-
-// withSubgraphTestMode configures ephemeral subgraph checkpointer behavior for tests.
-func withSubgraphTestMode(ctx context.Context, mode subgraphTestMode) context.Context {
-	return context.WithValue(ctx, subgraphTestModeKey{}, mode)
-}
-
-func newSubgraphCheckpointer[Sub, E any](ctx context.Context) Checkpointer[Sub, E] {
-	mode, _ := ctx.Value(subgraphTestModeKey{}).(subgraphTestMode)
-	switch mode {
-	case subgraphTestModeFailSeedSave:
-		base := newCaptureCheckpointer[Sub, E]()
-		return &failingCaptureCheckpointer[Sub, E]{
-			captureCheckpointer: *base,
-			failSave:            true,
-			failLoad:            false,
-		}
-	case subgraphTestModeFailSlotLoad:
-		base := newCaptureCheckpointer[Sub, E]()
-		return &failingCaptureCheckpointer[Sub, E]{
-			captureCheckpointer: *base,
-			failSave:            false,
-			failLoad:            true,
-		}
-	case subgraphTestModeStaleInnerRevision:
-		base := newCaptureCheckpointer[Sub, E]()
-		return &bumpRevisionOnLoadCP[Sub, E]{captureCheckpointer: *base}
-	default:
-		return newCaptureCheckpointer[Sub, E]()
 	}
 }
 

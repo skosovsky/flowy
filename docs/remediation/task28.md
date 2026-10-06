@@ -474,3 +474,83 @@ formatting and scenario-helper complexity; fixed without weakening assertions.
 No current runtime, adapter, blueprint or review gate remains open for Task06.
 Task06 commit message: `fix: storage admission`; SHA recorded in the following
 journal update. Tasks07–13 and the overall final acceptance remain pending.
+
+## Task 07 contract (before implementation)
+
+Task06 commit: `1f08d04` (`fix: storage admission`). Its temporary PG/Redis
+containers were removed after all live checks and independent acceptance.
+
+D01: ordinary snapshots and durable aggregate execution remain explicit, separate
+persistence profiles. Split ordinary runner implementation into execution, session,
+publication/recovery and inline capture files without an implicit upgrade or plugin
+framework. File movement must preserve callback, fencing and replay contracts.
+D02: remove subgraphTestMode, failingCaptureCheckpointer and bumpRevisionOnLoadCP
+from shipped Go source. A private generic composition helper receives an ephemeral
+checkpointer factory; only *_test.go owns fault implementations/context selectors.
+No global test hook and no externally exposed test mode.
+D03: choose the explicitly permitted naming disposition: AsStatelessNode and
+StatelessSubgraphNode distinguish invocation-only composition from
+SubgraphNodeWithSlot. Remove old ambiguous names, update consumers and docs.
+Suspend/Handoff from the stateless variant pause only the parent; its next invocation
+starts the inner entry again. This restart is explicit, not an inner continuation
+guarantee. Retain useful parent-boundary directives and test this behavior. The
+slot variant persists the inner pointer/state/effect cursor; neither creates a
+durable child execution. Durable parent admission continues rejecting inline use.
+D04: synthetic parent::node identifiers and capture history are invocation-local.
+SubgraphSlot.Revision is informational capture progress, never an independent OCC
+authority. Parent checkpoint fencing/revision protects the persisted slot. Retain
+the field with precise GoDoc; ephemeral seed always starts at revision zero.
+D06: expose the wrapper as NewAdvisoryLeaseGuardCheckpointer; remove the old
+ambiguous constructor name. Its Holder-before-DeleteIfIdle check remains best-effort,
+with no atomic fencing capability inferred. Document cross-store race and the
+explicit native adapter alternative.
+D11: EndNode is a routing sentinel; registering a node with that name makes Compile
+fail. Fluent AddNode continues returning its builder; all validation occurs at
+Compile and no caller node is silently shadowed by a terminal edge.
+D13: compile errors are sorted deterministically by their complete node/edge
+diagnostic text before errors.Join, preserving all diagnostics and errors.Is causes.
+
+Acceptance: production source/package inventory has no test scaffolding; fault
+tests use only the private factory seam; stateless restart, slot continuity and
+parent effect/outbox boundaries pass; reserved-name and randomized-registration
+diagnostics tests; current consumers compile with no legacy aliases. Fresh root
+race/lint and relevant example/module checks, then two independent final reviews
+are required before the separate Task07 commit.
+
+Task07 implementation in progress: ordinary runner now separates execution,
+sessions, recovery, publication and stream handling; invocation capture is in
+compose_capture.go. Durable session ownership moved to execution_session.go,
+retaining existing durable_start/execution_checkpointer/session-observation
+boundaries. Private fault implementations/selectors are exclusively *_test.go.
+New explicit stateless/advisory API names replace old names without aliases.
+Reserved EndNode admission and stable aggregate diagnostic tests added.
+
+Initial targeted run overlapped the durable session file move and its vet process
+observed the intermediate missing type; exit1 is not PASS. Root lint on the
+completed move exited0, 0issues. Fresh final-state race/lint and independent
+reviews are still required; Task07 is not accepted or committed.
+
+## Task 07 accepted
+
+D01–D04, D06, D11 and D13 are complete under the recorded contract. Current
+runner files separate ownership/execution/publication/recovery; all original
+ordinary function declarations and durable session declarations were retained,
+with only the intended API names changed. The test-only factory wrappers and
+fault context keys are absent from production package inventory.
+
+Parent final checks, all completion exit0:
+- Full root fresh race: 12.105s, `/tmp/flowy-task28-task07-root-race.log`.
+- Root lint: 0 issues, `/tmp/flowy-task28-task07-root-lint.log`.
+- Separate durable_agent module build/race command: exit0, no untagged tests;
+  `/tmp/flowy-task28-task07-example-race.log` is build evidence only.
+- Final diff whitespace check PASS. No backend storage semantics changed; final
+  six-module/native-backend acceptance remains Task13.
+
+Completeness reviewer `/root/task07_completeness`: 100% (7/7), gaps0; independent
+targeted root race count2 PASS1.890s, production declaration/inventory checks.
+Correctness reviewer `/root/task07_correctness`: errors not found, findings0;
+independent targeted race count3 PASS2.131s and full root race PASS10.744s.
+Both reviewed the final implementation and corroborated completed parent logs.
+Reports are `reviews/task07-completeness.md` and `reviews/task07-correctness.md`.
+Task07 commit message: `refactor: runner boundaries`; SHA will be recorded in the
+following journal update. Task08–13 and overall completion remain pending.

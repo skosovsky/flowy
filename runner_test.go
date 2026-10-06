@@ -490,7 +490,7 @@ func TestSubgraphSuspendPropagates(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState, c childState) parentState {

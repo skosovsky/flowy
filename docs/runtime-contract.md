@@ -182,7 +182,7 @@ Stream events are bounded best-effort observations: full buffers drop events imm
 
 BYOT values are immutable across shared boundaries by default. Hosts using mutable maps, slices or pointers supply WithEventCloners for state and reference-valued effects. Pure cloners run synchronously on the producer before publication, must return detached values, and must not panic or mutate their input; only the host knows how to clone its domain. They isolate events, not arbitrary host goroutines mutating a node state. Checkpointers own snapshot detachment; MemoryCheckpointer provides explicit state/effect cloners to model serialized adapters. A serializer Unmarshal must return detached values; WithSanitizer round-trips through its base serializer before mutating a value during Marshal. Runtime metadata collections are always copied by memory storage. Inline mapIn/mapOut/loadSlot/storeSlot share the same host ownership obligation; runtime does not infer deep copy of arbitrary domain types.
 
-Inline slot format transition is explicit: persisted nonempty slots without the current Contract marker are rejected with ErrInvalidSnapshot before inner execution. Drain old executions before upgrading, or perform a host-owned offline conversion that reconstructs state, cursor and the exact number of already exported effects from authoritative evidence. Missing evidence requires rejecting or discarding that execution; the runtime never assumes a missing effect cursor means zero. Empty slots are valid fresh executions. AsNode uses the same inline boundary and effect/capability policy as SubgraphNode.
+Inline slot format transition is explicit: persisted nonempty slots without the current Contract marker are rejected with ErrInvalidSnapshot before inner execution. Drain old executions before upgrading, or perform a host-owned offline conversion that reconstructs state, cursor and the exact number of already exported effects from authoritative evidence. Missing evidence requires rejecting or discarding that execution; the runtime never assumes a missing effect cursor means zero. Empty slots are valid fresh executions. AsStatelessNode uses the same inline boundary and effect/capability policy as StatelessSubgraphNode.
 
 ## Child outcome reconciliation
 
@@ -269,3 +269,40 @@ Storage admission, JSON wire domains, constructor failures, historical errors an
 TTL/counter limits are specified in [storage admission](storage-admission.md).
 Child duplicate and lost-ACK semantics are specified in
 [decision namespaces](decision-namespaces.md).
+
+## Explicit execution and inline composition profiles
+
+Ordinary Graph runners persist typed snapshots through Checkpointer. DurableRunner
+persists a versioned execution aggregate through ExecutionStore, with activities,
+children, waits and fenced decisions. Construction selects the profile; runtime
+does not infer an upgrade from the presence of a checkpointer or lease manager.
+
+AsStatelessNode and StatelessSubgraphNode are invocation-only composition. Every
+invocation starts the inner entry with mapped parent state. Suspend/Handoff pause
+the parent and do not preserve an inner cursor; on parent resume the inner entry
+runs again. This is useful only when that restart is safe for the host's nodes.
+SubgraphNodeWithSlot instead stores inner pointer, state, metadata and the exported
+effect cursor in parent state. Neither profile creates an independently durable
+child or inherits parent RunOptions. Inline use inside DurableRunner remains
+ErrExecutionCapability; use its recorded child execution contract instead.
+
+The synthetic parent::node identifier and capture checkpointer exist only during
+one invocation. SubgraphSlot.Revision describes that capture's progress, not a
+separate OCC authority. Parent publication protects the persisted slot; each inner
+resume seeds a fresh capture at expected revision zero and uses the returned
+revision, never a durable lookup by the synthetic ID.
+
+NewAdvisoryLeaseGuardCheckpointer performs Holder followed by DeleteIfIdle. Its
+separate reads and delete can race with acquisition in another coordination store.
+It supplies an advisory check, not native atomic fencing. Distributed hosts use
+the adapters' native common coordination domain. The wrapper forwards its inner
+transactional outbox capability but does not manufacture it or weaken the explicit
+atomic-handoff requirement. A nil collaborator retains the documented no-wrapper
+behavior; it is not evidence that fencing was installed.
+
+EndNode is exclusively a routing sentinel. Registering a handler with that name
+fails Compile. Compile joins every validation diagnostic after sorting its text,
+so node/map registration order does not change the reported diagnostic sequence.
+
+The clean-break names replace AsNode, SubgraphNode and NewLeaseGuardCheckpointer;
+there are no aliases. Use the slot variant when an inner cursor must survive.
