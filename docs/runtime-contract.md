@@ -222,3 +222,25 @@ All failed live RunResults close Segment with a UTC EndTime and EndReason fail.
 The Retry-route restriction is retained: AddRetryRoute requires an
 AllowNoOutgoingRoute node, which cannot also route Completed. Split mixed behavior
 into separate graph nodes; directive Retry provides no implicit I/O retry safety.
+
+
+### Collection ownership and callback lifetime
+
+CollectEventsAndWait returns a synchronized, detached snapshot of the events
+collected so far. After an early canceled return, the drain may still append to
+its private collection; it cannot change the returned slice storage or header.
+This is a shallow copy of RunEvent values. Arbitrary BYOT state/effect references
+still require host ownership or WithEventCloners when events are produced.
+Successful collection includes every delivered event and reports Wait's error;
+cancellation requests stop and preserves the collection context's error without
+waiting indefinitely for an uncooperative producer.
+
+ConsumeEventsAndWait callbacks run on its drain goroutine. If collection context
+cancellation causes an early return, callbacks already in progress or queued on
+the event source may continue afterwards until the source closes. Returning from
+the function is not a callback join: keep captures alive and synchronize concurrent
+access, or arrange your own completion signal. Callbacks must not panic or block
+indefinitely. BeginStreamCollect transfers a complete private collection through
+its result channel; AwaitStreamCollect can return early without transferring an
+unfinished slice. WaitResult remains execution authority because the bounded event
+stream may drop a terminal event. None of these helpers provides durable delivery.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"sync"
 )
 
 // StreamCollectResult holds events and terminal outcome after AwaitStreamCollect.
@@ -52,6 +53,8 @@ func terminalEventPtr[T, E any](events []RunEvent[T, E]) *RunEvent[T, E] {
 // without invoking the callback again. The function still waits for terminal persistence.
 //
 // onEvent runs on the drain goroutine; it must not block indefinitely and must not panic.
+// If ctx cancellation returns early, callbacks can continue until Events closes.
+// Keep captured data alive and synchronize its concurrent access; return is not a callback join.
 // Safe concurrent use: RequestStop, parent ctx cancel, or RequestLocalHandoff from
 // another goroutine while this blocks.
 func ConsumeEventsAndWait[T, E any](
@@ -92,14 +95,23 @@ func ConsumeEventsAndWait[T, E any](
 	}
 }
 
-// CollectEventsAndWait is a convenience wrapper that collects all events then Wait().
+// CollectEventsAndWait collects delivered events then Wait(). Cancellation may return
+// before drain completes; the returned slice is a synchronized detached snapshot.
+// Event values are copied shallowly: BYOT state/effect ownership remains the host's
+// responsibility, with WithEventCloners available when the stream is created.
 func CollectEventsAndWait[T, E any](ctx context.Context, h StreamHandle[T, E]) ([]RunEvent[T, E], error) {
+	var mu sync.Mutex
 	var events []RunEvent[T, E]
 	err := ConsumeEventsAndWait(ctx, h, func(ev RunEvent[T, E]) bool {
+		mu.Lock()
 		events = append(events, ev)
+		mu.Unlock()
 		return true
 	})
-	return events, err
+	mu.Lock()
+	snapshot := slices.Clone(events)
+	mu.Unlock()
+	return snapshot, err
 }
 
 // BeginStreamCollect starts a background drain of Events followed by Wait.

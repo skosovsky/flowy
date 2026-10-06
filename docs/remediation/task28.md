@@ -70,7 +70,7 @@ installability gate; fixture success is not a real release.
 - Primary final checks: 16 release fixtures PASS (29.388s), shell syntax,
   Python compile and `git diff --check` PASS. All release origins were disposable
   local repositories; no real release/push performed. Commit SHA follows in task 02.
-- Tasks 01–04 accepted below; tasks 05–13 pending.
+- Tasks 01–05 accepted below; tasks 06–13 pending.
 
 ## Task 02 contract (before implementation)
 
@@ -264,3 +264,53 @@ Reports: `reviews/task04-completeness.md`, `reviews/task04-correctness.md`.
 Task 04 accepted for commit `fix: stream ownership`; SHA follows in task 05.
 Tasks 05–13 remain pending. Six-module, live-backend and final
 installability/release acceptance remain task 13 gates.
+
+
+## Task 05 contract (before implementation)
+
+Task 04 commit: `d401897` (`fix: stream ownership`).
+
+F08/D14: CollectEventsAndWait owns its collection behind synchronization and
+returns a detached slice snapshot even if collection cancellation returns before
+background callbacks/drain/Wait finish. A successful drain returns every delivered
+event and Wait's error. Cancellation keeps the existing ctx.Err/join semantics,
+requests stop, and never waits forever for a producer or callback that ignores it.
+Detached means independent slice storage/header, not deep cloning arbitrary BYOT
+state/effects; WithEventCloners remains the host's explicit element ownership hook.
+ConsumeEventsAndWait callbacks may continue after a canceled call returns; callers
+must keep captured data alive and synchronized until their own completion signal,
+or use BeginStreamCollect/AwaitStreamCollect to receive a completed collection.
+WaitResult remains execution authority; terminal events may be dropped. No hidden
+queue, forced callback termination, or durable delivery guarantee is introduced.
+Acceptance: buffered closed-channel early-cancel race probe, stable detached
+returned storage, eventual drain/Wait, a deliberately held producer proving early
+return, and complete successful collection/Wait errors; run race and lint then two
+independent reviews before committing.
+
+
+## Task 05 dispositions and acceptance
+
+F08: callback appends and snapshot creation use the same mutex; returned events
+are cloned while locked, so early return cannot race with the captured header or
+share mutable slice storage with late appends. Successful full collection retains
+all delivered events/order and Wait's cause. Cancellation semantics are retained,
+including non-blocking return for an open producer or held callback.
+D14: retained bounded best-effort event delivery and WaitResult authority. GoDoc
+and runtime contract explicitly describe callback lifetime, synchronized captures,
+shallow BYOT values and the complete Begin/Await ownership transfer. No queue or
+forced join was added.
+
+Before-fix race probe exited 1 with the captured append/read DATA RACE at
+`/tmp/flowy-task28-task05-before.log`. Final parent helper race count10 exited 0
+(4.366s), `/tmp/flowy-task28-task05-race.log`; lint exited 0, 0 issues,
+`/tmp/flowy-task28-task05-lint.log`; diff check PASS. Four new regressions cover
+closed buffered early cancellation and caller storage mutation, held-open producer
+with eventual drain, ordered complete collection/Wait cause, and held callback
+lifetime across canceled return.
+
+Independent acceptance: `/root/task04_completeness` reviewed only Task05 scope,
+100% (8/8), independent race count3 PASS 2.154s; `/root/task04_correctness`
+Task05 PASS, no open findings, independent helper race count5 PASS 2.970s.
+Reports: `reviews/task05-completeness.md`, `reviews/task05-correctness.md`.
+Task05 accepted for commit `fix: stream collection`; SHA follows in Task06.
+Tasks06–13 and final six-module/backend/installability gates remain pending.
