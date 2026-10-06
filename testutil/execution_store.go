@@ -13,12 +13,15 @@ import (
 // MemoryExecutionStore is a detached-copy conformance store, not crash-durable
 // persistence. A caller-supplied clock permits deterministic lease expiry tests.
 type MemoryExecutionStore struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	history map[string][][]byte
-	leases  map[string]flowy.ExecutionLease
-	fences  map[string]uint64
-	lineage map[string]flowy.ForkLineage
+	mu       sync.Mutex
+	now      func() time.Time
+	history  map[string]map[uint64][]byte
+	heads    map[string]uint64
+	leases   map[string]flowy.ExecutionLease
+	fences   map[string]uint64
+	lineage  map[string]flowy.ForkLineage
+	incoming map[string]flowy.RolloverReceipt
+	outgoing map[string]flowy.RolloverReceipt
 }
 
 // NewMemoryExecutionStore creates an empty execution store. Nil clock means now.
@@ -27,12 +30,15 @@ func NewMemoryExecutionStore(clock func() time.Time) *MemoryExecutionStore {
 		clock = time.Now
 	}
 	return &MemoryExecutionStore{
-		mu:      sync.Mutex{},
-		now:     clock,
-		history: make(map[string][][]byte),
-		leases:  make(map[string]flowy.ExecutionLease),
-		fences:  make(map[string]uint64),
-		lineage: make(map[string]flowy.ForkLineage),
+		mu:       sync.Mutex{},
+		now:      clock,
+		history:  make(map[string]map[uint64][]byte),
+		heads:    make(map[string]uint64),
+		leases:   make(map[string]flowy.ExecutionLease),
+		fences:   make(map[string]uint64),
+		lineage:  make(map[string]flowy.ForkLineage),
+		incoming: make(map[string]flowy.RolloverReceipt),
+		outgoing: make(map[string]flowy.RolloverReceipt),
 	}
 }
 
@@ -43,10 +49,11 @@ func (s *MemoryExecutionStore) LoadExecution(ctx context.Context, executionID st
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := s.history[executionID]
-	if len(items) == 0 {
+	revision := s.heads[executionID]
+	if revision == 0 {
 		return flowy.ExecutionEnvelope{}, flowy.ErrThreadNotFound
 	}
-	return s.decodeAnchoredExecution(items[len(items)-1], executionID, uint64(len(items)))
+	return s.decodeAnchoredExecution(items[revision], executionID, revision)
 }
 
 func (s *MemoryExecutionStore) LoadCheckpoint(
@@ -60,10 +67,10 @@ func (s *MemoryExecutionStore) LoadCheckpoint(
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	items := s.history[executionID]
-	if revision == 0 || revision > uint64(len(items)) {
+	if revision == 0 || revision > s.heads[executionID] {
 		return flowy.ExecutionEnvelope{}, flowy.ErrThreadNotFound
 	}
-	return s.decodeAnchoredExecution(items[revision-1], executionID, revision)
+	return s.decodeAnchoredExecution(items[revision], executionID, revision)
 }
 
 func (s *MemoryExecutionStore) CommitExecution(
@@ -87,16 +94,19 @@ func (s *MemoryExecutionStore) CommitExecution(
 		return flowy.ExecutionEnvelope{}, flowy.ErrInvalidSnapshot
 	}
 	items := s.history[envelope.ExecutionID]
-	if uint64(len(items)) != expectedRevision {
+	if s.heads[envelope.ExecutionID] != expectedRevision {
 		return flowy.ExecutionEnvelope{}, flowy.ErrConcurrencyConflict
 	}
 	var previous *flowy.ExecutionEnvelope
-	if len(items) > 0 {
-		stored, err := s.decodeAnchoredExecution(items[len(items)-1], envelope.ExecutionID, expectedRevision)
+	if expectedRevision > 0 {
+		stored, err := s.decodeAnchoredExecution(items[expectedRevision], envelope.ExecutionID, expectedRevision)
 		if err != nil {
 			return flowy.ExecutionEnvelope{}, err
 		}
 		previous = &stored
+	}
+	if err := flowy.ValidateExecutionRolloverTransition(previous, envelope); err != nil {
+		return flowy.ExecutionEnvelope{}, err
 	}
 	if err := flowy.ValidateExecutionForkTransition(previous, envelope); err != nil {
 		return flowy.ExecutionEnvelope{}, err
@@ -115,7 +125,12 @@ func (s *MemoryExecutionStore) CommitExecution(
 	if err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
-	s.history[envelope.ExecutionID] = append(items, encoded)
+	if items == nil {
+		items = make(map[uint64][]byte)
+		s.history[envelope.ExecutionID] = items
+	}
+	items[envelope.Revision] = encoded
+	s.heads[envelope.ExecutionID] = envelope.Revision
 	if expectedRevision == 0 && result.Fork != nil {
 		s.lineage[envelope.ExecutionID] = *result.Fork
 	}
@@ -128,6 +143,9 @@ func (s *MemoryExecutionStore) decodeAnchoredExecution(
 	id string,
 	revision uint64,
 ) (flowy.ExecutionEnvelope, error) {
+	if len(data) == 0 {
+		return flowy.ExecutionEnvelope{}, flowy.ErrExecutionCheckpointUnavailable
+	}
 	envelope, err := decodeExecution(data, id, revision)
 	if err != nil {
 		return flowy.ExecutionEnvelope{}, err
@@ -137,6 +155,17 @@ func (s *MemoryExecutionStore) decodeAnchoredExecution(
 		anchor = &lineage
 	}
 	if err = flowy.ValidateExecutionForkAnchor(envelope, anchor); err != nil {
+		return flowy.ExecutionEnvelope{}, err
+	}
+	var incoming *flowy.RolloverReceipt
+	if value, exists := s.incoming[id]; exists {
+		incoming = &value
+	}
+	var outgoing *flowy.RolloverReceipt
+	if value, exists := s.outgoing[id]; exists {
+		outgoing = &value
+	}
+	if err = flowy.ValidateExecutionLifecycleAnchors(envelope, incoming, outgoing); err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
 	return envelope, nil

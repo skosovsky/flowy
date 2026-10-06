@@ -126,7 +126,7 @@ func (r *DurableRunner[T, E]) Import(
 		RunMeta:         state.RunMeta,
 		Activation:      1,
 		Import:          &ImportProvenance{Source: source, ImporterID: importer.ID},
-		Fork:            nil,
+		Fork:            nil, Rollover: nil, Transfer: nil,
 	})
 	if collectionsErr := validateExecutionCollections(envelope); collectionsErr != nil {
 		return ResumeToken{}, errors.Join(ErrExecutionImportInvalid, collectionsErr)

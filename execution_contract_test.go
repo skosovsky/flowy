@@ -8,9 +8,9 @@ import (
 
 func descriptorForTest(revision string) ExecutionDescriptor {
 	return ExecutionDescriptor{
-		GraphID:           "workflow",
-		GraphRevision:     revision,
-		StateCodec:        revision,
+		GraphID:       "workflow",
+		GraphRevision: revision,
+		StateCodec:    revision, EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      StepReplayPolicy{Label: "test-safe-steps", Mode: StepReplaySafe},
 	}

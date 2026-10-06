@@ -26,9 +26,9 @@ func TestExecutionStoreRejectsReusedOwnerIncarnation(t *testing.T) {
 	envelope := flowy.ExecutionEnvelope{
 		ExecutionID: "run",
 		Descriptor: flowy.ExecutionDescriptor{
-			GraphID:           "g",
-			GraphRevision:     "r",
-			StateCodec:        "s",
+			GraphID:       "g",
+			GraphRevision: "r",
+			StateCodec:    "s", EffectsCodec: "host-effects-v1",
 			ExecutionContract: "e",
 			ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 		},
@@ -61,9 +61,9 @@ func TestExecutionMigrationCommitOCCAndHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID:           "g",
-		GraphRevision:     "old",
-		StateCodec:        "s",
+		GraphID:       "g",
+		GraphRevision: "old",
+		StateCodec:    "s", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "e",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}

@@ -52,8 +52,13 @@ func postgresWaitRunner(t *testing.T, store flowy.ExecutionStore, spec flowy.Dur
 		clock = clocks[0]
 	}
 	runner, err := flowy.NewDurableRunner(graph, store, flowy.ExecutionDescriptor{
-		GraphID: "wait-test", GraphRevision: "current", StateCodec: "json-state", ExecutionContract: "sync",
-		ReplayPolicy: flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe}},
+		GraphID:           "wait-test",
+		GraphRevision:     "current",
+		StateCodec:        "json-state",
+		EffectsCodec:      "host-effects-v1",
+		ExecutionContract: "sync",
+		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
+	},
 		checkpoint.JSONSerializer[intState]{}, checkpoint.JSONSerializer[[]flowy.NoEffect]{},
 		flowy.DurableOptions{Owner: "wait-worker", LeaseTTL: time.Minute, WaitProfile: &profile, Clock: clock})
 	if err != nil {

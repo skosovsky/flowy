@@ -50,7 +50,7 @@ func (r *DurableRunner[T, E]) prepareStart(
 		Terminal:        nil,
 		Migration:       nil,
 		Import:          nil,
-		Fork:            nil,
+		Fork:            nil, Rollover: nil, Transfer: nil,
 	})
 }
 

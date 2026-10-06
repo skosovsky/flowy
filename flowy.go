@@ -189,6 +189,7 @@ type RunStatus string
 
 const (
 	RunStatusCompleted       RunStatus = "completed"
+	RunStatusTransferred     RunStatus = "transferred"
 	RunStatusSuspended       RunStatus = "suspended"
 	RunStatusContextCanceled RunStatus = "context_canceled"
 	RunStatusFailed          RunStatus = "failed"

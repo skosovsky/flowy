@@ -7,6 +7,17 @@ import "errors"
 var ErrExecutionCorrupt = errors.New("flowy: corrupt execution envelope")
 
 func validateExecutionSourceMetadata(envelope ExecutionEnvelope) error {
+	if envelope.Rollover != nil &&
+		(envelope.Rollover.Validate() != nil || envelope.Rollover.TargetID != envelope.ExecutionID) {
+		return ErrExecutionCorrupt
+	}
+	if envelope.Transfer != nil &&
+		(envelope.Transfer.Validate() != nil || envelope.Transfer.Lineage.Source.ExecutionID != envelope.ExecutionID || envelope.Revision != envelope.Transfer.SourceRevision || envelope.Terminal == nil || envelope.Terminal.Status != RunStatusTransferred) {
+		return ErrExecutionCorrupt
+	}
+	if envelope.Terminal != nil && envelope.Terminal.Status == RunStatusTransferred && envelope.Transfer == nil {
+		return ErrExecutionCorrupt
+	}
 	if envelope.Fork != nil && (envelope.Fork.Validate() != nil || envelope.Fork.TargetID != envelope.ExecutionID) {
 		return ErrExecutionCorrupt
 	}

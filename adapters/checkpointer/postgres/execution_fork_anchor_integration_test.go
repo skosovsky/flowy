@@ -45,7 +45,7 @@ func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 		flowy.ResumeToken{ThreadID: head.ExecutionID, SnapshotRevision: head.Revision})
 	// Assert: retained head runs only fake; exact missing history still returns absence.
 	if loadErr != nil || loaded.Digest != head.Digest || loaded.Fork == nil || *loaded.Fork != *creation.Fork ||
-		!errors.Is(absentErr, flowy.ErrThreadNotFound) || resumeErr != nil || result == nil ||
+		!errors.Is(absentErr, flowy.ErrExecutionCheckpointUnavailable) || resumeErr != nil || result == nil ||
 		nodes.Load() != 1 || live.Load() != 0 {
 		t.Fatalf("anchor lost with history: load=%v absent=%v resume=%v nodes/live=%d/%d",
 			loadErr, absentErr, resumeErr, nodes.Load(), live.Load())

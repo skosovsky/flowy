@@ -51,7 +51,7 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 		RuntimeProfile: r.options.WaitProfile, Progress: progress, EffectsPayload: effects,
 		Activation: 1, RunMeta: newRunMetadata(), Fork: &lineage,
 		Revision: 0, Digest: "", JournalPayload: nil, ChildrenPayload: nil, WaitsPayload: nil,
-		Terminal: nil, Migration: nil, Import: nil}
+		Terminal: nil, Migration: nil, Import: nil, Rollover: nil, Transfer: nil}
 	committed, err := r.store.CommitExecution(session.ctx, 0, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err

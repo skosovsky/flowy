@@ -116,7 +116,7 @@ func SubgraphNodeWithSlot[Parent, Sub, E any](
 		case RunStatusCompleted:
 			var empty SubgraphSlot[Sub, E]
 			parentState = storeSlot(parentState, empty)
-		case RunStatusFailed:
+		case RunStatusFailed, RunStatusTransferred:
 			// Retain the last confirmed slot for explicit recovery.
 		}
 

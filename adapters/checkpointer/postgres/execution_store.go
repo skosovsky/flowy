@@ -25,9 +25,15 @@ CREATE TABLE IF NOT EXISTS flowy_executions (
  fence BIGINT NOT NULL DEFAULT 0,
  lease_owner TEXT,
  lease_expiry TIMESTAMPTZ,
- fork_lineage JSONB
+ fork_lineage JSONB,
+ rollover_incoming JSONB,
+ rollover_outgoing JSONB,
+ payload_deleted BOOLEAN NOT NULL DEFAULT FALSE
 );
 ALTER TABLE flowy_executions ADD COLUMN IF NOT EXISTS fork_lineage JSONB;
+ALTER TABLE flowy_executions ADD COLUMN IF NOT EXISTS rollover_incoming JSONB;
+ALTER TABLE flowy_executions ADD COLUMN IF NOT EXISTS rollover_outgoing JSONB;
+ALTER TABLE flowy_executions ADD COLUMN IF NOT EXISTS payload_deleted BOOLEAN NOT NULL DEFAULT FALSE;
 CREATE TABLE IF NOT EXISTS flowy_execution_history (
  execution_id TEXT NOT NULL REFERENCES flowy_executions(execution_id),
  revision BIGINT NOT NULL,
@@ -51,7 +57,7 @@ func NewExecutionStore(db DB) *ExecutionStore { return &ExecutionStore{db: db, w
 
 func (s *ExecutionStore) LoadExecution(ctx context.Context, executionID string) (flowy.ExecutionEnvelope, error) {
 	return loadAnchoredEnvelope(s.db.QueryRow(ctx, `
-SELECT e.revision, h.payload, e.fork_lineage FROM flowy_executions e
+SELECT e.revision, h.payload, e.fork_lineage,e.rollover_incoming,e.rollover_outgoing,e.payload_deleted FROM flowy_executions e
 LEFT JOIN flowy_execution_history h ON e.execution_id=h.execution_id AND e.revision=h.revision
 WHERE e.execution_id=@execution_id`, pgx.NamedArgs{executionIDArgument: executionID}), executionID, 0)
 }
@@ -65,9 +71,10 @@ func (s *ExecutionStore) LoadCheckpoint(
 		return flowy.ExecutionEnvelope{}, flowy.ErrInvalidSnapshot
 	}
 	return loadAnchoredEnvelope(s.db.QueryRow(ctx, `
-SELECT h.revision,h.payload,e.fork_lineage FROM flowy_execution_history h
-JOIN flowy_executions e ON e.execution_id=h.execution_id
-WHERE h.execution_id=@execution_id AND h.revision=@revision`,
+SELECT @revision::bigint,h.payload,e.fork_lineage,e.rollover_incoming,e.rollover_outgoing,e.payload_deleted
+FROM flowy_executions e LEFT JOIN flowy_execution_history h
+ON h.execution_id=e.execution_id AND h.revision=@revision
+WHERE e.execution_id=@execution_id AND e.revision>=@revision`,
 		pgx.NamedArgs{executionIDArgument: executionID, executionRevisionArgument: revision}), executionID, revision)
 }
 
@@ -168,10 +175,13 @@ WHERE execution_id=@execution_id AND lease_owner=@owner AND fence=@fence AND lea
 // Caller holds the execution head row lock and has checked fencing and OCC.
 func validateForkPredecessor(ctx context.Context, tx pgx.Tx, revision uint64, next flowy.ExecutionEnvelope) error {
 	if revision == 0 {
+		if err := flowy.ValidateExecutionRolloverTransition(nil, next); err != nil {
+			return err
+		}
 		return flowy.ValidateExecutionForkTransition(nil, next)
 	}
 	previous, err := loadAnchoredEnvelope(tx.QueryRow(ctx, `
-SELECT h.revision,h.payload,e.fork_lineage FROM flowy_execution_history h
+SELECT h.revision,h.payload,e.fork_lineage,e.rollover_incoming,e.rollover_outgoing,e.payload_deleted FROM flowy_execution_history h
 JOIN flowy_executions e ON e.execution_id=h.execution_id
 WHERE h.execution_id=@execution_id AND h.revision=@revision`, pgx.NamedArgs{
 		executionIDArgument: next.ExecutionID, executionRevisionArgument: revision,
@@ -180,6 +190,9 @@ WHERE h.execution_id=@execution_id AND h.revision=@revision`, pgx.NamedArgs{
 		return flowy.ErrExecutionCorrupt
 	}
 	if err != nil {
+		return err
+	}
+	if err := flowy.ValidateExecutionRolloverTransition(&previous, next); err != nil {
 		return err
 	}
 	return flowy.ValidateExecutionForkTransition(&previous, next)
@@ -300,19 +313,26 @@ func decodeRawEnvelope(payload []byte, id string, revision, expectedRevision uin
 }
 
 func loadAnchoredEnvelope(row pgx.Row, id string, expectedRevision uint64) (flowy.ExecutionEnvelope, error) {
-	var payload, anchorPayload []byte
+	var payload, anchorPayload, incomingPayload, outgoingPayload []byte
+	var deleted bool
 	var revision uint64
-	if err := row.Scan(&revision, &payload, &anchorPayload); err != nil {
+	if err := row.Scan(&revision, &payload, &anchorPayload, &incomingPayload, &outgoingPayload, &deleted); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return flowy.ExecutionEnvelope{}, flowy.ErrThreadNotFound
 		}
 		return flowy.ExecutionEnvelope{}, err
+	}
+	if revision > 0 && len(payload) == 0 && (deleted || expectedRevision > 0) {
+		return flowy.ExecutionEnvelope{}, flowy.ErrExecutionCheckpointUnavailable
 	}
 	envelope, err := decodeRawEnvelope(payload, id, revision, expectedRevision)
 	if err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
 	if err = validateStoredForkAnchor(envelope, anchorPayload); err != nil {
+		return flowy.ExecutionEnvelope{}, err
+	}
+	if err = validateStoredLifecycleAnchors(envelope, incomingPayload, outgoingPayload); err != nil {
 		return flowy.ExecutionEnvelope{}, err
 	}
 	return envelope, nil

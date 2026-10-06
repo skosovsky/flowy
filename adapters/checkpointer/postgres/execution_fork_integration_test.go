@@ -16,7 +16,7 @@ import (
 
 func pgForkDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{GraphID: "fork-fixture", GraphRevision: label,
-		StateCodec: "json-state", ExecutionContract: "sync",
+		StateCodec: "json-state", EffectsCodec: "host-effects-v1", ExecutionContract: "sync",
 		ReplayPolicy: flowy.StepReplayPolicy{Label: "pure-with-activities", Mode: flowy.StepReplaySafe}}
 }
 

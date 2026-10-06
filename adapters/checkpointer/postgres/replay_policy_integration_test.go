@@ -22,9 +22,9 @@ func TestReplayPolicyPersistentMigration(t *testing.T) {
 	id := testThreadID(t)
 	store := NewExecutionStore(pool)
 	old := flowy.ExecutionDescriptor{
-		GraphID:           "policy-test",
-		GraphRevision:     "current",
-		StateCodec:        "json-state",
+		GraphID:       "policy-test",
+		GraphRevision: "current",
+		StateCodec:    "json-state", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "old-safe", Mode: flowy.StepReplaySafe},
 	}

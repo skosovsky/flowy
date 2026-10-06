@@ -27,7 +27,7 @@ const (
 
 func descriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{GraphID: "durable-example", GraphRevision: label,
-		StateCodec: "host-json", ExecutionContract: "sync-aggregate",
+		StateCodec: "host-json", EffectsCodec: "host-effects-v1", ExecutionContract: "sync-aggregate",
 		ReplayPolicy: flowy.StepReplayPolicy{Label: "host-pure-steps", Mode: flowy.StepReplaySafe}}
 }
 

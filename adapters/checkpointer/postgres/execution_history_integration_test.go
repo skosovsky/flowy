@@ -73,7 +73,7 @@ func TestHistoricalInspectionPersistentExactPrunedNeverLatest(t *testing.T) {
 	after, afterErr := restarted.LoadExecution(restartCtx, id)
 	// Assert: absence is typed and does not substitute or damage latest.
 	if !errors.Is(missingErr, flowy.ErrExecutionCheckpointUnavailable) ||
-		!errors.Is(missingErr, flowy.ErrThreadNotFound) ||
+		errors.Is(missingErr, flowy.ErrThreadNotFound) ||
 		missing.ExecutionID != "" ||
 		afterErr != nil ||
 		after.Digest != latest.Digest ||

@@ -126,9 +126,9 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 
 func referenceDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{
-		GraphID:           "reference-test",
-		GraphRevision:     label,
-		StateCodec:        "json",
+		GraphID:       "reference-test",
+		GraphRevision: label,
+		StateCodec:    "json", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 	}

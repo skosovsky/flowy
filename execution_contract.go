@@ -25,6 +25,7 @@ type ExecutionDescriptor struct {
 	GraphID           string           `json:"graph_id"`
 	GraphRevision     string           `json:"graph_revision"`
 	StateCodec        string           `json:"state_codec"`
+	EffectsCodec      string           `json:"effects_codec"`
 	ExecutionContract string           `json:"execution_contract"`
 	ReplayPolicy      StepReplayPolicy `json:"replay_policy"`
 }
@@ -45,8 +46,16 @@ type StepReplayPolicy struct {
 
 // Validate requires every explicit compatibility label.
 func (d ExecutionDescriptor) Validate() error {
-	if d.GraphID == "" || d.GraphRevision == "" || d.StateCodec == "" || d.ExecutionContract == "" ||
-		!validRuntimeText(d.GraphID, d.GraphRevision, d.StateCodec, d.ExecutionContract, d.ReplayPolicy.Label) ||
+	if d.GraphID == "" || d.GraphRevision == "" || d.StateCodec == "" || d.EffectsCodec == "" ||
+		d.ExecutionContract == "" ||
+		!validRuntimeText(
+			d.GraphID,
+			d.GraphRevision,
+			d.StateCodec,
+			d.EffectsCodec,
+			d.ExecutionContract,
+			d.ReplayPolicy.Label,
+		) ||
 		d.ReplayPolicy.Label == "" ||
 		d.ReplayPolicy.Mode != StepReplaySafe {
 		return ErrExecutionIncompatible
@@ -109,6 +118,8 @@ type ExecutionEnvelope struct {
 	Terminal        *ExecutionTerminal     `json:"terminal,omitempty"`
 	Migration       *MigrationProvenance   `json:"migration,omitempty"`
 	Import          *ImportProvenance      `json:"import,omitempty"`
+	Rollover        *RolloverLineage       `json:"rollover,omitempty"`
+	Transfer        *RolloverReceipt       `json:"transfer,omitempty"`
 	Fork            *ForkLineage           `json:"fork,omitempty"`
 }
 
@@ -142,6 +153,9 @@ func terminalFailureError(terminal *ExecutionTerminal) error {
 	if terminal == nil {
 		return nil
 	}
+	if terminal.Status == RunStatusTransferred && terminal.Failure == nil {
+		return ErrExecutionTransferred
+	}
 	if terminal.Status == RunStatusCompleted && terminal.Failure == nil {
 		return nil
 	}
@@ -159,6 +173,9 @@ type ExecutionMigration struct {
 	Source    ExecutionDescriptor
 	Target    ExecutionDescriptor
 	Transform func(MigrationState) (MigrationState, error)
+	// EffectsTransform is required when EffectsCodec changes. It receives detached
+	// accumulated effects; external activity/child outcomes are excluded.
+	EffectsTransform func([]byte) ([]byte, error)
 }
 
 // EnvelopeDigest is the integrity digest of the complete raw envelope. It is not
@@ -196,15 +213,16 @@ func PrepareExecutionMigration(
 	if err != nil {
 		return ExecutionEnvelope{}, err
 	}
+	if effectsContractErr := validateEffectsMigrationChain(chain); effectsContractErr != nil {
+		return ExecutionEnvelope{}, effectsContractErr
+	}
 	result := cloneExecutionEnvelope(source)
 	ids := make([]string, 0, len(chain))
 	for _, migration := range chain {
-		progress, transformErr := migration.Transform(cloneMigrationState(result.Progress))
-		if transformErr != nil {
-			return ExecutionEnvelope{}, fmt.Errorf("%w: %s: %w", ErrMigrationInvalid, migration.ID, transformErr)
+		result, err = applyExecutionMigration(result, migration)
+		if err != nil {
+			return ExecutionEnvelope{}, err
 		}
-		result.Progress = cloneMigrationState(progress)
-		result.Descriptor = migration.Target
 		ids = append(ids, migration.ID)
 	}
 	if result.Progress.ExecutionPointer == "" || !validMigrationText(result.Progress) {
@@ -277,6 +295,14 @@ func cloneMigrationState(state MigrationState) MigrationState {
 }
 
 func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
+	if envelope.Rollover != nil {
+		incoming := *envelope.Rollover
+		envelope.Rollover = &incoming
+	}
+	if envelope.Transfer != nil {
+		outgoing := *envelope.Transfer
+		envelope.Transfer = &outgoing
+	}
 	if envelope.Fork != nil {
 		lineage := *envelope.Fork
 		envelope.Fork = &lineage
@@ -312,4 +338,31 @@ func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
 		envelope.Import = &provenance
 	}
 	return envelope
+}
+
+// Validate the entire chain before invoking any host transformation.
+func validateEffectsMigrationChain(chain []ExecutionMigration) error {
+	for _, migration := range chain {
+		if migration.Source.EffectsCodec != migration.Target.EffectsCodec && migration.EffectsTransform == nil {
+			return fmt.Errorf("%w: effects transform required: %s", ErrMigrationInvalid, migration.ID)
+		}
+	}
+	return nil
+}
+
+func applyExecutionMigration(result ExecutionEnvelope, migration ExecutionMigration) (ExecutionEnvelope, error) {
+	progress, err := migration.Transform(cloneMigrationState(result.Progress))
+	if err != nil {
+		return ExecutionEnvelope{}, fmt.Errorf("%w: %s: %w", ErrMigrationInvalid, migration.ID, err)
+	}
+	result.Progress = cloneMigrationState(progress)
+	if migration.EffectsTransform != nil {
+		effects, err := migration.EffectsTransform(bytes.Clone(result.EffectsPayload))
+		if err != nil {
+			return ExecutionEnvelope{}, fmt.Errorf("%w: effects %s: %w", ErrMigrationInvalid, migration.ID, err)
+		}
+		result.EffectsPayload = bytes.Clone(effects)
+	}
+	result.Descriptor = migration.Target
+	return result, nil
 }

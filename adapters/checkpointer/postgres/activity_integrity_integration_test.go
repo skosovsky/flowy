@@ -26,8 +26,12 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID: "journal-test", GraphRevision: "current", StateCodec: "json-state", ExecutionContract: "sync",
-		ReplayPolicy: flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
+		GraphID:           "journal-test",
+		GraphRevision:     "current",
+		StateCodec:        "json-state",
+		EffectsCodec:      "host-effects-v1",
+		ExecutionContract: "sync",
+		ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: id, Descriptor: descriptor,

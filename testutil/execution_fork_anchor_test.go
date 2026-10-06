@@ -15,8 +15,14 @@ func seedMemoryForkAnchor(t *testing.T) (*MemoryExecutionStore, flowy.ExecutionE
 	t.Helper()
 	ctx := context.Background()
 	store := NewMemoryExecutionStore(nil)
-	descriptor := flowy.ExecutionDescriptor{GraphID: "g", GraphRevision: "r", StateCodec: "s",
-		ExecutionContract: "e", ReplayPolicy: flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe}}
+	descriptor := flowy.ExecutionDescriptor{
+		GraphID:           "g",
+		GraphRevision:     "r",
+		StateCodec:        "s",
+		EffectsCodec:      "host-effects-v1",
+		ExecutionContract: "e",
+		ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
+	}
 	lease, err := store.AcquireExecution(ctx, "target", "owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -75,7 +81,7 @@ func TestMemoryForkAnchorRejectsResealedHistory(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			store.history["target"][1] = payload
+			store.history["target"][2] = payload
 			// Act: loading or writing cannot trust a recomputed digest as origin authority.
 			_, latestErr := store.LoadExecution(ctx, "target")
 			_, exactErr := store.LoadCheckpoint(ctx, "target", 2)
@@ -83,7 +89,7 @@ func TestMemoryForkAnchorRejectsResealedHistory(t *testing.T) {
 			// Assert: no repair or extra revision is published.
 			if !errors.Is(latestErr, flowy.ErrExecutionCorrupt) || !errors.Is(exactErr, flowy.ErrExecutionCorrupt) ||
 				!errors.Is(commitErr, flowy.ErrExecutionCorrupt) || len(store.history["target"]) != 2 ||
-				string(store.history["target"][1]) != string(payload) {
+				string(store.history["target"][2]) != string(payload) {
 				t.Fatalf("resealed lineage accepted: latest=%v exact=%v commit=%v", latestErr, exactErr, commitErr)
 			}
 		})

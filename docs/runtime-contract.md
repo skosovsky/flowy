@@ -132,3 +132,5 @@ Unknown child outcomes have an addressed raw boundary described in [child outcom
 ## Persisted retry schedules
 
 [Activity retry scheduling](activity_retry_scheduling.md) defines explicit fixed/exponential configuration, bounded jitter and compatibility-labelled host not-before hints. The deadline and its provenance commit once with the prepared retry, survive restart and never cause dispatch through discovery. Old active Delay-only policies are rejected; recovery does not guess schedule semantics.
+
+State and accumulated effects have independent mandatory compatibility labels; changing either requires the corresponding explicit pure transformation. See [durable lifecycle](durable-lifecycle.md). Activity/child outcomes are immutable throughout these representation changes.

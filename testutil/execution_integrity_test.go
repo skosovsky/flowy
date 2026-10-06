@@ -25,9 +25,9 @@ func TestMemoryExecutionStoreRejectsCorruptHistory(t *testing.T) {
 			envelope, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 				ExecutionID: "run",
 				Descriptor: flowy.ExecutionDescriptor{
-					GraphID:           "g",
-					GraphRevision:     "r",
-					StateCodec:        "s",
+					GraphID:       "g",
+					GraphRevision: "r",
+					StateCodec:    "s", EffectsCodec: "host-effects-v1",
 					ExecutionContract: "e",
 					ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 				},
@@ -37,7 +37,7 @@ func TestMemoryExecutionStoreRejectsCorruptHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			payload := corruptMemoryExecutionPayload(t, envelope, kind)
-			store.history["run"][0] = payload
+			store.history["run"][1] = payload
 			// Act.
 			_, latestErr := store.LoadExecution(ctx, "run")
 			_, exactErr := store.LoadCheckpoint(ctx, "run", 1)
@@ -45,7 +45,7 @@ func TestMemoryExecutionStoreRejectsCorruptHistory(t *testing.T) {
 			if !errors.Is(latestErr, flowy.ErrExecutionCorrupt) || !errors.Is(exactErr, flowy.ErrExecutionCorrupt) {
 				t.Fatalf("corruption accepted: latest=%v exact=%v", latestErr, exactErr)
 			}
-			if string(store.history["run"][0]) != string(payload) || len(store.history["run"]) != 1 {
+			if string(store.history["run"][1]) != string(payload) || len(store.history["run"]) != 1 {
 				t.Fatal("read rewrote history")
 			}
 		})

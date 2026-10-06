@@ -16,9 +16,9 @@ type durableTestState struct{ Value int }
 
 func durableDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{
-		GraphID:           "test",
-		GraphRevision:     label,
-		StateCodec:        label,
+		GraphID:       "test",
+		GraphRevision: label,
+		StateCodec:    label, EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}

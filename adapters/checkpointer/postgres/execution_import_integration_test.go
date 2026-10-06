@@ -37,9 +37,9 @@ func TestExplicitImportPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID:           "import-test",
-		GraphRevision:     "current",
-		StateCodec:        "json-state",
+		GraphID:       "import-test",
+		GraphRevision: "current",
+		StateCodec:    "json-state", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}

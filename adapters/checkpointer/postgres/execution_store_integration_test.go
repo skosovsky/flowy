@@ -23,9 +23,9 @@ func TestExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID:           "g",
-		GraphRevision:     "old",
-		StateCodec:        "raw",
+		GraphID:       "g",
+		GraphRevision: "old",
+		StateCodec:    "raw", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}
