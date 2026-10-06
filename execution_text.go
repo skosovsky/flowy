@@ -13,7 +13,7 @@ func validRuntimeText(values ...string) bool {
 	return true
 }
 
-func validMigrationText(state MigrationState) bool {
+func validMigrationText(state ExecutionProgress) bool {
 	if !validRuntimeText(string(state.ExecutionPointer)) {
 		return false
 	}

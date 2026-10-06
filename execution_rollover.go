@@ -187,14 +187,14 @@ func (r *DurableRunner[T, E]) prepareRolloverTarget(
 ) (HistoricalCheckpointReference, ExecutionEnvelope, error) {
 	payload, err := request.Project(
 		RolloverPayload{
-			Progress:       cloneMigrationState(source.Progress),
+			Progress:       cloneExecutionProgress(source.Progress),
 			EffectsPayload: bytes.Clone(source.EffectsPayload),
 		},
 	)
 	if err != nil {
 		return HistoricalCheckpointReference{}, ExecutionEnvelope{}, errors.Join(ErrExecutionLifecycleUnsafe, err)
 	}
-	payload.Progress = cloneMigrationState(payload.Progress)
+	payload.Progress = cloneExecutionProgress(payload.Progress)
 	payload.EffectsPayload = bytes.Clone(payload.EffectsPayload)
 	if len(payload.Progress.ChildCursors) != 0 || len(payload.Progress.JournalReferences) != 0 ||
 		len(payload.Progress.ChildGroupReferences) != 0 {

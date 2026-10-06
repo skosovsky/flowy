@@ -87,7 +87,10 @@ func TestForkExistingActiveTargetRejectsWithoutTransform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Transform.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) { transforms.Add(1); return state, nil }
+	request.Transform.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
+		transforms.Add(1)
+		return state, nil
+	}
 	// Act: existing committed identity is a target conflict even while leased.
 	_, conflict := runner.Fork(ctx, request)
 	after, loadErr := store.LoadExecution(ctx, "target")
@@ -120,7 +123,7 @@ func TestForkLiveAuthorizationIsRecheckedAtDispatch(t *testing.T) {
 	request.Mode, request.PolicyLabel = flowy.ForkLive, policy.Label
 	request.Projection = &flowy.ForkProjection{
 		Label: "clear-permission",
-		Project: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Project: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.StatePayload = []byte(`{"Value":5,"Approved":false}`)
 			return state, nil
 		},

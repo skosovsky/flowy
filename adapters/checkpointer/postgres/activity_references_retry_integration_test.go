@@ -63,7 +63,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 	pool.Close()
 	options.Migrations = []flowy.ExecutionMigration{
 		{ID: "move", Source: source.Descriptor, Target: referenceDescriptor("new"),
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.ExecutionPointer = "new-node"
 				state.JournalReferences = map[string]string{"operation": identity}
 				return state, nil

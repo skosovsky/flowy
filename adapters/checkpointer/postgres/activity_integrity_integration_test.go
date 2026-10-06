@@ -35,7 +35,7 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: id, Descriptor: descriptor,
-		Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("not-decodable")},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("not-decodable")},
 		JournalPayload: []byte("null"),
 	})
 	if err != nil {

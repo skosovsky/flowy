@@ -42,7 +42,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 	migrateCtx, migratePool := racePool(t)
 	targetDescriptor := referenceDescriptor("new")
 	migration := flowy.ExecutionMigration{ID: "move", Source: oldDescriptor, Target: targetDescriptor,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.JournalReferences = map[string]string{"operation": entry.Identity}
 			return state, nil

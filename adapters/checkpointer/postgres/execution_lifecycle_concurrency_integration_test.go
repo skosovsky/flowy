@@ -97,7 +97,7 @@ func TestLifecyclePersistentConcurrentResumeForkInspectionAndCleanup(t *testing.
 			Transform: flowy.ForkTransform{
 				Label:     "identity",
 				Source:    descriptor,
-				Transform: func(p flowy.MigrationState) (flowy.MigrationState, error) { return p, nil },
+				Transform: func(p flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return p, nil },
 			},
 		},
 	)

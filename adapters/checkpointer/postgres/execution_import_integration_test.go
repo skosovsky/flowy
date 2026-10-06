@@ -71,7 +71,7 @@ func TestExplicitImportPersistentRestart(t *testing.T) {
 		Format: source.Format,
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
 			return flowy.ImportedExecutionState{
-				Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
+				Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
 				EffectsPayload: []byte(`[]`),
 			}, nil
 		},

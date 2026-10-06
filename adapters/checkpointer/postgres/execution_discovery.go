@@ -14,12 +14,15 @@ import (
 type DiscoveryRebuildPage struct {
 	AfterExecutionID string
 	More             bool
-	Rebuilt          int
+	Processed        int
 	Diagnostics      []DiscoveryDiagnostic
 }
 
 // RebuildDiscovery reconstructs derived work under the same head lock as writers.
 // Run complete passes after schema transition; ordinary polling never scans heads.
+// On a later error, returns confirmed partial progress; retry after its cursor.
+// The failed head may have committed without ACK and is safely reprocessed.
+// Processed includes quarantined/deleted heads; More is true on incomplete passes.
 func (s *ExecutionStore) RebuildDiscovery(
 	ctx context.Context,
 	afterID string,
@@ -33,19 +36,20 @@ func (s *ExecutionStore) RebuildDiscovery(
 		return DiscoveryRebuildPage{}, err
 	}
 	page := DiscoveryRebuildPage{AfterExecutionID: afterID, More: len(ids) > limit,
-		Diagnostics: make([]DiscoveryDiagnostic, 0), Rebuilt: 0}
+		Diagnostics: make([]DiscoveryDiagnostic, 0), Processed: 0}
 	if page.More {
 		ids = ids[:limit]
 	}
 	for _, id := range ids {
 		diagnostic, rebuildErr := s.rebuildDiscoveryHead(ctx, id)
 		if rebuildErr != nil {
-			return DiscoveryRebuildPage{}, rebuildErr
+			page.More = true
+			return page, rebuildErr
 		}
 		if diagnostic != nil {
 			page.Diagnostics = append(page.Diagnostics, *diagnostic)
 		}
-		page.Rebuilt++
+		page.Processed++
 		page.AfterExecutionID = id
 	}
 	return page, nil

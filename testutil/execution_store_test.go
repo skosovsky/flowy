@@ -32,7 +32,7 @@ func TestExecutionStoreRejectsReusedOwnerIncarnation(t *testing.T) {
 			ExecutionContract: "e",
 			ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 		},
-		Progress: flowy.MigrationState{ExecutionPointer: "node"},
+		Progress: flowy.ExecutionProgress{ExecutionPointer: "node"},
 	}
 	// Act.
 	_, commitErr := store.CommitExecution(ctx, 0, old, envelope)
@@ -74,7 +74,7 @@ func TestExecutionMigrationCommitOCCAndHistory(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID: "run",
 			Descriptor:  descriptor,
-			Progress:    flowy.MigrationState{ExecutionPointer: "before", StatePayload: []byte("state")},
+			Progress:    flowy.ExecutionProgress{ExecutionPointer: "before", StatePayload: []byte("state")},
 		},
 	)
 	if err != nil {
@@ -86,7 +86,7 @@ func TestExecutionMigrationCommitOCCAndHistory(t *testing.T) {
 		ID:     "move",
 		Source: descriptor,
 		Target: target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "after"
 			return state, nil
 		},

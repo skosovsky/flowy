@@ -43,7 +43,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 		Digest: hex.EncodeToString(sum[:]), Payload: payload}
 	importer := flowy.ExecutionImporter{ID: "host-import", Format: source.Format,
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
-			state := flowy.ImportedExecutionState{Progress: flowy.MigrationState{
+			state := flowy.ImportedExecutionState{Progress: flowy.ExecutionProgress{
 				ExecutionPointer: "node", StatePayload: []byte(`{"value":1}`)}, EffectsPayload: []byte("[]")}
 			if children {
 				state.Progress.ChildGroupReferences = map[string]string{"group": "absent"}

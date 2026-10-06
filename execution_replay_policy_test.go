@@ -89,7 +89,7 @@ func TestDurableReplayPolicyMismatchRejectsBeforeCodec(t *testing.T) {
 				flowy.ExecutionEnvelope{
 					ExecutionID: "run",
 					Descriptor:  durableDescriptor("current"),
-					Progress:    flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque")},
+					Progress:    flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque")},
 				},
 			)
 			if err != nil {
@@ -153,7 +153,7 @@ func TestDurableReplayPolicyChangeRequiresMigration(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID:    "run",
 			Descriptor:     old,
-			Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"Value":41}`)},
+			Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"Value":41}`)},
 			EffectsPayload: []byte(`[]`),
 			Activation:     1,
 		},
@@ -170,7 +170,7 @@ func TestDurableReplayPolicyChangeRequiresMigration(t *testing.T) {
 		ID:        "replay-policy-change",
 		Source:    old,
 		Target:    target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil },
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil },
 	}
 	runner, err := flowy.NewDurableRunner(
 		replayPolicyGraph(t, &calls),

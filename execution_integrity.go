@@ -31,20 +31,24 @@ func validateExecutionSourceMetadata(envelope ExecutionEnvelope) error {
 }
 
 func validateExecutionCollections(envelope ExecutionEnvelope) error {
+	_, err := validateExecutionCollectionsWithWaits(envelope)
+	return err
+}
+
+func validateExecutionCollectionsWithWaits(envelope ExecutionEnvelope) (map[string]DurableWaitRecord, error) {
 	if !validMigrationText(envelope.Progress) {
-		return ErrExecutionCorrupt
+		return nil, ErrExecutionCorrupt
 	}
 	if envelope.RuntimeProfile != nil && envelope.RuntimeProfile.Validate() != nil {
-		return ErrExecutionCorrupt
+		return nil, ErrExecutionCorrupt
 	}
 	if _, err := executionActivityJournal(envelope); err != nil {
-		return err
+		return nil, err
 	}
 	if _, err := executionChildGroups(envelope); err != nil {
-		return err
+		return nil, err
 	}
-	_, err := executionWaits(envelope)
-	return err
+	return executionWaits(envelope)
 }
 
 // SealExecutionEnvelope computes integrity after storage assigns its revision.

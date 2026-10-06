@@ -39,7 +39,7 @@ func TestReplayPolicyPersistentMigration(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID:    id,
 			Descriptor:     old,
-			Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
+			Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
 			EffectsPayload: []byte(`[]`),
 			Activation:     1,
 		},
@@ -87,7 +87,7 @@ func TestReplayPolicyPersistentMigration(t *testing.T) {
 		ID:        "policy-change",
 		Source:    old,
 		Target:    target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil },
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil },
 	}
 	result, err := bind([]flowy.ExecutionMigration{migration}).Resume(ctx, token)
 	// Assert: exact source policy survives and target policy has its own committed lineage.

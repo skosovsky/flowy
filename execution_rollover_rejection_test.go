@@ -176,7 +176,7 @@ func TestRolloverSerializesResumeAndCleanupWhileInspectionAndForkStayHistorical(
 			Transform: flowy.ForkTransform{
 				Label:     "identity",
 				Source:    before.Descriptor,
-				Transform: func(p flowy.MigrationState) (flowy.MigrationState, error) { return p, nil },
+				Transform: func(p flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return p, nil },
 			},
 		},
 	)
@@ -241,7 +241,7 @@ func TestRolloverInitialIntentAndFailedSourceRejectBeforeProjection(t *testing.T
 				ExecutionID:    "source",
 				Descriptor:     durableDescriptor("lifecycle"),
 				Activation:     1,
-				Progress:       flowy.MigrationState{ExecutionPointer: "work", StatePayload: []byte("0")},
+				Progress:       flowy.ExecutionProgress{ExecutionPointer: "work", StatePayload: []byte("0")},
 				EffectsPayload: []byte("[]"),
 			}
 			if failed {

@@ -90,7 +90,7 @@ func createForkLineageFixture(ctx context.Context, t *testing.T, pool *pgxpool.P
 			ExecutionID: source.ExecutionID, Revision: source.Revision, Digest: source.Digest,
 		},
 		TargetID: base + "target", Transform: flowy.ForkTransform{Label: "copy", Source: source.Descriptor,
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil }},
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil }},
 	}
 	if _, err := pgForkRunner(t, store, nil, nodes, live).Fork(ctx, request); err != nil {
 		t.Fatal(err)

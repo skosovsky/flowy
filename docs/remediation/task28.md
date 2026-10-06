@@ -808,3 +808,91 @@ acceptance. Final whitespace check PASS and old Go identifiers have no matches.
 Source stable after rename/format; D30 reviewer gap was corrected then both reviews
 repeated. Overall/native/all-six-module gates remain assigned to remaining tasks.
 Local commit follows; SHA will be recorded at next contract update.
+
+## Task 11 contract (before implementation)
+
+Task10 accepted and committed as `8e256fe` (`fix: child contracts`). Clean checkout
+verified after signing completed. Scope16 decision items plus documentation1/3.
+D39: retain first committed valid winner, including events received after deadline
+before timer publication. Example rejects business-late events in Match using a
+host clock; core must not silently change deadline precedence.
+D40: unique unmatched/lost/canceled delivery IDs are immutable outcomes. Replays
+require compatibility labels but no Match/Apply; new evidence needs a new ID.
+D41: retain delivery ledger/no TTL erasure. Host transport admission/rate limits
+bound unique input; no silent cap/fake ACK. Explicit rollover only at resolved gate.
+D42: replace ignored JSON wait clone with value/maps/pointer copy, preserve memory
+shape independently of validation; reuse parsed wait collections inside each read
+phase while preserving separate pre-lease and post-lease authoritative reads.
+D43: profile names deployment/recovery ownership, not a live scheduler. Preserve
+same-store atomic authority; wrapped transactional implementation remains allowed.
+D45: neutral ExecutionProgress replaces MigrationState without alias; historical
+checkpoint errors already neutralized Task06. Fork-only errors remain fork-only.
+D46: PrepareExecutionMigration explicitly requires valid addressed sealed source,
+checks integrity before any transform, caller owns collection/source admission.
+Remove redundant MigrationProvenance.Digest; SourceRevision/SourceDigest/Chain and
+whole-envelope seal remain. Old persisted migration envelopes require drain/archive
+or explicit offline conversion; no silent legacy decode/forged new source seal.
+D47: retain one outgoing edge per descriptor and whole-registry linear validation,
+no branch search/automatic version guessing. Add/update tests and explicit contract.
+D48: retain embedded import artifact intentionally for self-contained validated
+provenance and missing-artifact safety. Document repeated byte cost, limits and why
+external host reference needs a future explicit reader/missing-reference contract;
+no unverified pointer conversion or invented external-effect evidence.
+D49: retain explicit fake default; inspectable fork may be nonresumable without
+host policy. Live projections sanitize permissions/references, never copy approval.
+D50: retain separate fork/rollover dependency gates; reset vs preserved accounting
+is deliberate and validators are not assumed interchangeable.
+D51: immutable rollover receipt returns original target creation revision, not latest;
+current target load remains explicit. Preserve native anchors/fencing with tests.
+D52: KeepLast0 retains live head without DeletePayload; retries count new deletions
+only, ACK loss does not exactly-once metrics; MaxRecords is checked-cycle meaning.
+D53: preserve permanent identities/fences/anchors against ABA. List metadata cost;
+seal is integrity, not authorization against a host DBA controlling all records.
+D57: rename DiscoveryRebuildPage.Rebuilt -> Processed (includes quarantined/deleted
+heads), return confirmed partial cursor/count/diagnostics on later failure. More=true
+on error means unfinished pass; failed current head may have unknown commit and can
+be safely reprocessed under head lock. Native fault/partial retry coverage required.
+D58: indexed discovery is query, not scheduler; Redis standalone snapshot/lease is
+not ExecutionStore; memory helpers are nondurable. Native locks/no full-scan fallback
+remain. Documentation1 clarifies fork payload availability versus independent
+creation anchor; documentation3 makes lifecycle/indexed discovery current, with
+historical origin distinguished. Fresh relevant root/PG race/lint and two independent
+final reviews (18/18 coverage,100%/0open) precede acceptance/commit.
+
+Task11 naming detail before edits: remaining shared ErrForkInvalid and
+ErrForkSourceDigest become ErrExecutionLifecycleInvalid and ErrExecutionSourceDigest.
+Fork-only policy/transform/target/unresolved errors retain their specific names.
+ExecutionProgress keeps the same JSON progress fields; only removal of redundant
+MigrationProvenance.Digest changes old migrated-envelope serialization.
+
+
+### Task11 implementation evidence (acceptance pending)
+
+Parent full root race15408 terminal0: root14.506s, all root packages completed.
+PG tagged full race24854 terminal0:56.278s on own disposable PostgreSQL17
+flowy-task28-pg11 port58029; no native test skip used as evidence.
+Root lint10281 terminal0,0issues. PG tagged lint initial32532exit3 due to
+concurrent tool lock (not code PASS); repeated95028terminal0,0issues.
+A registry topology test was added after initial root command; fresh targeted
+root59331/final lint27575 are pending and independent final reviews cover it.
+Two reviewers are running; one found stale head-scan wording in current wait
+contract, now corrected to indexed projections/head revalidation. No acceptance
+or Task11 commit is claimed from pending commands/reviews.
+
+
+## Task11 accepted
+
+Both independent final-state reviews accepted: completeness100% (18/18),
+correctness0 open. Reports reviews/task11-completeness.md and
+reviews/task11-correctness.md include final storage-adapter Processed wording.
+Independent completeness root27276terminal0,2.229s and nativepartial14180exit0,
+2.435s; incorrect early PG selection excluded explicitly. Correctness root50914
+exit0,1.977s, extra boundary74475exit0,1.638s; native lifecycle41475exit0,16.740s,
+wait ownership95500exit0,5.400s,no skipped fixtures. Parent final-added root59331
+exit0,1.654s and final lint27575exit0,0issues cover final registrytest; prior full
+root14.506s and nativePG56.278s passed, taggedPGlint0. WhitespacecheckPASS.
+The final doc-only correction was reviewed by BOTH agents after initial reports;
+no runtime code changed after these gates. No aliases for removed Go names.
+Own disposable PostgreSQL17 pg11 is retained for Task13 final gates; existing
+user task22 containers were not touched. Overall tasks12/13 remain unfinished.
+Local signed commit follows; SHA recorded with next task contract.

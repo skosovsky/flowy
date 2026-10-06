@@ -20,7 +20,7 @@ func seedRawMigration(ctx context.Context, t *testing.T, store flowy.ExecutionSt
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: "run", Descriptor: durableDescriptor("old"),
-		Progress:       flowy.MigrationState{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
 		EffectsPayload: []byte(`[]`), Activation: 1,
 	})
 	if err != nil {
@@ -46,7 +46,7 @@ func TestDurableMigrationResumeUsesTargetCodec(t *testing.T) {
 				ID:     "state-and-cursor",
 				Source: source.Descriptor,
 				Target: durableDescriptor("target"),
-				Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+				Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 					transforms.Add(1)
 					state.StatePayload = []byte(`{"Value":41}`)
 					state.ExecutionPointer = "node"
@@ -131,7 +131,7 @@ func TestDurableMigrationFailurePreservesSource(t *testing.T) {
 				ID:     "invalid",
 				Source: source.Descriptor,
 				Target: durableDescriptor("target"),
-				Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+				Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 					state.StatePayload[0] = 'X'
 					if invalidPointer {
 						state.ExecutionPointer = "absent"

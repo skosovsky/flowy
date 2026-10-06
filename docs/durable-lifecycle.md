@@ -1,6 +1,6 @@
-# Durable lifecycle contract (task25)
+# Durable lifecycle contract
 
-Status: specification before implementation. The primary growth mechanism is **rollover**, not journal compaction. See ADR `adr/0001-durable-lifecycle.md`. All APIs here are opt-in generic capabilities; no background maintenance runs in core.
+Status: implemented current contract. Historical origin: task25 specification, followed by task26 indexed discovery. The primary growth mechanism is **rollover**, not journal compaction. See ADR `adr/0001-durable-lifecycle.md`. All APIs here are opt-in generic capabilities; no background maintenance runs in core.
 
 ## State and effects compatibility
 
@@ -70,8 +70,10 @@ Rollover publishes the target head, both history rows and both full receipt
 anchors in one database transaction, under the live source fence/OCC lock.
 Cleanup locks the same execution head, rejects any live lease, deletes selected
 history rows and marks a deleted head in that same transaction. The ID/fence and
-anchors survive. PostgreSQL discovery excludes payload-deleted heads; task26
-will replace its full-envelope scan with indexed projections. SQL payload byte
+anchors survive. PostgreSQL discovery excludes payload-deleted heads and queries indexed projections
+published under the same head lock/transaction as authoritative envelopes. Discovery
+is a bounded query capability; the host owns scheduling, polling and delivery.
+No implicit full-envelope scan repairs a missing projection. SQL payload byte
 measurements use `octet_length(payload::text)` and metadata measurements must
 include both anchors and head identity; neither claims to measure disk pages or
 WAL amplification. Pool closure does not revoke a persisted lease; recovery must
@@ -86,3 +88,66 @@ sources and committed nonterminal cycle boundaries may proceed if all dependency
 checks pass. Rejected sources invoke no projection, node, merge or dispatcher.
 An owner may still finish a pure projection after lease expiry; the publication
 fence rejects that late result. Lease expiry does not prove that callback stopped.
+
+
+## Progress, migration and import provenance
+
+ExecutionProgress is the neutral state/cursor/reference projection used by
+execution, import, fork, migration and rollover. MigrationState has been removed
+without an alias. Shared address/contract errors are ErrExecutionLifecycleInvalid
+and ErrExecutionSourceDigest; fork-only policy/transform errors stay specific.
+
+PrepareExecutionMigration accepts an addressed, sealed source and checks its
+integrity before callbacks. Callers must already establish runtime collection and
+source-metadata validity through admission; this raw helper is not full runtime
+admission. The whole registry must have unique IDs, valid descriptors/functions
+and at most one outgoing edge per descriptor, including disconnected entries.
+Only the requested chain is traversed; a missing hop or a cycle on that chain is
+an error. No branch search, version guessing or shortest-path policy exists.
+SourceRevision, SourceDigest and Chain are the migration provenance; the whole
+committed envelope seal protects them. The redundant MigrationProvenance.Digest
+field is removed. Old migrated envelopes must be drained/archived with their
+original binary or explicitly converted offline with consistent seals and anchors;
+no implicit decoder accepts old seals under the new shape.
+
+Import deliberately retains Source.Payload in every later aggregate/history row.
+This makes provenance self-contained and lets admission validate the artifact
+without an external reader or a missing-reference fallback. An artifact of N bytes
+retained across R revisions repeats N*R raw artifact bytes, plus base64/JSON and
+other envelope metadata. Host bounds artifacts, history and rollover cycles;
+retention can remove eligible old rows. Imported metadata is never evidence that
+an external effect occurred. Replacing bytes with a host reference would require
+an explicit reader, integrity and missing-artifact contract; none is inferred.
+
+Fork defaults to fake mode and may be inspectable without a resumable host policy.
+Live execution requires current authorization and a named pure opaque-state
+projection; approval/reservation handles must be sanitized by the host. Fork
+resets operational counters/handles, while rollover preserves cumulative budget
+and retry accounting. Their dependency gates remain separate and are not assumed
+interchangeable. Replay of rollover returns its immutable target creation token.
+To continue an advanced target, explicitly LoadExecution for that target ID,
+validate its authoritative descriptor/integrity, derive its current ResumeToken
+and Resume with a compatible runner. A creation receipt never chooses latest.
+
+KeepLast=0 with DeletePayload=false still retains the current head. Repeated
+cleanup reports newly deleted rows/bytes only; lost ACK does not provide exactly-once
+deletion metrics. Permanent identity rows, monotonic fences/revisions, fork anchors
+and incoming/outgoing rollover receipts consume metadata even after payload
+removal. This is deliberate ABA protection, not payload compaction. A seal detects
+integrity failures, not a coordinated rewrite by a DBA controlling all records.
+
+## Indexed discovery repair
+
+PostgreSQL RebuildDiscovery explicitly repairs bounded head pages under native
+head locks. DiscoveryRebuildPage.Processed includes healthy, quarantined and
+deleted heads; it is not a count of runnable work. On a later failure, the returned
+page retains the last confirmed cursor/count/diagnostics and More=true. Resume
+from AfterExecutionID; the failed head might have committed without ACK and may
+be reprocessed safely. Never advance from an unconfirmed head. Initial query
+failure confirms no progress. Ordinary due queries use indexes and revalidate
+heads; no automatic full-scan fallback or background scheduler exists.
+
+Redis adapters provide ordinary snapshot/lease capabilities, not ExecutionStore.
+Memory helpers are conformance/smoke implementations, not persistent production
+storage. Only native atomic capabilities establish their declared OCC/fencing and
+publication guarantees; a profile label alone supplies no durability.

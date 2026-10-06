@@ -60,7 +60,7 @@ func TestActivityMigratedRetryPreservesIdentityAttemptsAndDeadline(t *testing.T)
 	}
 	options.Migrations = []flowy.ExecutionMigration{
 		{ID: "move", Source: source.Descriptor, Target: durableDescriptor("new"),
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.ExecutionPointer = "new-node"
 				state.JournalReferences = map[string]string{"operation": identity}
 				return state, nil

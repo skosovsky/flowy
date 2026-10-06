@@ -13,11 +13,12 @@ func TestEffectsMigrationRequiresExplicitTransformAndPreservesSource(t *testing.
 		ExecutionID:     "run",
 		Revision:        7,
 		Descriptor:      descriptorForTest("old"),
-		Progress:        MigrationState{StatePayload: []byte("old-state"), ExecutionPointer: "node"},
+		Progress:        ExecutionProgress{StatePayload: []byte("old-state"), ExecutionPointer: "node"},
 		EffectsPayload:  []byte("old-effect"),
 		JournalPayload:  []byte("immutable-activity"),
 		ChildrenPayload: []byte("immutable-child"),
 	}
+	source = sealMigrationFixture(t, source)
 	target := descriptorForTest("new")
 	target.EffectsCodec = "effects-v2"
 	stateCalls, effectCalls := 0, 0
@@ -25,7 +26,7 @@ func TestEffectsMigrationRequiresExplicitTransformAndPreservesSource(t *testing.
 		ID:     "both",
 		Source: source.Descriptor,
 		Target: target,
-		Transform: func(s MigrationState) (MigrationState, error) {
+		Transform: func(s ExecutionProgress) (ExecutionProgress, error) {
 			stateCalls++
 			s.StatePayload = []byte("new-state")
 			return s, nil
@@ -68,9 +69,10 @@ func TestEffectsMigrationFailureAndMissingLabelReject(t *testing.T) {
 		ExecutionID:    "run",
 		Revision:       1,
 		Descriptor:     descriptorForTest("old"),
-		Progress:       MigrationState{ExecutionPointer: "node"},
+		Progress:       ExecutionProgress{ExecutionPointer: "node"},
 		EffectsPayload: []byte("old"),
 	}
+	source = sealMigrationFixture(t, source)
 	target := descriptorForTest("new")
 	target.EffectsCodec = "effects-v2"
 	failure := errors.New("projection rejected")
@@ -78,7 +80,7 @@ func TestEffectsMigrationFailureAndMissingLabelReject(t *testing.T) {
 		ID:               "effects",
 		Source:           source.Descriptor,
 		Target:           target,
-		Transform:        func(s MigrationState) (MigrationState, error) { return s, nil },
+		Transform:        func(s ExecutionProgress) (ExecutionProgress, error) { return s, nil },
 		EffectsTransform: func([]byte) ([]byte, error) { return nil, failure },
 	}
 	// Act.
@@ -130,7 +132,7 @@ func TestRolloverCreationSealIsProtectedByIndependentReceipt(t *testing.T) {
 			ExecutionID: "target",
 			Revision:    1,
 			Descriptor:  descriptor,
-			Progress:    MigrationState{ExecutionPointer: "node", StatePayload: []byte("old")},
+			Progress:    ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("old")},
 			Rollover:    &lineage,
 		},
 	)

@@ -47,7 +47,7 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	}
 	delivery.Payload = bytes.Clone(delivery.Payload)
 	// Early delivery must not acquire/create a missing execution head.
-	if _, err := r.waitDeliverySource(ctx, executionID, delivery.Generation); err != nil {
+	if _, _, err := r.waitDeliverySource(ctx, executionID, delivery.Generation); err != nil {
 		return WaitDeliveryResult{}, err
 	}
 	session, err := r.acquireSession(ctx, executionID)
@@ -55,7 +55,7 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 		return WaitDeliveryResult{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, session.finish()) }()
-	source, err := r.waitDeliverySource(session.ctx, executionID, delivery.Generation)
+	source, waits, err := r.waitDeliverySource(session.ctx, executionID, delivery.Generation)
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
@@ -64,10 +64,6 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	observeLifecycle(session.ctx, event)
 	event.Stage = LifecycleFailed
 	defer func() { observeLifecycle(session.ctx, event) }()
-	waits, err := executionWaits(source)
-	if err != nil {
-		return WaitDeliveryResult{}, err
-	}
 	identity, record, err := findWaitGeneration(waits, delivery.Generation)
 	if err != nil {
 		return WaitDeliveryResult{}, err
@@ -124,52 +120,45 @@ func findWaitGeneration(waits map[string]DurableWaitRecord, generation string) (
 func (r *DurableRunner[T, E]) waitDeliverySource(
 	ctx context.Context,
 	id, generation string,
-) (ExecutionEnvelope, error) {
+) (ExecutionEnvelope, map[string]DurableWaitRecord, error) {
 	source, err := r.store.LoadExecution(ctx, id)
 	if errors.Is(err, ErrThreadNotFound) {
-		return ExecutionEnvelope{}, ErrWaitNotArmed
+		return ExecutionEnvelope{}, nil, ErrWaitNotArmed
 	}
 	if err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = ValidateExecutionIntegrity(source, id, source.Revision); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
-	if err = validateExecutionCollections(source); err != nil {
-		return ExecutionEnvelope{}, err
+	waits, err := validateExecutionCollectionsWithWaits(source)
+	if err != nil {
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = validateExecutionSourceMetadata(source); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = r.checkRuntimeProfile(source.RuntimeProfile); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
-	_, record, err := findWaitGenerationMustDecode(source, generation)
+	_, record, err := findWaitGeneration(waits, generation)
 	if err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if r.waitBackend == nil || r.options.WaitProfile == nil || record.Profile != *r.options.WaitProfile ||
 		r.waitBackend.WaitCapabilities() != record.Profile {
-		return ExecutionEnvelope{}, ErrExecutionCapability
+		return ExecutionEnvelope{}, nil, ErrExecutionCapability
 	}
 	if err = source.Descriptor.Check(r.descriptor); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if r.validatePointer(source.Progress.ExecutionPointer) != nil {
-		return ExecutionEnvelope{}, ErrExecutionIncompatible
+		return ExecutionEnvelope{}, nil, ErrExecutionIncompatible
 	}
 	if r.validatePointer(record.Spec.EventPointer) != nil || r.validatePointer(record.Spec.TimeoutPointer) != nil {
-		return ExecutionEnvelope{}, ErrExecutionIncompatible
+		return ExecutionEnvelope{}, nil, ErrExecutionIncompatible
 	}
-	return source, nil
-}
-
-func findWaitGenerationMustDecode(source ExecutionEnvelope, generation string) (string, DurableWaitRecord, error) {
-	waits, err := executionWaits(source)
-	if err != nil {
-		return "", DurableWaitRecord{}, err
-	}
-	return findWaitGeneration(waits, generation)
+	return source, waits, nil
 }
 
 func (r *DurableRunner[T, E]) prepareWaitDelivery(session *executionSession, source ExecutionEnvelope,

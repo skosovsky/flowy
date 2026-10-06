@@ -77,9 +77,9 @@ func (d ExecutionDescriptor) Check(target ExecutionDescriptor) error {
 	return nil
 }
 
-// MigrationState contains only the runtime fields a pure migration may change.
+// ExecutionProgress is current execution data also supplied to pure migration/fork projections.
 // Activities and persisted outcomes are intentionally not part of this input.
-type MigrationState struct {
+type ExecutionProgress struct {
 	StatePayload     []byte                      `json:"state_payload"`
 	ExecutionPointer ExecutionPointer            `json:"execution_pointer"`
 	ChildCursors     map[string]ExecutionPointer `json:"child_cursors,omitempty"`
@@ -96,7 +96,6 @@ type MigrationProvenance struct {
 	SourceRevision uint64   `json:"source_revision"`
 	SourceDigest   string   `json:"source_digest"`
 	Chain          []string `json:"chain"`
-	Digest         string   `json:"digest"`
 }
 
 // ExecutionEnvelope can be loaded without invoking a domain codec. Persistence
@@ -108,7 +107,7 @@ type ExecutionEnvelope struct {
 	Digest          string                 `json:"digest"`
 	Descriptor      ExecutionDescriptor    `json:"descriptor"`
 	RuntimeProfile  *WaitCapabilityProfile `json:"runtime_profile,omitempty"`
-	Progress        MigrationState         `json:"progress"`
+	Progress        ExecutionProgress      `json:"progress"`
 	EffectsPayload  []byte                 `json:"effects_payload,omitempty"`
 	JournalPayload  []byte                 `json:"journal_payload,omitempty"`
 	ChildrenPayload []byte                 `json:"children_payload,omitempty"`
@@ -172,7 +171,7 @@ type ExecutionMigration struct {
 	ID        string
 	Source    ExecutionDescriptor
 	Target    ExecutionDescriptor
-	Transform func(MigrationState) (MigrationState, error)
+	Transform func(ExecutionProgress) (ExecutionProgress, error)
 	// EffectsTransform is required when EffectsCodec changes. It receives detached
 	// accumulated effects; external activity/child outcomes are excluded.
 	EffectsTransform func([]byte) ([]byte, error)
@@ -194,14 +193,20 @@ func EnvelopeDigest(envelope ExecutionEnvelope) (string, error) {
 // dispatch. validatePointer must validate the final cursor against the target
 // graph. Caller commits with the source revision and fencing token; returning
 // this value alone is never a committed migration.
+// Source must be an addressed sealed envelope. Integrity is checked before any
+// callback; the caller must also establish collection and source-metadata validity
+// through its trusted store/runtime admission before invoking this raw helper.
 func PrepareExecutionMigration(
 	source ExecutionEnvelope,
 	target ExecutionDescriptor,
 	registry []ExecutionMigration,
 	validatePointer func(ExecutionPointer) error,
 ) (ExecutionEnvelope, error) {
-	if source.ExecutionID == "" || source.Revision == 0 || validatePointer == nil {
+	if validatePointer == nil {
 		return ExecutionEnvelope{}, ErrMigrationInvalid
+	}
+	if err := ValidateExecutionIntegrity(source, source.ExecutionID, source.Revision); err != nil {
+		return ExecutionEnvelope{}, errors.Join(ErrMigrationInvalid, err)
 	}
 	if err := source.Descriptor.Validate(); err != nil {
 		return ExecutionEnvelope{}, err
@@ -234,19 +239,10 @@ func PrepareExecutionMigration(
 	if len(chain) == 0 {
 		return result, nil
 	}
-	digest, err := EnvelopeDigest(source)
-	if err != nil {
-		return ExecutionEnvelope{}, err
-	}
 	result.Migration = &MigrationProvenance{
 		SourceRevision: source.Revision,
-		SourceDigest:   digest,
+		SourceDigest:   source.Digest,
 		Chain:          ids,
-		Digest:         "",
-	}
-	result.Migration.Digest, err = EnvelopeDigest(result)
-	if err != nil {
-		return ExecutionEnvelope{}, err
 	}
 	return result, nil
 }
@@ -286,7 +282,7 @@ func executionMigrationChain(
 	return chain, nil
 }
 
-func cloneMigrationState(state MigrationState) MigrationState {
+func cloneExecutionProgress(state ExecutionProgress) ExecutionProgress {
 	state.StatePayload = bytes.Clone(state.StatePayload)
 	state.ChildCursors = maps.Clone(state.ChildCursors)
 	state.JournalReferences = maps.Clone(state.JournalReferences)
@@ -311,7 +307,7 @@ func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
 		profile := *envelope.RuntimeProfile
 		envelope.RuntimeProfile = &profile
 	}
-	envelope.Progress = cloneMigrationState(envelope.Progress)
+	envelope.Progress = cloneExecutionProgress(envelope.Progress)
 	envelope.EffectsPayload = bytes.Clone(envelope.EffectsPayload)
 	envelope.JournalPayload = bytes.Clone(envelope.JournalPayload)
 	envelope.ChildrenPayload = bytes.Clone(envelope.ChildrenPayload)
@@ -351,11 +347,11 @@ func validateEffectsMigrationChain(chain []ExecutionMigration) error {
 }
 
 func applyExecutionMigration(result ExecutionEnvelope, migration ExecutionMigration) (ExecutionEnvelope, error) {
-	progress, err := migration.Transform(cloneMigrationState(result.Progress))
+	progress, err := migration.Transform(cloneExecutionProgress(result.Progress))
 	if err != nil {
 		return ExecutionEnvelope{}, fmt.Errorf("%w: %s: %w", ErrMigrationInvalid, migration.ID, err)
 	}
-	result.Progress = cloneMigrationState(progress)
+	result.Progress = cloneExecutionProgress(progress)
 	if migration.EffectsTransform != nil {
 		effects, err := migration.EffectsTransform(bytes.Clone(result.EffectsPayload))
 		if err != nil {

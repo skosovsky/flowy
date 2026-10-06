@@ -104,7 +104,7 @@ func assertPreExecutionLease(t *testing.T, stage string, lost bool) {
 		token = seedLeaseMigration(ctx, t, base)
 		options.Migrations = []flowy.ExecutionMigration{
 			{ID: "move", Source: durableDescriptor("old"), Target: durableDescriptor("current"),
-				Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+				Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 					close(entered)
 					<-proceed
 					return state, nil
@@ -148,7 +148,7 @@ func seedLeaseMigration(ctx context.Context, t *testing.T, store flowy.Execution
 		ExecutionID: "run",
 		Descriptor:  durableDescriptor("old"),
 		Activation:  1,
-		Progress: flowy.MigrationState{
+		Progress: flowy.ExecutionProgress{
 			ExecutionPointer: "node",
 			StatePayload:     []byte(`{"Value":0}`),
 		},

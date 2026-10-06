@@ -36,7 +36,7 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 		t.Fatal(err)
 	}
 	envelope := flowy.ExecutionEnvelope{ExecutionID: id, Descriptor: referenceDescriptor("old"), Activation: 1,
-		Progress:       flowy.MigrationState{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
 		EffectsPayload: []byte("[]")}
 	if effects {
 		envelope.EffectsPayload = []byte("invalid-effects")
@@ -57,15 +57,21 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 			dispatches.Add(1)
 			return []byte("must not run"), nil
 		}}
-	migration := flowy.ExecutionMigration{ID: "invalid-codec", Source: source.Descriptor,
-		Target: referenceDescriptor("new"), Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+	migration := flowy.ExecutionMigration{
+		ID:     "invalid-codec",
+		Source: source.Descriptor,
+		Target: referenceDescriptor(
+			"new",
+		),
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "node"
 			state.StatePayload = []byte("invalid-state")
 			if effects {
 				state.StatePayload = []byte(`{"value":1}`)
 			}
 			return state, nil
-		}}
+		},
+	}
 	runner := persistentReferenceRunner(t, restartedStore, referenceDescriptor("new"), "node", request,
 		[]flowy.ExecutionMigration{migration})
 	token := flowy.ResumeToken{ThreadID: id, SnapshotRevision: source.Revision}

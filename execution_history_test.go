@@ -41,7 +41,7 @@ func seedHistoryInspection(t *testing.T) (*testutil.MemoryExecutionStore, flowy.
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: "source", Descriptor: durableDescriptor("current"), Activation: 1,
-		Progress: flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque-host-state")},
+		Progress: flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque-host-state")},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -102,9 +102,9 @@ func TestHistoricalInspectionRejectsUnsupportedMissingAndWrongDigest(t *testing.
 	}{
 		{name: "unsupported", store: executionWithoutHistory{store}, revision: 1, digest: source.Digest, want: flowy.ErrExecutionHistoryUnsupported},
 		{name: "missing", store: store, revision: 99, digest: source.Digest, want: flowy.ErrExecutionCheckpointUnavailable},
-		{name: "zero", store: store, revision: 0, digest: source.Digest, want: flowy.ErrForkInvalid},
-		{name: "digest", store: store, revision: 1, digest: strings.Repeat("0", 64), want: flowy.ErrForkSourceDigest},
-		{name: "empty digest", store: store, revision: 1, digest: "", want: flowy.ErrForkSourceDigest},
+		{name: "zero", store: store, revision: 0, digest: source.Digest, want: flowy.ErrExecutionLifecycleInvalid},
+		{name: "digest", store: store, revision: 1, digest: strings.Repeat("0", 64), want: flowy.ErrExecutionSourceDigest},
+		{name: "empty digest", store: store, revision: 1, digest: "", want: flowy.ErrExecutionSourceDigest},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()

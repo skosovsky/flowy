@@ -191,7 +191,7 @@ func TestDurableCorruptTerminalRejectsBeforeCodec(t *testing.T) {
 				flowy.ExecutionEnvelope{
 					ExecutionID: "run",
 					Descriptor:  durableDescriptor("current"),
-					Progress:    flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque")},
+					Progress:    flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque")},
 					Terminal:    terminal,
 				},
 			)

@@ -141,7 +141,7 @@ func assertDurableCompatibilityBeforeDecode(t *testing.T, stream bool) {
 		flowy.ExecutionEnvelope{
 			ExecutionID: "run",
 			Descriptor:  durableDescriptor("old"),
-			Progress:    flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque")},
+			Progress:    flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque")},
 		},
 	)
 	if err != nil {

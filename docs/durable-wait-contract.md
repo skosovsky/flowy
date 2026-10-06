@@ -52,7 +52,7 @@ The arm API is a dedicated Await(spec) node directive, not a second implicit mea
 
 The raw envelope now includes a sealed, detached wait payload. DurableWaitSpec requires explicit matcher/payload/continuation labels, correlation, UTC deadline and winner policy. Pure arbitration records event/timer acceptance, unmatched events, addressed loser decisions and immutable duplicate replay; it does not publish a continuation or acknowledge transport. Collection validation rejects inconsistent identities, generation, winner and provenance before domain decode. An armed wait blocks ordinary snapshot/step/terminal advancement.
 
-PostgreSQL NewWaitExecutionStore opts the same execution store into a named owner profile. Registration verifies its committed armed generation; the aggregate itself is the durable registration, with no second index transaction. DiscoverDueWaits uses bounded keyset head scans (maximum 500), returns the current revision with each due candidate, and performs no lease acquisition or acceptance. Host drives complete scan cycles from the empty cursor under its declared clock; a candidate may become stale and must be revalidated by delivery. Ordinary NewExecutionStore has no enabled wait profile.
+PostgreSQL NewWaitExecutionStore opts the same execution store into a named owner profile. Registration verifies its committed armed generation; the aggregate itself is the durable registration, with no second index transaction. DiscoverDueWaits uses indexed projections with bounded keyset pages (maximum 500), revalidates each candidate against its authoritative head, returns its current revision, and performs no lease acquisition or acceptance. Host drives complete polling cycles from the empty cursor under its declared clock; a candidate may become stale and must be revalidated by delivery. Ordinary NewExecutionStore has no enabled wait profile.
 
 Atomic arm, registration fault recovery and node-free armed Resume are implemented and tested in memory conformance and PostgreSQL pool restart fixtures. DeliverWait now publishes winner decision/state/selected cursor/new activation in one fenced/OCC aggregate commit. Duplicate replay and durable loser/unmatched decisions bypass host state codecs and callbacks; new matching winners use labelled pure host callbacks with detached inputs and heartbeat. Callback/codec/commit failures return no accepted decision and preserve the source. A committed acceptance survives closing the original PostgreSQL pool before Resume; a new pool replays the event and records a competing loser without another callback, then executes the selected continuation once.
 
@@ -60,4 +60,43 @@ CancelWait now commits addressed cancellation provenance and its failed terminal
 
 The real stale-owner fixture retains a live old pool and uncanceled blocked matcher, expires its lease, publishes a timer winner from a separate pool, and then releases the old matcher. Its actual write is rejected specifically by ErrLeaseLost; the committed winner digest is unchanged and the old pool still responds to Ping. Both pools are then closed; caller redelivery through a fresh pool persists the unacknowledged event's loser decision and duplicate replay, without replacing the timer continuation. A separate fresh-pool concurrent event/duplicate/timer fixture proves one accepted decision, one durable loser and one selected continuation. Lease contention requires caller retry; it is not an acknowledgement. A real arm-commit barrier verifies ErrWaitNotArmed both before head creation and while an existing head's arm is uncommitted, with no head creation, mutation or callbacks. Caller rebinding to the committed generation and redelivery survive pool restart.
 
-Opt-in activity-backoff discovery has a PostgreSQL pool-restart fixture: unbound and future heads produce no candidate, the due head preserves its policy/token/deadline, observation changes no history, and compatible Resume permits only the next bounded attempt. Profile mismatch rejects before callbacks; discovery selects only the configured persisted owner profile. Discovery is a read-only observation and does not create another scheduler/retry authority. Automatic durable prune/delete is rejected, preserving decisions and lineage rather than claiming an unimplemented dependency-safe retention policy. Host scheduling/transport authentication and compatible executable-code routing remain outside core. Current per-requirement evidence, final-audit status and delivery gates are recorded in task22-progress.md and the fixed requirement registry; stage tests alone do not establish full release readiness.
+Opt-in activity-backoff discovery has a PostgreSQL pool-restart fixture: unbound and future heads produce no candidate, the due head preserves its policy/token/deadline, observation changes no history, and compatible Resume permits only the next bounded attempt. Profile mismatch rejects before callbacks; discovery selects only the configured persisted owner profile. Discovery is a read-only observation and does not create another scheduler/retry authority. Core runs no automatic maintenance. Explicit ExecutionRetentionStore maintenance requires the dependency-safe lifecycle gate and preserves head identity/fences/anchors; armed waits cannot be deleted. Host scheduling/transport authentication and compatible executable-code routing remain outside core. Current per-requirement evidence, final-audit status and delivery gates are recorded in task22-progress.md and the fixed requirement registry; stage tests alone do not establish full release readiness.
+
+
+## Deadline, deduplication and deployment ownership
+
+An event received after Deadline may still win if it is valid and commits before
+the timer. The policy orders committed decisions; Deadline admits timer delivery,
+not an implicit event rejection. A host requiring a business cutoff wraps its
+matcher with an injected clock and names that behavior in MatcherLabel:
+
+```go
+match := func(ctx context.Context, payload []byte) (bool, error) {
+    if clock.Now().After(spec.Deadline) {
+        return false, nil
+    }
+    return domainMatch(ctx, payload)
+}
+```
+
+Here clock, spec and domainMatch are host dependencies captured at registration;
+this rejects events evaluated after the cutoff, not proof of remote send time.
+Match can repeat after an uncommitted write. A committed unmatched decision is
+immutable even if the clock or matcher later differs. Identical IDs for unmatched,
+lost and canceled deliveries replay their original decisions without Match/Apply;
+compatibility labels still must match. Different evidence requires a new ID.
+
+The ledger has no TTL or silent unique-ID cap: erasing a decision would break
+redelivery deduplication. Host transport admission, payload limits and rate limits
+must bound unique inputs to an armed generation. A resolved safe boundary may
+roll over explicitly under lifecycle policy; an armed generation cannot roll over
+to erase rejected deliveries. No fake ACK is returned for an unpersisted decision.
+
+WaitCapabilityProfile declares deployment and recovery ownership; it does not
+prove a scheduler is alive. The same configured store must atomically publish
+state, wait and decisions; a wrapper may expose that transactional capability.
+Standalone unrelated timer/storage ports do not imply atomic execution authority.
+DeliverWait and CancelWait retain separate authoritative reads before and after
+lease acquisition; each phase parses and validates its wait collection once and
+reuses it. Value/map/pointer copying preserves nil/empty shape without JSON
+round-trip loss; copying never replaces validation.

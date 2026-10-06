@@ -39,7 +39,7 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 		request.Reason == "" || request.Evidence == "" {
 		return ResumeToken{}, ErrWaitInvalid
 	}
-	if _, err := r.waitDeliverySource(ctx, token.ThreadID, request.Generation); err != nil {
+	if _, _, err := r.waitDeliverySource(ctx, token.ThreadID, request.Generation); err != nil {
 		return ResumeToken{}, err
 	}
 	session, err := r.acquireSession(ctx, token.ThreadID)
@@ -47,7 +47,7 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 		return ResumeToken{}, err
 	}
 	defer func() { retErr = errors.Join(retErr, session.finish()) }()
-	source, err := r.waitDeliverySource(session.ctx, token.ThreadID, request.Generation)
+	source, waits, err := r.waitDeliverySource(session.ctx, token.ThreadID, request.Generation)
 	if err != nil {
 		return ResumeToken{}, err
 	}
@@ -56,10 +56,6 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	observeLifecycle(session.ctx, event)
 	event.Stage = LifecycleFailed
 	defer func() { observeLifecycle(session.ctx, event) }()
-	waits, err := executionWaits(source)
-	if err != nil {
-		return ResumeToken{}, err
-	}
 	identity, record, err := findWaitGeneration(waits, request.Generation)
 	if err != nil {
 		return ResumeToken{}, err

@@ -30,7 +30,7 @@ func seedPersistentForkSource(ctx context.Context, t *testing.T, store *Executio
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: id, Descriptor: pgForkDescriptor("source"), Activation: 1,
-		Progress:       flowy.MigrationState{ExecutionPointer: "write", StatePayload: []byte(`{"Value":5}`)},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "write", StatePayload: []byte(`{"Value":5}`)},
 		EffectsPayload: []byte("[{}]"),
 	})
 	if err != nil {
@@ -100,7 +100,7 @@ func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *test
 	request := flowy.ForkRequest{Source: flowy.HistoricalCheckpointReference{ExecutionID: source.ExecutionID,
 		Revision: source.Revision, Digest: source.Digest}, TargetID: base + "target",
 		Transform: flowy.ForkTransform{Label: "historical-correction", Source: source.Descriptor,
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.StatePayload = []byte(`{"Value":8}`)
 				return state, nil
 			}}}

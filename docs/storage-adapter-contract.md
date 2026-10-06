@@ -80,8 +80,10 @@ publication marks readiness atomically with replacing candidates. A partial
 index over unready live heads provides a bounded EXISTS readiness check; normal
 polling returns ErrDiscoveryRebuildRequired if any old unrebuilt head remains.
 `RebuildDiscovery(ctx, afterExecutionID, limit)` processes a bounded keyset page
-with a transaction/head lock per execution. It returns Rebuilt count, Diagnostics,
-AfterExecutionID and More. Valid heads replace projections; invalid heads retain
+with a transaction/head lock per execution. It returns Processed count (including quarantined/deleted heads), Diagnostics,
+AfterExecutionID and More. On a later head failure it returns confirmed partial
+progress with More=true: retry after its last confirmed cursor. The failed head
+may have committed without ACK and can be safely reprocessed under its head lock. Valid heads replace projections; invalid heads retain
 unchanged payload and record explicit quarantine (empty candidates and addressed
 discovery_error). This is a host-invoked repair of derived state, never implicit
 repair of execution state. Quarantined heads do not block healthy discovery;

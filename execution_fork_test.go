@@ -29,7 +29,7 @@ func seedForkSource(t *testing.T, store flowy.ExecutionStore) flowy.ExecutionEnv
 		ExecutionID: "source",
 		Descriptor:  durableDescriptor("current"),
 		Activation:  1,
-		Progress: flowy.MigrationState{
+		Progress: flowy.ExecutionProgress{
 			ExecutionPointer: "write",
 			StatePayload:     []byte(`{"Value":5,"Approved":true}`),
 		},
@@ -83,7 +83,7 @@ func forkRequestForTest(source flowy.ExecutionEnvelope, target string) flowy.For
 	return flowy.ForkRequest{Source: flowy.HistoricalCheckpointReference{ExecutionID: source.ExecutionID,
 		Revision: source.Revision, Digest: source.Digest}, TargetID: target,
 		Transform: flowy.ForkTransform{Label: "correction", Source: source.Descriptor,
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil }}}
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil }}}
 }
 
 func TestForkDefaultFakeRequiresPolicyAndSeparatesNewIdentities(t *testing.T) {
@@ -176,7 +176,10 @@ func TestForkLiveRequiresProjectionAndRechecksAuthorization(t *testing.T) {
 	runner := forkRunnerForTest(t, store, policy, &nodes, &live)
 	request := forkRequestForTest(source, "live-target")
 	request.Mode, request.PolicyLabel = flowy.ForkLive, policy.Label
-	request.Transform.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) { transforms.Add(1); return state, nil }
+	request.Transform.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
+		transforms.Add(1)
+		return state, nil
+	}
 	// Act: no projection means refusal before transform or node work.
 	_, missingProjection := runner.Fork(ctx, request)
 	if !errors.Is(missingProjection, flowy.ErrForkPolicy) || transforms.Load() != 0 || gates.Load() != 0 {
@@ -184,7 +187,7 @@ func TestForkLiveRequiresProjectionAndRechecksAuthorization(t *testing.T) {
 	}
 	request.Projection = &flowy.ForkProjection{
 		Label: "remove-approval",
-		Project: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Project: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.StatePayload = []byte(`{"Value":5,"Approved":false}`)
 			return state, nil
 		},

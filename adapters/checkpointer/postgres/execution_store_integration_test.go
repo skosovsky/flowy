@@ -36,7 +36,7 @@ func TestExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID:    id,
 			Descriptor:     descriptor,
-			Progress:       flowy.MigrationState{ExecutionPointer: "before", StatePayload: []byte("state")},
+			Progress:       flowy.ExecutionProgress{ExecutionPointer: "before", StatePayload: []byte("state")},
 			JournalPayload: []byte("completed outcome"),
 		},
 	)
@@ -57,7 +57,7 @@ func TestExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		ID:     "rename",
 		Source: descriptor,
 		Target: target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "after"
 			return state, nil
 		},

@@ -121,32 +121,32 @@ func (r *DurableRunner[T, E]) prepareForkLineage(ctx context.Context, source Exe
 
 func (r *DurableRunner[T, E]) transformForkProgress(ctx context.Context, source ExecutionEnvelope,
 	request ForkRequest,
-) (MigrationState, error) {
+) (ExecutionProgress, error) {
 	if ctx.Err() != nil {
-		return MigrationState{}, context.Cause(ctx)
+		return ExecutionProgress{}, context.Cause(ctx)
 	}
-	progress, err := request.Transform.Transform(cloneMigrationState(source.Progress))
+	progress, err := request.Transform.Transform(cloneExecutionProgress(source.Progress))
 	if err != nil {
-		return MigrationState{}, errors.Join(ErrForkTransform, err)
+		return ExecutionProgress{}, errors.Join(ErrForkTransform, err)
 	}
-	progress = cloneMigrationState(progress)
+	progress = cloneExecutionProgress(progress)
 	if request.Projection != nil {
-		progress, err = request.Projection.Project(cloneMigrationState(progress))
+		progress, err = request.Projection.Project(cloneExecutionProgress(progress))
 		if err != nil {
-			return MigrationState{}, errors.Join(ErrForkTransform, err)
+			return ExecutionProgress{}, errors.Join(ErrForkTransform, err)
 		}
-		progress = cloneMigrationState(progress)
+		progress = cloneExecutionProgress(progress)
 	}
 	progress.ChildCursors, progress.JournalReferences = nil, nil
 	progress.ChildGroupReferences = nil
 	if err = r.validatePointer(progress.ExecutionPointer); err != nil {
-		return MigrationState{}, errors.Join(ErrExecutionIncompatible, err)
+		return ExecutionProgress{}, errors.Join(ErrExecutionIncompatible, err)
 	}
 	if ctx.Err() != nil {
-		return MigrationState{}, context.Cause(ctx)
+		return ExecutionProgress{}, context.Cause(ctx)
 	}
 	if _, err = r.stateCodec.Unmarshal(bytes.Clone(progress.StatePayload)); err != nil {
-		return MigrationState{}, errors.Join(ErrExecutionIncompatible, err)
+		return ExecutionProgress{}, errors.Join(ErrExecutionIncompatible, err)
 	}
 	return progress, nil
 }

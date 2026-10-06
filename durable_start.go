@@ -36,7 +36,7 @@ func (r *DurableRunner[T, E]) prepareStart(
 		Digest:         "",
 		Descriptor:     r.descriptor,
 		RuntimeProfile: r.options.WaitProfile,
-		Progress: MigrationState{
+		Progress: ExecutionProgress{
 			StatePayload:         state,
 			ExecutionPointer:     ExecutionPointer(r.graph.entryPoint),
 			ChildCursors:         nil,

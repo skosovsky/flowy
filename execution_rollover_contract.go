@@ -33,7 +33,7 @@ func (p RolloverPolicy) Validate() error {
 
 // RolloverPayload is detached BYOT data. Runtime result journals are excluded.
 type RolloverPayload struct {
-	Progress       MigrationState
+	Progress       ExecutionProgress
 	EffectsPayload []byte
 }
 

@@ -23,7 +23,7 @@ func TestStateAndEffectsMigrationPublishTogether(t *testing.T) {
 			seed := flowy.ExecutionEnvelope{
 				ExecutionID:    "run",
 				Descriptor:     old,
-				Progress:       flowy.MigrationState{StatePayload: []byte(`{"Value":7}`), ExecutionPointer: "node"},
+				Progress:       flowy.ExecutionProgress{StatePayload: []byte(`{"Value":7}`), ExecutionPointer: "node"},
 				EffectsPayload: []byte(`["old"]`),
 				Activation:     1,
 			}
@@ -44,7 +44,7 @@ func TestStateAndEffectsMigrationPublishTogether(t *testing.T) {
 				ID:     "both-codecs",
 				Source: old,
 				Target: target,
-				Transform: func(s flowy.MigrationState) (flowy.MigrationState, error) {
+				Transform: func(s flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 					s.StatePayload = []byte(`42`)
 					if failure == "state codec" {
 						s.StatePayload = []byte(`{}`)

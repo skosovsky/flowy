@@ -162,7 +162,7 @@ func TestWaitPayloadParticipatesInSealAndDetachedClone(t *testing.T) {
 		t.Fatal(err)
 	}
 	envelope, err := SealExecutionEnvelope(ExecutionEnvelope{ExecutionID: "run", Revision: 2, Activation: 1,
-		Progress: MigrationState{ExecutionPointer: "waiting"}, WaitsPayload: payload})
+		Progress: ExecutionProgress{ExecutionPointer: "waiting"}, WaitsPayload: payload})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -192,7 +192,7 @@ func TestWaitArmedBlocksOrdinarySaveBeforeCodecsOrStore(t *testing.T) {
 	cp := &executionCheckpointer[int, string]{
 		lease: ExecutionLease{ExecutionID: "run"}, stepRevision: 2,
 		envelope: ExecutionEnvelope{ExecutionID: "run", Revision: 2, Activation: 1,
-			Progress: MigrationState{ExecutionPointer: "waiting"}, WaitsPayload: bytes.Clone(payload)},
+			Progress: ExecutionProgress{ExecutionPointer: "waiting"}, WaitsPayload: bytes.Clone(payload)},
 	}
 	// Act.
 	_, err = cp.Save(context.Background(), 2, Snapshot[int, string]{ThreadID: "run", State: 42,
@@ -216,11 +216,11 @@ func TestWaitCollectionRejectsStrandedArmedWaitAndMalformedPayload(t *testing.T)
 	}
 	for name, envelope := range map[string]ExecutionEnvelope{
 		"advanced": {ExecutionID: "run", Revision: 2, Activation: 1,
-			Progress: MigrationState{ExecutionPointer: "accepted"}, WaitsPayload: payload},
+			Progress: ExecutionProgress{ExecutionPointer: "accepted"}, WaitsPayload: payload},
 		"activation": {ExecutionID: "run", Revision: 2, Activation: 2,
-			Progress: MigrationState{ExecutionPointer: "waiting"}, WaitsPayload: payload},
+			Progress: ExecutionProgress{ExecutionPointer: "waiting"}, WaitsPayload: payload},
 		"terminal": {ExecutionID: "run", Revision: 2, Activation: 1,
-			Progress: MigrationState{ExecutionPointer: "waiting"}, WaitsPayload: payload,
+			Progress: ExecutionProgress{ExecutionPointer: "waiting"}, WaitsPayload: payload,
 			Terminal: &ExecutionTerminal{Status: RunStatusCompleted}},
 		"null":          {WaitsPayload: []byte("null")},
 		"trailing":      {WaitsPayload: append(bytes.Clone(payload), []byte("{}")...)},
@@ -346,7 +346,7 @@ func TestWaitCollectionRejectsForgedLedgerBeforeDecode(t *testing.T) {
 			}
 			// Act.
 			_, err = executionWaits(ExecutionEnvelope{ExecutionID: "run", Revision: 3, Activation: 1,
-				Progress: MigrationState{ExecutionPointer: "waiting"}, WaitsPayload: payload})
+				Progress: ExecutionProgress{ExecutionPointer: "waiting"}, WaitsPayload: payload})
 			// Assert.
 			if !errors.Is(err, ErrExecutionCorrupt) {
 				t.Fatalf("forged wait %s accepted: %v", name, err)
@@ -381,5 +381,57 @@ func TestWaitSpecRequiresExplicitContractsAndUTC(t *testing.T) {
 				t.Fatalf("incomplete wait contract accepted: %v", err)
 			}
 		})
+	}
+}
+
+func TestWaitLateEventCanWinBeforeTimerPublication(t *testing.T) {
+	t.Parallel()
+	// Arrange: deadline has elapsed, but no timer decision has committed.
+	record := waitFixture(t)
+	event := waitEventFixture(record, 2)
+	// Act.
+	target, decision, replay, err := prepareWaitDecision(record, event, 2, 1,
+		record.Spec.Deadline.Add(time.Hour), true)
+	// Assert: the selected policy orders commits, rather than event wall time.
+	if err != nil || replay || decision.Status != WaitAccepted || target.WinnerID != event.ID {
+		t.Fatalf("late event: target=%+v decision=%+v replay=%v err=%v", target, decision, replay, err)
+	}
+}
+
+func TestWaitUnmatchedReplayCannotBecomeAccepted(t *testing.T) {
+	t.Parallel()
+	// Arrange: the same evidence was durably unmatched.
+	record := waitFixture(t)
+	event := waitEventFixture(record, 2)
+	unmatched, original, _, err := prepareWaitDecision(record, event, 2, 1, record.Spec.Deadline, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Act: a later matcher result cannot reinterpret that delivery ID.
+	target, cached, replay, err := prepareWaitDecision(unmatched, event, 3, 2, record.Spec.Deadline, true)
+	// Assert.
+	if err != nil || !replay || cached != original || target.State != WaitArmed || target.WinnerID != "" {
+		t.Fatalf("unmatched replay: %+v cached=%+v replay=%v err=%v", target, cached, replay, err)
+	}
+}
+
+func TestWaitClonePreservesMemoryShapeAndOwnership(t *testing.T) {
+	t.Parallel()
+	// Arrange: copy is independent of admission and JSON's representable date range.
+	source := waitFixture(t)
+	source.Spec.Deadline = time.Date(10000, 1, 1, 0, 0, 0, 0, time.UTC)
+	source.Decisions = map[string]WaitDecision{}
+	source.Cancellation = &WaitCancellationRecord{Reason: "source"}
+	// Act.
+	target := cloneDurableWait(source)
+	target.Decisions["other"] = WaitDecision{}
+	target.Cancellation.Reason = "target"
+	nilSource := source
+	nilSource.Decisions, nilSource.Cancellation = nil, nil
+	nilTarget := cloneDurableWait(nilSource)
+	// Assert: no ignored encoding failure, no map/pointer sharing, no nil normalization.
+	if target.Spec.Deadline != source.Spec.Deadline || len(source.Decisions) != 0 ||
+		source.Cancellation.Reason != "source" || nilTarget.Decisions != nil || nilTarget.Cancellation != nil {
+		t.Fatalf("clone changed source/shape: source=%+v target=%+v nil=%+v", source, target, nilTarget)
 	}
 }

@@ -92,7 +92,7 @@ func TestIndexedDiscoveryCorruptionPaginationRebuildAndRetention(t *testing.T) {
 	}
 	// Act: explicit rebuild quarantines corruption without rewriting payload.
 	repair, err := store.RebuildDiscovery(ctx, base, 1)
-	if err != nil || repair.Rebuilt != 1 || len(repair.Diagnostics) != 1 ||
+	if err != nil || repair.Processed != 1 || len(repair.Diagnostics) != 1 ||
 		repair.Diagnostics[0].ExecutionID != ids[0] {
 		t.Fatalf("repair: %+v %v", repair, err)
 	}

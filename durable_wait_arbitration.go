@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"maps"
 	"math"
 	"slices"
 	"time"
@@ -16,10 +17,12 @@ func waitPayloadDigest(payload []byte) string {
 }
 
 func cloneDurableWait(record DurableWaitRecord) DurableWaitRecord {
-	encoded, _ := json.Marshal(record)
-	var result DurableWaitRecord
-	_ = json.Unmarshal(encoded, &result)
-	return result
+	record.Decisions = maps.Clone(record.Decisions)
+	if record.Cancellation != nil {
+		cancellation := *record.Cancellation
+		record.Cancellation = &cancellation
+	}
+	return record
 }
 
 // prepareWaitDecision is pure: persistence must publish this target together
@@ -146,10 +149,7 @@ func InspectExecutionWaits(envelope ExecutionEnvelope) ([]DurableWaitRecord, err
 	if err := ValidateExecutionIntegrity(envelope, envelope.ExecutionID, envelope.Revision); err != nil {
 		return nil, err
 	}
-	if err := validateExecutionCollections(envelope); err != nil {
-		return nil, err
-	}
-	waits, err := executionWaits(envelope)
+	waits, err := validateExecutionCollectionsWithWaits(envelope)
 	if err != nil {
 		return nil, err
 	}

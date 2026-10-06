@@ -43,7 +43,7 @@ func TestExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T) {
 					ExecutionContract: "e",
 					ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 				},
-				Progress: flowy.MigrationState{ExecutionPointer: "node"},
+				Progress: flowy.ExecutionProgress{ExecutionPointer: "node"},
 			})
 			if err != nil {
 				t.Fatal(err)

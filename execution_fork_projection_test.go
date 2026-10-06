@@ -20,16 +20,16 @@ func TestForkFreezesProjectionRegistrationBeforeTransform(t *testing.T) {
 	runner := forkRunnerForTest(t, store, nil, &nodes, &live)
 	projection := &flowy.ForkProjection{
 		Label: "sanitize",
-		Project: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Project: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.StatePayload = []byte(`{"Value":10,"Approved":false}`)
 			return state, nil
 		},
 	}
 	request := forkRequestForTest(source, "target")
 	request.Projection = projection
-	request.Transform.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) {
+	request.Transform.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 		projection.Label = "substituted"
-		projection.Project = func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		projection.Project = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.StatePayload = []byte(`{"Value":99,"Approved":true}`)
 			return state, nil
 		}

@@ -22,7 +22,7 @@ func TestExecutionMigrationDetachedAndPreservesOutcomes(t *testing.T) {
 		ExecutionID: "run",
 		Revision:    7,
 		Descriptor:  descriptorForTest("old"),
-		Progress: MigrationState{
+		Progress: ExecutionProgress{
 			StatePayload:     []byte("old"),
 			ExecutionPointer: "before",
 			ChildCursors:     map[string]ExecutionPointer{"child": "before"},
@@ -31,12 +31,13 @@ func TestExecutionMigrationDetachedAndPreservesOutcomes(t *testing.T) {
 		EffectsPayload: []byte("effect"),
 	}
 	migration := ExecutionMigration{ID: "move", Source: source.Descriptor, Target: descriptorForTest("new"),
-		Transform: func(state MigrationState) (MigrationState, error) {
+		Transform: func(state ExecutionProgress) (ExecutionProgress, error) {
 			state.StatePayload[0] = 'N'
 			state.ExecutionPointer = "after"
 			state.ChildCursors["child"] = "after"
 			return state, nil
 		}}
+	source = sealMigrationFixture(t, source)
 	// Act.
 	result, err := PrepareExecutionMigration(
 		source,
@@ -59,8 +60,7 @@ func TestExecutionMigrationDetachedAndPreservesOutcomes(t *testing.T) {
 	if !bytes.Equal(result.JournalPayload, source.JournalPayload) || result.Progress.ExecutionPointer != "after" {
 		t.Fatal("outcomes or target changed")
 	}
-	if result.Migration == nil || result.Migration.SourceRevision != 7 || result.Migration.SourceDigest == "" ||
-		result.Migration.Digest == "" {
+	if result.Migration == nil || result.Migration.SourceRevision != 7 || result.Migration.SourceDigest == "" {
 		t.Fatal("missing lineage")
 	}
 	result.JournalPayload[0] = 'X'
@@ -75,9 +75,10 @@ func TestMigrationRejectsMissingAmbiguousAndInvalidTarget(t *testing.T) {
 		ExecutionID: "run",
 		Revision:    1,
 		Descriptor:  descriptorForTest("old"),
-		Progress:    MigrationState{ExecutionPointer: "node"},
+		Progress:    ExecutionProgress{ExecutionPointer: "node"},
 	}
-	transform := func(state MigrationState) (MigrationState, error) { return state, nil }
+	source = sealMigrationFixture(t, source)
+	transform := func(state ExecutionProgress) (ExecutionProgress, error) { return state, nil }
 	migration := ExecutionMigration{
 		ID:        "a",
 		Source:    source.Descriptor,
@@ -118,5 +119,32 @@ func TestDescriptorRejectsMissingLabelsBeforeDecode(t *testing.T) {
 	// Assert.
 	if !errors.Is(err, ErrExecutionIncompatible) {
 		t.Fatalf("missing descriptor accepted: %v", err)
+	}
+}
+
+func sealMigrationFixture(t *testing.T, source ExecutionEnvelope) ExecutionEnvelope {
+	t.Helper()
+	sealed, err := SealExecutionEnvelope(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sealed
+}
+
+func TestMigrationRejectsCorruptSourceBeforeCallbacks(t *testing.T) {
+	t.Parallel()
+	// Arrange: a once sealed source has been changed without a matching seal.
+	source := sealMigrationFixture(t, ExecutionEnvelope{ExecutionID: "run", Revision: 1,
+		Descriptor: descriptorForTest("old"), Progress: ExecutionProgress{ExecutionPointer: "node"}})
+	source.Progress.StatePayload = []byte("tampered")
+	calls := 0
+	migration := ExecutionMigration{ID: "move", Source: source.Descriptor, Target: descriptorForTest("new"),
+		Transform: func(state ExecutionProgress) (ExecutionProgress, error) { calls++; return state, nil }}
+	// Act.
+	_, err := PrepareExecutionMigration(source, migration.Target, []ExecutionMigration{migration},
+		func(ExecutionPointer) error { calls++; return nil })
+	// Assert.
+	if !errors.Is(err, ErrMigrationInvalid) || !errors.Is(err, ErrExecutionCorrupt) || calls != 0 {
+		t.Fatalf("corrupt source reached callback: calls=%d err=%v", calls, err)
 	}
 }

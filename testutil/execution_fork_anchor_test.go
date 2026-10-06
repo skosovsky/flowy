@@ -28,7 +28,7 @@ func seedMemoryForkAnchor(t *testing.T) (*MemoryExecutionStore, flowy.ExecutionE
 		t.Fatal(err)
 	}
 	envelope, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
-		ExecutionID: "target", Descriptor: descriptor, Progress: flowy.MigrationState{ExecutionPointer: "node"},
+		ExecutionID: "target", Descriptor: descriptor, Progress: flowy.ExecutionProgress{ExecutionPointer: "node"},
 		Fork: &flowy.ForkLineage{
 			Source: flowy.HistoricalCheckpointReference{ExecutionID: "source", Revision: 1,
 				Digest: strings.Repeat("0", 64)},

@@ -57,7 +57,7 @@ func childReferenceRunner(t *testing.T, store flowy.ExecutionStore, label, node 
 
 func childReferenceMigration(source flowy.ExecutionEnvelope, binding string) flowy.ExecutionMigration {
 	return flowy.ExecutionMigration{ID: "move-children", Source: source.Descriptor, Target: durableDescriptor("new"),
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			if binding != "" {
 				state.ChildGroupReferences = map[string]string{"group": binding}
@@ -204,7 +204,7 @@ func invalidChildReferenceMigration(source flowy.ExecutionEnvelope, identity, ki
 		return childReferenceMigration(source, "foreign-group")
 	case "wrong key":
 		migration := childReferenceMigration(source, identity)
-		migration.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		migration.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.ChildGroupReferences = map[string]string{"wrong": identity}
 			return state, nil

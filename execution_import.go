@@ -38,7 +38,7 @@ func (s LegacyExecutionSource) Validate() error {
 // ImportedExecutionState contains target data, not a reconstructed journal.
 // Old external effects must not be reclassified as completed activities.
 type ImportedExecutionState struct {
-	Progress       MigrationState
+	Progress       ExecutionProgress
 	EffectsPayload []byte
 	RunMeta        RunMetadata
 }

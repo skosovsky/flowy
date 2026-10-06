@@ -89,7 +89,7 @@ func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 		ID:     "move-children",
 		Source: source.Descriptor,
 		Target: referenceDescriptor("new"),
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.ChildGroupReferences = map[string]string{"waits": identity}
 			return state, nil

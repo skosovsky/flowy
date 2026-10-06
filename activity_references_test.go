@@ -48,7 +48,7 @@ func TestActivityMigrationRequiresBindingAndRecoversOriginalIdentity(t *testing.
 					ID:     "move-cursor",
 					Source: source.Descriptor,
 					Target: durableDescriptor("new"),
-					Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+					Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 						state.ExecutionPointer = "new-node"
 						if test.binding {
 							state.JournalReferences = map[string]string{"operation": identity}
