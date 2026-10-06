@@ -72,6 +72,7 @@ type ChildRecord struct {
 	CancelRequested    bool                           `json:"cancel_requested"`
 	CancelConfirmed    bool                           `json:"cancel_confirmed"`
 	WaitResolution     *ChildWaitResolutionRecord     `json:"wait_resolution,omitempty"`
+	OutcomeResolution  *ChildOutcomeResolutionRecord  `json:"outcome_resolution,omitempty"`
 	CancelConfirmation *ChildCancelConfirmationRecord `json:"cancel_confirmation,omitempty"`
 }
 
@@ -153,6 +154,7 @@ func PlanChildGroup(parentID string, node ExecutionPointer, activation uint64, p
 			WaitID:             "",
 			WaitResolution:     nil,
 			CancelConfirmation: nil,
+			OutcomeResolution:  nil,
 			State:              ChildPlanned,
 			Result:             nil,
 			Error:              "",

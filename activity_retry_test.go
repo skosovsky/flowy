@@ -27,8 +27,11 @@ func retryActivityRunner(t *testing.T, store flowy.ExecutionStore, clock flowy.E
 	)
 	builder.AddNode("write", func(ctx context.Context, state durableTestState) (durableTestState, flowy.Directive, error) {
 		_, err := flowy.CallActivity(ctx, flowy.ActivityRequest{
-			Key: "write", Implementation: "stable", Input: []byte("input"), Retry: policy,
-			Classify: func(error) flowy.ActivityFailureClass { return classification },
+			Key:            "write",
+			Implementation: "stable",
+			Input:          []byte("input"),
+			Retry:          policy,
+			Classify:       func(error) flowy.ActivityFailureDecision { return flowy.ActivityFailureDecision{Class: classification} },
 			Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 				if calls.Add(1) == 1 {
 					return nil, errors.New("host-classified dispatch failure")
@@ -85,9 +88,13 @@ func TestActivityRetryDeadlineSurvivesRestart(t *testing.T) {
 	clock.set(now)
 	store := testutil.NewMemoryExecutionStore(nil)
 	policy := flowy.ActivityRetryPolicy{
-		Label:             "bounded",
-		MaxAttempts:       2,
-		Delay:             time.Hour,
+		Label:       "bounded",
+		MaxAttempts: 2,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
 		SafeRetryContract: "host-idempotent-write",
 	}
 	var calls atomic.Int32
@@ -133,7 +140,12 @@ func TestActivityRetryNeverReinterpretsUnknown(t *testing.T) {
 	store := testutil.NewMemoryExecutionStore(nil)
 	clock := &testExecutionClock{}
 	clock.set(time.Now())
-	policy := flowy.ActivityRetryPolicy{Label: "bounded", MaxAttempts: 2, SafeRetryContract: "host-idempotent-write"}
+	policy := flowy.ActivityRetryPolicy{
+		Schedule:          flowy.ActivityRetrySchedule{Kind: flowy.ActivityRetryFixed},
+		Label:             "bounded",
+		MaxAttempts:       2,
+		SafeRetryContract: "host-idempotent-write",
+	}
 	var calls atomic.Int32
 	runner := retryActivityRunner(t, store, clock, policy, flowy.ActivityAmbiguous, &calls)
 	// Act.
@@ -167,7 +179,12 @@ func TestActivityRetryAbandonedDispatchRemainsUnknown(t *testing.T) {
 	store := &faultExecutionStore{ExecutionStore: testutil.NewMemoryExecutionStore(nil), failAt: 4}
 	clock := &testExecutionClock{}
 	clock.set(time.Now())
-	policy := flowy.ActivityRetryPolicy{Label: "bounded", MaxAttempts: 2, SafeRetryContract: "host-idempotent-write"}
+	policy := flowy.ActivityRetryPolicy{
+		Schedule:          flowy.ActivityRetrySchedule{Kind: flowy.ActivityRetryFixed},
+		Label:             "bounded",
+		MaxAttempts:       2,
+		SafeRetryContract: "host-idempotent-write",
+	}
 	var calls atomic.Int32
 	runner := retryActivityRunner(t, store, clock, policy, flowy.ActivityRetryable, &calls)
 	// Act: lose the worker after dispatch and restart with the same policy.
@@ -213,7 +230,7 @@ func assertStickyActivityFailure(t *testing.T, classification flowy.ActivityFail
 	store := testutil.NewMemoryExecutionStore(nil)
 	clock := &testExecutionClock{}
 	clock.set(time.Now())
-	policy := flowy.ActivityRetryPolicy{
+	policy := flowy.ActivityRetryPolicy{Schedule: flowy.ActivityRetrySchedule{Kind: flowy.ActivityRetryFixed},
 		Label:             "bounded",
 		MaxAttempts:       attempts,
 		SafeRetryContract: "host-idempotent-write",

@@ -33,12 +33,18 @@ func postgresRetryRunner(t *testing.T, store flowy.ExecutionStore, at time.Time,
 			Implementation: "stable",
 			Input:          []byte("input"),
 			Retry: flowy.ActivityRetryPolicy{
-				Label:             "bounded",
-				MaxAttempts:       2,
-				Delay:             time.Hour,
+				Label:       "bounded",
+				MaxAttempts: 2,
+				Schedule: flowy.ActivityRetrySchedule{
+					Kind:         flowy.ActivityRetryFixed,
+					InitialDelay: time.Hour,
+					MaxDelay:     time.Hour,
+				},
 				SafeRetryContract: "host-idempotency",
 			},
-			Classify: func(error) flowy.ActivityFailureClass { return flowy.ActivityRetryable },
+			Classify: func(error) flowy.ActivityFailureDecision {
+				return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable}
+			},
 			Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 				if calls.Add(1) == 1 {
 					return nil, errors.New("dispatch failed")

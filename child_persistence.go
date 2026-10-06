@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"unicode/utf8"
 )
 
 type childGroupContextKey struct{}
@@ -96,10 +97,16 @@ func executionChildGroups(envelope ExecutionEnvelope) (map[string]ChildGroupReco
 	if len(envelope.ChildrenPayload) == 0 {
 		return groups, validateChildGroupReferences(envelope, groups)
 	}
+	if !utf8.Valid(envelope.ChildrenPayload) {
+		return nil, ErrExecutionCorrupt
+	}
 	if err := json.Unmarshal(envelope.ChildrenPayload, &groups); err != nil {
 		return nil, errors.Join(ErrExecutionCorrupt, err)
 	}
 	if groups == nil {
+		return nil, ErrExecutionCorrupt
+	}
+	if !validChildOutcomeDecisionIDs(groups) {
 		return nil, ErrExecutionCorrupt
 	}
 	for identity, group := range groups {
@@ -126,6 +133,9 @@ func validChildGroupProvenance(group ChildGroupRecord, revision uint64) bool {
 		return false
 	}
 	for _, child := range group.Children {
+		if !validChildOutcomeGroupProvenance(group, child, revision) {
+			return false
+		}
 		if child.CancelConfirmation != nil && (child.CancelConfirmation.SourceRevision >= revision ||
 			group.CancelRequest == nil || child.CancelConfirmation.RequestID != group.CancelRequest.ID ||
 			child.CancelConfirmation.SourceRevision <= group.CancelRequest.SourceRevision) {

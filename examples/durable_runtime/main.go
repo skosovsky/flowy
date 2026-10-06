@@ -62,6 +62,7 @@ func run(ctx context.Context) error {
 		{name: "activity", run: activityDemo},
 		{name: "migration/import", run: migrationDemo},
 		{name: "children", run: childrenDemo},
+		{name: "child recovery", run: childRecoveryDemo},
 		{name: "wait", run: waitDemo},
 		{name: "fake fork", run: forkDemo},
 	} {

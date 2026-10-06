@@ -78,7 +78,7 @@ func (c *executionCheckpointer[T, E]) commitRunFailure(
 func recoverableExecutionFailure(err error) bool {
 	for _, recoverable := range []error{
 		ErrActivityConflict, ErrActivityUnknown, ErrActivityBusy, ErrActivityRetryPending,
-		ErrActivityFailed, ErrActivityAttemptsExhausted, ErrLeaseLost, ErrConcurrencyConflict,
+		ErrActivityFailed, ErrActivityAttemptsExhausted, ErrActivityScheduleInvalid, ErrLeaseLost, ErrConcurrencyConflict,
 		ErrExecutionCapability, context.Canceled, context.DeadlineExceeded,
 		ErrWaitInvalid, ErrWaitConflict, ErrWaitStale, ErrWaitUnresolved, ErrWaitRegistration,
 	} {

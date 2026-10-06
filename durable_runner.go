@@ -17,10 +17,12 @@ const executionHeartbeatDivisor = 3
 // DurableOptions declares an explicit owner, lease duration and pure migrations.
 // Storage assigns the lease incarnation; owner text can safely be reused.
 type DurableOptions struct {
-	Owner       string
-	LeaseTTL    time.Duration
-	Migrations  []ExecutionMigration
-	Clock       ExecutionClock
+	Owner      string
+	LeaseTTL   time.Duration
+	Migrations []ExecutionMigration
+	Clock      ExecutionClock
+	// RetryRandom is a pure, prompt, concurrency-safe scheduling sampler; nil uses the standard source.
+	RetryRandom func() uint64
 	WaitProfile *WaitCapabilityProfile
 	ForkPolicy  *ForkExecutionPolicy
 }
@@ -276,6 +278,7 @@ func (r *DurableRunner[T, E]) runWithSink(
 		effectsCodec:             r.effectsCodec,
 		stepRevision:             envelope.Revision,
 		clock:                    r.options.Clock,
+		retryRandom:              r.options.RetryRandom,
 		persistenceFailed:        false,
 		childCancellationSignals: nil,
 		waitBackend:              r.waitBackend,

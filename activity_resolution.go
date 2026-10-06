@@ -28,20 +28,22 @@ type ActivityResolution struct {
 	Evidence          string
 	Outcome           []byte
 	SafeRetryContract string
+	NotBefore         time.Time
 }
 
 // ActivityResolutionRecord retains the decision without altering old attempts.
 type ActivityResolutionRecord struct {
-	DecisionID        string                   `json:"decision_id"`
-	Attempt           int                      `json:"attempt"`
-	Action            ActivityResolutionAction `json:"action"`
-	PriorState        ActivityState            `json:"prior_state"`
-	SourceRevision    uint64                   `json:"source_revision"`
-	Incarnation       uint64                   `json:"incarnation"`
-	Reason            string                   `json:"reason"`
-	Evidence          string                   `json:"evidence"`
-	SafeRetryContract string                   `json:"safe_retry_contract,omitempty"`
-	At                time.Time                `json:"at"`
+	DecisionID        string                         `json:"decision_id"`
+	Attempt           int                            `json:"attempt"`
+	Action            ActivityResolutionAction       `json:"action"`
+	PriorState        ActivityState                  `json:"prior_state"`
+	SourceRevision    uint64                         `json:"source_revision"`
+	Incarnation       uint64                         `json:"incarnation"`
+	Reason            string                         `json:"reason"`
+	Evidence          string                         `json:"evidence"`
+	SafeRetryContract string                         `json:"safe_retry_contract,omitempty"`
+	RetrySchedule     *ActivityRetryScheduleDecision `json:"retry_schedule,omitempty"`
+	At                time.Time                      `json:"at"`
 }
 
 // ResolveActivity commits a manual decision without node, codec, reconciliation
@@ -100,7 +102,8 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 		record.Attempts[len(record.Attempts)-1].State = ActivityUnknown
 		record.Attempts[len(record.Attempts)-1].Classification = ActivityAmbiguous
 	}
-	if resolutionErr := applyActivityResolution(&record, resolution, now); resolutionErr != nil {
+	chosen, resolutionErr := applyActivityResolution(&record, resolution, now, r.options.RetryRandom)
+	if resolutionErr != nil {
 		return ResumeToken{}, resolutionErr
 	}
 	record.Resolutions = append(record.Resolutions, ActivityResolutionRecord{
@@ -114,6 +117,7 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 		Evidence:          resolution.Evidence,
 		SafeRetryContract: resolution.SafeRetryContract,
 		At:                now,
+		RetrySchedule:     chosen,
 	})
 	journal[record.Identity] = record
 	target := cloneExecutionEnvelope(source)
@@ -157,17 +161,23 @@ func resolutionActivityRecord(
 	return journal, record, nil
 }
 
-func applyActivityResolution(record *ActivityRecord, resolution ActivityResolution, now time.Time) error {
+func applyActivityResolution(
+	record *ActivityRecord,
+	resolution ActivityResolution,
+	now time.Time,
+	random func() uint64,
+) (*ActivityRetryScheduleDecision, error) {
+	var chosen *ActivityRetryScheduleDecision
 	record.Classification, record.NextAttemptAt = "", time.Time{}
 	switch resolution.Action {
 	case ActivityResolveComplete:
-		if resolution.SafeRetryContract != "" {
-			return ErrActivityConflict
+		if resolution.SafeRetryContract != "" || !resolution.NotBefore.IsZero() {
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Outcome = ActivityCompleted, ActivityManual, bytes.Clone(resolution.Outcome)
 	case ActivityResolveFail:
-		if len(resolution.Outcome) != 0 || resolution.SafeRetryContract != "" {
-			return ErrActivityConflict
+		if len(resolution.Outcome) != 0 || resolution.SafeRetryContract != "" || !resolution.NotBefore.IsZero() {
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Classification = ActivityFailed, ActivityManual, ActivityNonRetryable
 	case ActivityResolveRetry:
@@ -175,12 +185,17 @@ func applyActivityResolution(record *ActivityRecord, resolution ActivityResoluti
 			record.Retry.SafeRetryContract == "" ||
 			resolution.SafeRetryContract != record.Retry.SafeRetryContract ||
 			len(record.Attempts) >= record.Retry.MaxAttempts {
-			return ErrActivityConflict
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Classification = ActivityPrepared, ActivityManual, ActivityRetryable
-		record.NextAttemptAt = now.Add(record.Retry.Delay)
+		schedule := chooseActivityRetrySchedule(record.Retry, len(record.Attempts), now, resolution.NotBefore, random)
+		if schedule.Rejection != "" {
+			return nil, ErrActivityScheduleInvalid
+		}
+		chosen = &schedule
+		record.NextAttemptAt = schedule.Deadline
 	default:
-		return ErrActivityConflict
+		return nil, ErrActivityConflict
 	}
-	return nil
+	return chosen, nil
 }

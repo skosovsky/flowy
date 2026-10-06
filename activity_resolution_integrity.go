@@ -14,6 +14,10 @@ func validateActivityDecisions(record ActivityRecord) error {
 			!validActivityDecisionAction(decision, record.Retry) {
 			return ErrExecutionCorrupt
 		}
+		if decision.Action == ActivityResolveRetry && decision.Attempt < len(record.Attempts) &&
+			record.Attempts[decision.Attempt].StartedAt.Before(decision.RetrySchedule.Deadline) {
+			return ErrExecutionCorrupt
+		}
 		seen[decision.DecisionID] = true
 		if decision.Action != ActivityResolveRetry && decision.Attempt != len(record.Attempts) {
 			return ErrExecutionCorrupt
@@ -47,10 +51,10 @@ func validManualActivityOrigin(record ActivityRecord) bool {
 func validActivityDecisionAction(decision ActivityResolutionRecord, policy ActivityRetryPolicy) bool {
 	switch decision.Action {
 	case ActivityResolveComplete, ActivityResolveFail:
-		return decision.SafeRetryContract == ""
+		return decision.SafeRetryContract == "" && decision.RetrySchedule == nil
 	case ActivityResolveRetry:
 		return decision.SafeRetryContract != "" && decision.SafeRetryContract == policy.SafeRetryContract &&
-			decision.Attempt < policy.MaxAttempts
+			decision.Attempt < policy.MaxAttempts && validActivityRetryScheduleDecision(policy, decision.RetrySchedule) && decision.RetrySchedule.Rejection == "" && decision.RetrySchedule.Attempt == decision.Attempt && decision.RetrySchedule.PreparedAt.Equal(decision.At)
 	}
 	return false
 }

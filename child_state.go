@@ -1,7 +1,8 @@
 package flowy
 
 func validateChildRecordState(child ChildRecord) error {
-	if !validRuntimeText(child.WaitID) || !validChildWaitResolution(child) || !validChildCancelConfirmation(child) {
+	if !validRuntimeText(child.WaitID) || !validChildWaitResolution(child) || !validChildCancelConfirmation(child) ||
+		!validChildOutcomeResolution(child) {
 		return ErrExecutionCorrupt
 	}
 	return validateChildStateMachine(child)

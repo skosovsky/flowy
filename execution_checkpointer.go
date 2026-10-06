@@ -15,6 +15,7 @@ type executionCheckpointer[T, E any] struct {
 	effectsCodec             StateSerializer[[]E]
 	stepRevision             uint64
 	clock                    ExecutionClock
+	retryRandom              func() uint64
 	persistenceFailed        bool
 	childCancellationSignals map[string]chan struct{}
 	waitBackend              DurableWaitBackend

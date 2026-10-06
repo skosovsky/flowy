@@ -49,13 +49,14 @@ const (
 
 // ActivityAttempt retains abandoned dispatch attempts instead of discarding them.
 type ActivityAttempt struct {
-	Number         int                  `json:"number"`
-	Incarnation    uint64               `json:"incarnation"`
-	State          ActivityState        `json:"state"`
-	Error          string               `json:"error,omitempty"`
-	Classification ActivityFailureClass `json:"classification,omitempty"`
-	StartedAt      time.Time            `json:"started_at"`
-	FinishedAt     time.Time            `json:"finished_at,omitzero"`
+	Number         int                            `json:"number"`
+	Incarnation    uint64                         `json:"incarnation"`
+	State          ActivityState                  `json:"state"`
+	Error          string                         `json:"error,omitempty"`
+	Classification ActivityFailureClass           `json:"classification,omitempty"`
+	StartedAt      time.Time                      `json:"started_at"`
+	RetrySchedule  *ActivityRetryScheduleDecision `json:"retry_schedule,omitempty"`
+	FinishedAt     time.Time                      `json:"finished_at,omitzero"`
 }
 
 // ActivityRecord is stored inside the same aggregate as step state and cursor.
@@ -81,6 +82,7 @@ type ActivityRecord struct {
 // an unknown outcome using downstream evidence; it must not blindly dispatch it.
 // Retries require an explicit persisted safe-retry policy. The host owns
 // authorization and must disable any competing adapter retry loop.
+// Classify may supply a generic NotBefore hint under the persisted HintLabel.
 type ActivityRequest struct {
 	Key            string
 	Implementation string
@@ -88,7 +90,7 @@ type ActivityRequest struct {
 	Dispatch       func(context.Context, ActivityInvocation) ([]byte, error)
 	Reconcile      func(context.Context, ActivityRecord) ([]byte, error)
 	Retry          ActivityRetryPolicy
-	Classify       func(error) ActivityFailureClass
+	Classify       func(error) ActivityFailureDecision
 }
 
 // ActivityInvocation supplies the persisted identity to the host dispatcher.
@@ -221,6 +223,7 @@ func (c *executionCheckpointer[T, E]) callActivity(
 			Classification: "",
 			StartedAt:      c.clock.Now().UTC(),
 			FinishedAt:     time.Time{},
+			RetrySchedule:  nil,
 		},
 	)
 	if err := c.persistActivity(ctx, journal, record); err != nil {
@@ -233,7 +236,7 @@ func (c *executionCheckpointer[T, E]) callActivity(
 		Input:    bytes.Clone(request.Input),
 		Attempt:  len(record.Attempts),
 	})
-	classification := ActivityFailureClass("")
+	var classification ActivityFailureDecision
 	if dispatchErr != nil {
 		classification = classifyActivityFailure(request, dispatchErr)
 	}
@@ -274,7 +277,8 @@ func (c *executionCheckpointer[T, E]) recoverActivityLocked(
 	if err != nil {
 		return ActivityOutcome{}, errors.Join(ErrActivityUnknown, err)
 	}
-	return c.finishActivity(ctx, record.Identity, payload, nil, ActivityReconciled, "")
+	var decision ActivityFailureDecision
+	return c.finishActivity(ctx, record.Identity, payload, nil, ActivityReconciled, decision)
 }
 
 func (c *executionCheckpointer[T, E]) readJournal() (map[string]ActivityRecord, error) {
@@ -286,6 +290,9 @@ func (c *executionCheckpointer[T, E]) persistActivity(
 	journal map[string]ActivityRecord,
 	record ActivityRecord,
 ) error {
+	if err := validateActivityRecord(record); err != nil {
+		return err
+	}
 	journal[record.Identity] = record
 	payload, err := json.Marshal(journal)
 	if err != nil {
@@ -320,7 +327,7 @@ func (c *executionCheckpointer[T, E]) finishActivity(
 	payload []byte,
 	dispatchErr error,
 	origin ActivityOrigin,
-	classification ActivityFailureClass,
+	classification ActivityFailureDecision,
 ) (ActivityOutcome, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

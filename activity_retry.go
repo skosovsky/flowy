@@ -20,11 +20,12 @@ const (
 // dispatches, including the initial dispatch. SafeRetryContract is a host label
 // attesting downstream idempotency or replay safety, not a runtime guarantee.
 // An all-zero policy never retries; adapter-internal retries must be disabled.
+// Active policies require an explicit Schedule; legacy Delay-only data is rejected.
 type ActivityRetryPolicy struct {
-	Label             string        `json:"label"`
-	MaxAttempts       int           `json:"max_attempts"`
-	Delay             time.Duration `json:"delay"`
-	SafeRetryContract string        `json:"safe_retry_contract"`
+	Label             string                `json:"label"`
+	MaxAttempts       int                   `json:"max_attempts"`
+	Schedule          ActivityRetrySchedule `json:"schedule"`
+	SafeRetryContract string                `json:"safe_retry_contract"`
 }
 
 var (
@@ -52,6 +53,10 @@ func activityRecordError(record ActivityRecord, revision uint64) error {
 	case ActivityPrepared:
 		return &ActivityRetryPendingError{Identity: record.Identity, Deadline: record.NextAttemptAt, Revision: revision}
 	case ActivityFailed:
+		if len(record.Attempts) > 0 && record.Attempts[len(record.Attempts)-1].RetrySchedule != nil &&
+			record.Attempts[len(record.Attempts)-1].RetrySchedule.Rejection != "" {
+			return ErrActivityScheduleInvalid
+		}
 		if record.Classification == ActivityRetryable {
 			return ErrActivityAttemptsExhausted
 		}
@@ -81,16 +86,16 @@ func preparedActivityError(record ActivityRecord, revision uint64, now time.Time
 	return nil
 }
 
-func classifyActivityFailure(request ActivityRequest, dispatchErr error) ActivityFailureClass {
+func classifyActivityFailure(request ActivityRequest, dispatchErr error) ActivityFailureDecision {
 	if request.Classify == nil {
-		return ActivityAmbiguous
+		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}
 	}
-	classification := request.Classify(dispatchErr)
-	switch classification {
+	decision := request.Classify(dispatchErr)
+	switch decision.Class {
 	case ActivityRetryable, ActivityNonRetryable, ActivityAmbiguous:
-		return classification
+		return decision
 	default:
-		return ActivityAmbiguous
+		return ActivityFailureDecision{Class: ActivityAmbiguous, NotBefore: time.Time{}}
 	}
 }
 
@@ -100,9 +105,11 @@ func validateActivityRetry(policy ActivityRetryPolicy) error {
 		return nil
 	}
 	if policy.Label == "" || !validRuntimeText(policy.Label, policy.SafeRetryContract) || policy.MaxAttempts < 1 ||
-		policy.Delay < 0 ||
 		(policy.MaxAttempts > 1 && policy.SafeRetryContract == "") {
 		return ErrExecutionCapability
+	}
+	if err := validateActivitySchedule(policy.Schedule); err != nil {
+		return errors.Join(ErrExecutionCapability, err)
 	}
 	return nil
 }
@@ -110,18 +117,28 @@ func validateActivityRetry(policy ActivityRetryPolicy) error {
 func (c *executionCheckpointer[T, E]) recordActivityFailure(
 	record *ActivityRecord,
 	dispatchErr error,
-	classification ActivityFailureClass,
+	decision ActivityFailureDecision,
 ) {
 	last := &record.Attempts[len(record.Attempts)-1]
-	record.Classification, last.Classification = classification, classification
+	record.Classification, last.Classification = decision.Class, decision.Class
 	last.Error, last.FinishedAt = dispatchErr.Error(), c.clock.Now().UTC()
 	record.NextAttemptAt = time.Time{}
-	switch classification {
+	switch decision.Class {
 	case ActivityRetryable:
 		last.State, record.State = ActivityFailed, ActivityFailed
 		if len(record.Attempts) < record.Retry.MaxAttempts {
-			record.State = ActivityPrepared
-			record.NextAttemptAt = last.FinishedAt.Add(record.Retry.Delay)
+			chosen := chooseActivityRetrySchedule(
+				record.Retry,
+				len(record.Attempts),
+				last.FinishedAt,
+				decision.NotBefore,
+				c.retryRandom,
+			)
+			last.RetrySchedule = &chosen
+			if chosen.Rejection == "" {
+				record.State = ActivityPrepared
+				record.NextAttemptAt = chosen.Deadline
+			}
 		}
 	case ActivityNonRetryable:
 		last.State, record.State = ActivityFailed, ActivityFailed

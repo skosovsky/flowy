@@ -180,9 +180,13 @@ func TestManualActivityRetryPreservesDeadlineAndAttempts(t *testing.T) {
 	clock.set(now)
 	store := testutil.NewMemoryExecutionStore(nil)
 	policy := flowy.ActivityRetryPolicy{
-		Label:             "safe-bounded",
-		MaxAttempts:       2,
-		Delay:             time.Hour,
+		Label:       "safe-bounded",
+		MaxAttempts: 2,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
 		SafeRetryContract: "host-idempotent",
 	}
 	var calls atomic.Int32
@@ -316,7 +320,12 @@ func TestManualActivityRetryRejectsWrongContractAndExhaustion(t *testing.T) {
 			// Arrange: every unknown attempt remains counted against the original limit.
 			ctx := context.Background()
 			store := testutil.NewMemoryExecutionStore(nil)
-			policy := flowy.ActivityRetryPolicy{Label: "safe", MaxAttempts: 2, SafeRetryContract: "host-idempotent"}
+			policy := flowy.ActivityRetryPolicy{
+				Schedule:          flowy.ActivityRetrySchedule{Kind: flowy.ActivityRetryFixed},
+				Label:             "safe",
+				MaxAttempts:       2,
+				SafeRetryContract: "host-idempotent",
+			}
 			if scenario == "exhausted" {
 				policy.MaxAttempts = 1
 			}

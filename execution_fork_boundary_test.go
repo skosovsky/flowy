@@ -100,9 +100,13 @@ func seedUnresolvedForkActivity(t *testing.T, store *testutil.MemoryExecutionSto
 	}
 	var calls atomic.Int32
 	policy := flowy.ActivityRetryPolicy{
-		Label:             "bounded",
-		MaxAttempts:       2,
-		Delay:             time.Hour,
+		Label:       "bounded",
+		MaxAttempts: 2,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
 		SafeRetryContract: "host-idempotent-write",
 	}
 	_, err := retryActivityRunner(t, backend, wallFixtureClock{}, policy, classification, &calls).
