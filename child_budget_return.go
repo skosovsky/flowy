@@ -40,7 +40,7 @@ func ReturnChildBudget(ctx context.Context, group ChildGroupRecord, claim ChildB
 	if claim.ChildID == "" || claim.ChildRevision == 0 || claim.DecisionID == "" || claim.Reason == "" ||
 		!validRuntimeText(claim.ChildID, claim.DecisionID, claim.Reason, claim.Evidence) ||
 		claim.Evidence == "" || !validChildGroupText(group) {
-		return ChildGroupRecord{}, ErrChildJoinInvalid
+		return ChildGroupRecord{}, ErrChildInvalid
 	}
 	claim.Used = maps.Clone(claim.Used)
 	return backend.returnChildBudget(ctx, group, claim)
@@ -71,7 +71,7 @@ func (c *executionCheckpointer[T, E]) returnChildBudget(ctx context.Context, exp
 	if !found || child.Revision != claim.ChildRevision {
 		return ChildGroupRecord{}, ErrChildRevision
 	}
-	returned, err := PlanChildBudgetReturn(child, claim.Used)
+	returned, err := ComputeChildBudgetReturn(child, claim.Used)
 	if err != nil {
 		return ChildGroupRecord{}, err
 	}
@@ -115,7 +115,7 @@ func validChildBudgetReturns(group ChildGroupRecord) bool {
 			record.At.IsZero() || !validRuntimeText(record.DecisionID, record.Reason, record.Evidence) {
 			return false
 		}
-		returned, err := PlanChildBudgetReturn(child, record.Used)
+		returned, err := ComputeChildBudgetReturn(child, record.Used)
 		if err != nil || !maps.Equal(returned, record.Returned) {
 			return false
 		}

@@ -20,7 +20,7 @@ func JoinChildren(ctx context.Context, group ChildGroupRecord, merge ChildMerge)
 		return nil, ErrExecutionCapability
 	}
 	if merge == nil || !validChildGroupText(group) {
-		return nil, ErrChildJoinInvalid
+		return nil, ErrChildInvalid
 	}
 	return backend.joinChildren(ctx, group, merge)
 }

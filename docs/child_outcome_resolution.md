@@ -22,7 +22,7 @@ A cancellation request does not establish absence of a result and does not bar e
 | exact current parent token, same addressed decision and identical payload/reason/evidence | Return current token, no write or revision increment |
 | same decision ID with changed content or reused for another child in this parent | `ErrChildRevision` |
 | changed child revision or foreign group/child/contract | `ErrChildRevision` |
-| malformed input | `ErrChildJoinInvalid` |
+| malformed input | `ErrChildInvalid` |
 | malformed persisted provenance/collections | `ErrExecutionCorrupt` |
 
 Decision IDs are unique within the child outcome resolution namespace of one parent, including retained groups. Concurrent completion, confirmation, wait resolution, migration and join have one committed winner; late callbacks cannot overwrite a resolved revision. A failed commit proves no success to the caller; a lost acknowledgement requires inspecting authoritative storage. Lease expiry is ownership evidence, never evidence that remote work did not occur. Unknown children are never relaunched by this API.

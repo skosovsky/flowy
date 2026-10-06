@@ -12,7 +12,7 @@ import (
 
 var (
 	ErrChildDuplicate     = errors.New("flowy: duplicate child identity")
-	ErrChildJoinInvalid   = errors.New("flowy: invalid child group")
+	ErrChildInvalid       = errors.New("flowy: invalid child contract")
 	ErrChildRevision      = errors.New("flowy: stale child revision")
 	ErrChildrenUnresolved = errors.New("flowy: children unresolved")
 	ErrChildMergeConflict = errors.New("flowy: child merge conflict")
@@ -106,7 +106,7 @@ func PlanChildGroup(parentID string, node ExecutionPointer, activation uint64, p
 		) ||
 		plan.BudgetLabel == "" || plan.CancelLabel == "" || plan.MaxConcurrency <= 0 || len(plan.Children) == 0 ||
 		(plan.FailurePolicy != ChildFailFast && plan.FailurePolicy != ChildCollectErrors) {
-		return ChildGroupRecord{}, ErrChildJoinInvalid
+		return ChildGroupRecord{}, ErrChildInvalid
 	}
 	remaining := maps.Clone(available)
 	if !validChildCapacity(available) {
@@ -116,7 +116,7 @@ func PlanChildGroup(parentID string, node ExecutionPointer, activation uint64, p
 	plan.Children = slices.Clone(plan.Children)
 	for index, spec := range plan.Children {
 		if spec.ID == "" || !validRuntimeText(spec.ID) {
-			return ChildGroupRecord{}, ErrChildJoinInvalid
+			return ChildGroupRecord{}, ErrChildInvalid
 		}
 		if seen[spec.ID] {
 			return ChildGroupRecord{}, ErrChildDuplicate

@@ -46,8 +46,8 @@ func TestInvalidRuntimeTextRejectsBeforeStore(t *testing.T) {
 		ChildRevision: 3, RequestID: "request", DecisionID: invalid, Reason: "stop", Evidence: "receipt"})
 	// Assert.
 	if !errors.Is(deliveryErr, flowy.ErrWaitInvalid) || !errors.Is(cancellationErr, flowy.ErrWaitInvalid) ||
-		!errors.Is(activityErr, flowy.ErrActivityConflict) || !errors.Is(childErr, flowy.ErrChildJoinInvalid) ||
-		!errors.Is(confirmationErr, flowy.ErrChildJoinInvalid) || store.loads.Load() != 0 || nodes.Load() != 0 {
+		!errors.Is(activityErr, flowy.ErrActivityConflict) || !errors.Is(childErr, flowy.ErrChildInvalid) ||
+		!errors.Is(confirmationErr, flowy.ErrChildInvalid) || store.loads.Load() != 0 || nodes.Load() != 0 {
 		t.Fatalf(
 			"invalid identity reached runtime: delivery=%v cancel=%v activity=%v child=%v confirmation=%v loads=%d nodes=%d",
 			deliveryErr,
@@ -150,7 +150,7 @@ func TestInvalidDecisionReasonRejectsBeforeStore(t *testing.T) {
 			)
 			// Assert.
 			if !errors.Is(cancelErr, flowy.ErrWaitInvalid) || !errors.Is(activityErr, flowy.ErrActivityConflict) ||
-				!errors.Is(confirmErr, flowy.ErrChildJoinInvalid) ||
+				!errors.Is(confirmErr, flowy.ErrChildInvalid) ||
 				store.loads.Load() != 0 ||
 				nodes.Load() != 0 {
 				t.Fatalf(

@@ -36,13 +36,6 @@ func childPlanBytes(plan ChildGroupPlan) []byte {
 	return encoded
 }
 
-func detachedChildGroup(group ChildGroupRecord) ChildGroupRecord {
-	encoded, _ := json.Marshal(group)
-	var result ChildGroupRecord
-	_ = json.Unmarshal(encoded, &result)
-	return result
-}
-
 func (c *executionCheckpointer[T, E]) prepareChildrenLocked(
 	ctx context.Context,
 	plan ChildGroupPlan,
@@ -58,7 +51,7 @@ func (c *executionCheckpointer[T, E]) prepareChildrenLocked(
 			return ChildGroupRecord{}, ErrBudgetExceeded
 		}
 		if !bytes.Equal(childPlanBytes(prior.Plan), childPlanBytes(plan)) {
-			return ChildGroupRecord{}, ErrChildJoinInvalid
+			return ChildGroupRecord{}, ErrChildInvalid
 		}
 		return detachedChildGroup(prior), nil
 	}

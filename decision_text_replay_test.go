@@ -102,7 +102,7 @@ func TestChildCancelUnicodeReasonReplaysAfterReload(t *testing.T) {
 				)
 				after, afterErr := store.LoadExecution(ctx, "cancel-text")
 				if !utf8.ValidString(reason) {
-					if !errors.Is(cancelErr, flowy.ErrChildJoinInvalid) || afterErr != nil ||
+					if !errors.Is(cancelErr, flowy.ErrChildInvalid) || afterErr != nil ||
 						before.Digest != after.Digest ||
 						notices.Load() != 0 {
 						return state, flowy.End(), errors.New("invalid cancellation mutated/notified")
@@ -167,7 +167,7 @@ func TestChildBudgetReturnUnicodeAdmissionAndExactReplay(t *testing.T) {
 				after, loadErr := store.LoadExecution(ctx, "budget-text")
 				// Assert: invalid text and acknowledged replay have no publication.
 				if !utf8.ValidString(reason) {
-					if !errors.Is(returnErr, flowy.ErrChildJoinInvalid) || loadErr != nil ||
+					if !errors.Is(returnErr, flowy.ErrChildInvalid) || loadErr != nil ||
 						before.Digest != after.Digest {
 						return state, flowy.End(), errors.New("invalid budget claim mutated ledger")
 					}

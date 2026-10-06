@@ -50,7 +50,7 @@ type ChildOutcomeResolutionRecord struct {
 func (r *DurableRunner[T, E]) ResolveChildOutcome(ctx context.Context, token ResumeToken,
 	resolution ChildOutcomeResolution) (result ResumeToken, retErr error) {
 	if !validChildOutcomeRequest(resolution) {
-		return ResumeToken{}, ErrChildJoinInvalid
+		return ResumeToken{}, ErrChildInvalid
 	}
 	resolution.Result.Payload = bytes.Clone(resolution.Result.Payload)
 	session, err := r.acquireSession(ctx, token.ThreadID)

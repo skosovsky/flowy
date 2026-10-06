@@ -721,3 +721,90 @@ was corrected; no semantic changes followed fullroot PASS. Whitespace check PASS
 Prior failed expectation/lint logs remain recorded, not relabelled PASS.
 Local commit follows; SHA recorded at next task contract. Overall Task28 and
 native/all-six-module gates remain incomplete, assigned to remaining tasks.
+
+## Task 10 contract (before implementation)
+
+Task09 accepted and committed as `7a0a8d3` (`fix: activity contracts`). Its signing
+wait has completed; clean worktree verified before Task10 implementation.
+Scope: D30, D31, D32, D33, D34, D35, D37, D38 (eight criteria; D36 covered Task06).
+D30: rename pure PlanChildBudgetReturn -> ComputeChildBudgetReturn, no legacy alias;
+computation never persists/releases named capacity or monetary reservations.
+D31: retain bounded admission per group; cancellation cannot preempt arbitrary
+callbacks and group bounds do not imply host-wide resource bounds. Host owns
+worker pool/quota/kill and downstream cancellation evidence.
+D32: replace ignored-error JSON child-group clone with explicit detached copies
+of all slices/maps/bytes and pointed provenance. Preserve nil/empty semantics,
+invalid caller data and zero timestamps: copying is not wire admission.
+D33: document activation capacity, used claims and returned units separately from
+money. Dispatcher masks parent activity/group/lease capabilities but retains
+parent run metadata; UseBudget requires serialized host access (no fabricated new
+race claim). Host child execution owns its own metadata/counters where concurrent.
+D34: retain conservative unknown on every dispatcher error, including typed decode
+before effects, panics and canceled admission; never automatic redispatch from a
+claimed definitely-not-sent error without a separately specified contract.
+D35: document post-commit typed merged decode failure and inspect/PrepareChildren
+exact-group cached JoinChildren read/redecode recipe; unhandled decode failure
+may be terminal and Resume must not be promised to reenter it. Fault fixture proves no
+second merge/dispatch after successful join publication and failed decode.
+D37: retain centralized flat wire DTO/FSM validation and explicit transition matrix;
+completed empty bytes are a valid host encoding, while failed partial result bytes
+remain evidence, not a successful typed result. No added presence-bit wire change.
+D38: retain exact original group references/bindings on migration and fail closed
+when absent. Late child outcome writes use WithoutCancel plus bounded I/O context
+and existing live fencing; no detached retry or ownership upgrade.
+Acceptance: deep-copy mutation/nil/invalid-domain tests, postcommit decode fault/
+cached-read replay, late-write bounded-context/fencing coverage, current contracts,
+fresh race/lint and two final independent reviews (100%/0 open).
+
+## Task 10 review preparation (not yet accepted)
+
+Implemented ComputeChildBudgetReturn clean rename with all Go callers updated;
+replaced ignored-error JSON child group roundtrip by complete explicit deep copy;
+late child finish now uses detached five-second I/O context and unchanged fencing.
+Added mutation coverage for every owned map/slice/byte/provenance pointer, nil/empty
+shape and outside-JSON-domain memory values. Strengthened existing noncooperative
+late-outcome fixture to inspect bounded detached context at the failed stale write.
+Typed postcommit decode fixtures prove inspect/redecode of committed bytes,
+immutable terminal replay and handled-in-activation cached join with a fresh exact
+group assertion, one dispatch and one merge. Current child/runtime contracts cover
+parent metadata/counter ownership, conservative unknown, host-wide resource bounds,
+central FSM transition matrix, empty/partial payloads and migration binding rules.
+
+Preserved non-PASS evidence: `...-targeted.log`, `...-targeted-final.log`, and initial
+root race logs exposed incorrect test expectations about reentering terminal failure
+and inferring live codec error identity on persisted replay. Correct behavior is
+terminal replay with PersistedExecutionError/ErrExecutionFailed; no runtime terminal
+policy was changed to satisfy the fixture. Fixed the test and recovery recipe.
+Initial lint PASS; later benchmark-only lint caught cognitive complexity, split
+comparison setup from measurement helper (no new suppression). Final gates pending.
+Copy benchmark exit0 in `/tmp/flowy-task28-task10-copy-bench.log`, detached3,257ns/
+23alloc versus JSON29,103ns/50alloc for one valid nested fixture. This proves local
+copy benefit only; no native-storage or stable performance threshold inferred.
+Fresh final targeted race/lint/fullroot and two independent reviews required;
+Task10 is not accepted or committed yet.
+
+## Task 10 D30 contract amendment (before sentinel change)
+
+Completeness reviewer identified the omitted first half of D30: ErrChildJoinInvalid
+is used beyond join. Adopt clean-break ErrChildInvalid for invalid child/group/
+composition contract, message `flowy: invalid child contract`, no legacy alias.
+Update all Go consumers and current contracts. Stored historical terminal messages
+remain historical text; replay still exposes ErrExecutionFailed, not a reconstructed
+sentinel. Native wire formats and successful behavior do not change. Both final
+reviews and fresh race/lint must cover this rename; preliminary verdicts are not
+Task10 acceptance. Benchmark wording is JSON-representable fixture, not an admitted
+execution DTO: copy tests/bench deliberately separate copying from validation.
+
+## Task 10 accepted
+
+Final renamed state accepted by two independent reviewers: completeness100%
+(D30–D35/D37/D38, 8/8, 0gaps), correctness0 open findings. Reports:
+`reviews/task10-completeness.md`, `reviews/task10-correctness.md`.
+Independent final races exit0: completeness root2.998s; correctness root2.866s.
+Parent final root19196 exit0, root16.461s/allrootpackagesPASS; final lint89256
+exit0,0issues. Logs `...-root-race-renamed.log`, `...-lint-renamed.log`.
+Prior preliminary root17.504s/targeted1.690s/lint0 did not substitute finalrename
+acceptance. Final whitespace check PASS and old Go identifiers have no matches.
+Source stable after rename/format; D30 reviewer gap was corrected then both reviews
+repeated. Overall/native/all-six-module gates remain assigned to remaining tasks.
+Local commit follows; SHA will be recorded at next contract update.

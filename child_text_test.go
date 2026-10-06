@@ -61,8 +61,8 @@ func TestChildAssertionsInvalidTextRejectBeforeBackend(t *testing.T) {
 			_, budgetErr := ReturnChildBudget(ctx, group, ChildBudgetReturn{ChildID: "a", ChildRevision: 3,
 				DecisionID: "return", Reason: "settled", Evidence: "receipt"})
 			// Assert.
-			if !errors.Is(joinErr, ErrChildJoinInvalid) || !errors.Is(cancelErr, ErrChildJoinInvalid) ||
-				!errors.Is(budgetErr, ErrChildJoinInvalid) || probe.calls != 0 {
+			if !errors.Is(joinErr, ErrChildInvalid) || !errors.Is(cancelErr, ErrChildInvalid) ||
+				!errors.Is(budgetErr, ErrChildInvalid) || probe.calls != 0 {
 				t.Fatalf(
 					"invalid assertion reached backend: join=%v cancel=%v budget=%v calls=%d",
 					joinErr,
@@ -107,7 +107,7 @@ func TestChildDecisionReasonAdmissionBeforeBackend(t *testing.T) {
 			)
 			// Assert.
 			if !validRuntimeText(reason) {
-				if !errors.Is(cancelErr, ErrChildJoinInvalid) || !errors.Is(budgetErr, ErrChildJoinInvalid) ||
+				if !errors.Is(cancelErr, ErrChildInvalid) || !errors.Is(budgetErr, ErrChildInvalid) ||
 					probe.calls != 0 {
 					t.Fatalf("cancel=%v budget=%v calls=%d", cancelErr, budgetErr, probe.calls)
 				}

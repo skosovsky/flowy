@@ -66,8 +66,8 @@ func TestChildOutcomeResolutionRejectsBeforeHostCallbacks(t *testing.T) {
 		change func(*flowy.ChildOutcomeResolution)
 		want   error
 	}{
-		{"reason UTF8", func(d *flowy.ChildOutcomeResolution) { d.Reason = "bad\xff" }, flowy.ErrChildJoinInvalid},
-		{"evidence UTF8", func(d *flowy.ChildOutcomeResolution) { d.Evidence = "bad\xff" }, flowy.ErrChildJoinInvalid},
+		{"reason UTF8", func(d *flowy.ChildOutcomeResolution) { d.Reason = "bad\xff" }, flowy.ErrChildInvalid},
+		{"evidence UTF8", func(d *flowy.ChildOutcomeResolution) { d.Evidence = "bad\xff" }, flowy.ErrChildInvalid},
 		{"wrong label", func(d *flowy.ChildOutcomeResolution) { d.GroupLabel = "other" }, flowy.ErrChildRevision},
 		{"wrong child", func(d *flowy.ChildOutcomeResolution) { d.ExecutionID = "other" }, flowy.ErrChildRevision},
 		{"wrong revision", func(d *flowy.ChildOutcomeResolution) { d.ChildRevision++ }, flowy.ErrChildRevision},
@@ -75,17 +75,17 @@ func TestChildOutcomeResolutionRejectsBeforeHostCallbacks(t *testing.T) {
 		{
 			"waiting",
 			func(d *flowy.ChildOutcomeResolution) { d.Result.State = flowy.ChildWaiting; d.Result.WaitID = "wait" },
-			flowy.ErrChildJoinInvalid,
+			flowy.ErrChildInvalid,
 		},
 		{
 			"completed error",
 			func(d *flowy.ChildOutcomeResolution) { d.Result.Error = "error" },
-			flowy.ErrChildJoinInvalid,
+			flowy.ErrChildInvalid,
 		},
 		{
 			"empty failed error",
 			func(d *flowy.ChildOutcomeResolution) { d.Result.State = flowy.ChildFailed },
-			flowy.ErrChildJoinInvalid,
+			flowy.ErrChildInvalid,
 		},
 	}
 	for _, tc := range cases {

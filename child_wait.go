@@ -42,7 +42,7 @@ func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token Resume
 			resolution.WaitID, resolution.DecisionID, resolution.Result.Error) ||
 		resolution.ExecutionID == "" || resolution.ChildRevision == 0 || resolution.WaitID == "" || resolution.DecisionID == "" ||
 		(resolution.Result.State != ChildCompleted && resolution.Result.State != ChildFailed) || resolution.Result.WaitID != "" {
-		return ResumeToken{}, ErrChildJoinInvalid
+		return ResumeToken{}, ErrChildInvalid
 	}
 	resolution.Result.Payload = bytes.Clone(resolution.Result.Payload)
 	session, err := r.acquireSession(ctx, token.ThreadID)

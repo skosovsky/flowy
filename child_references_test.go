@@ -185,7 +185,7 @@ func TestChildMigrationMissingOrForgedBindingRejectsBeforeNode(t *testing.T) {
 			// Assert: invalid references fail before commit; plan changes cannot create new children.
 			after, loadErr := store.LoadExecution(ctx, "run")
 			if kind == "changed plan" {
-				if !errors.Is(err, flowy.ErrChildJoinInvalid) || dispatches.Load() != 3 ||
+				if !errors.Is(err, flowy.ErrChildInvalid) || dispatches.Load() != 3 ||
 					string(after.ChildrenPayload) != string(source.ChildrenPayload) {
 					t.Fatalf("changed plan relaunched children: %v", err)
 				}

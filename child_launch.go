@@ -28,6 +28,10 @@ type ChildResult struct {
 	WaitID  string
 }
 
+// ChildDispatcher errors are conservatively unknown, even when a host codec
+// fails before worker effects. Context cancellation is not preemption. The host
+// owns global worker limits and must serialize use of inherited parent metadata
+// or establish a separate child run context before using accounting helpers.
 type ChildDispatcher func(context.Context, ChildInvocation) (ChildResult, error)
 
 // RunChildren commits intent and each launch/outcome, with bounded concurrency.
@@ -140,7 +144,9 @@ func (c *executionCheckpointer[T, E]) dispatchChild(ctx context.Context, identit
 	dispatch ChildDispatcher, results chan<- childDispatchCompletion) {
 	c.observeChildDispatch(ctx, identity, invocation)
 	outcome, dispatchErr := invokeChildDispatcher(ctx, invocation, dispatch)
-	finishErr := c.finishChild(context.WithoutCancel(ctx), identity, invocation, outcome, dispatchErr)
+	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
+	defer cancelFinish()
+	finishErr := c.finishChild(finishCtx, identity, invocation, outcome, dispatchErr)
 	results <- childDispatchCompletion{err: finishErr}
 }
 
@@ -281,7 +287,7 @@ func (c *executionCheckpointer[T, E]) beginChildLocked(
 			Allocation:  spec.Allocation,
 		}, nil
 	}
-	return ChildInvocation{}, ErrChildJoinInvalid
+	return ChildInvocation{}, ErrChildInvalid
 }
 
 func (c *executionCheckpointer[T, E]) finishChildLocked(
@@ -308,7 +314,7 @@ func (c *executionCheckpointer[T, E]) finishChildLocked(
 			result = ChildResult{State: ChildUnknown, Payload: nil, Error: dispatchErr.Error(), WaitID: ""}
 		}
 		if !validChildResultState(result.State) {
-			return ErrChildJoinInvalid
+			return ErrChildInvalid
 		}
 		child.State, child.Result, child.Error, child.WaitID = result.State, result.Payload, result.Error, result.WaitID
 		if child.State == ChildCanceled && child.CancelRequested {
@@ -328,7 +334,7 @@ func (c *executionCheckpointer[T, E]) finishChildLocked(
 		}
 		return nil
 	}
-	return ErrChildJoinInvalid
+	return ErrChildInvalid
 }
 
 func validChildResultState(state ChildState) bool {

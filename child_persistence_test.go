@@ -89,7 +89,7 @@ func TestChildIntentReplayCannotAdvanceOrResetGroup(t *testing.T) {
 	}
 	plan.MergeLabel = "changed"
 	_, mismatchErr := runner.Resume(ctx, first.ResumeToken)
-	if !errors.Is(mismatchErr, flowy.ErrChildJoinInvalid) {
+	if !errors.Is(mismatchErr, flowy.ErrChildInvalid) {
 		t.Fatalf("incompatible plan reset: %v", mismatchErr)
 	}
 }

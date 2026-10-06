@@ -127,7 +127,7 @@ Manual activity resolution is an explicit addressed operation, separate from Res
 
 PrepareChildren persists the detached plan as child-group intent in the same sealed/fenced/OCC execution aggregate. Repeating the same current group address replays the original plan; incompatible input/policy/allocation labels reject without reset. The returned copy cannot mutate persisted inputs. No child dispatch is authorized before this commit. A parent cannot advance or publish terminal completion while a current group is unjoined, even if node code ignores the group. Intent-only planning does not launch children or prove the full child runtime capability. Persisted group metadata is validated before domain decoding and migration; a cursor migration cannot strand an unresolved group.
 
-RunChildren launches planned/queued children in stable-ID order up to the concurrency bound. Queue/running/outcome transitions each advance child revision within the aggregate; running records retain the owning lease incarnation. Results commit independently, preserving siblings. Dispatcher error is unknown, not definitive failure. Waiting outcomes need an explicit wait ID. Completed/failed children replay without dispatch; abandoned running children become unknown on owner recovery and cannot relaunch blindly. Dispatcher context masks parent activity/group/lease capabilities: a host child runner must establish its own execution boundary. Parent cancellation notifies workers and returns without awaiting non-cooperative callbacks; late writes remain fenced. JoinChildren, ConfirmChildCancellation, ResolveChildWait and ReturnChildBudget provide separate persisted boundaries; launch alone does not perform them.
+RunChildren launches planned/queued children in stable-ID order up to the concurrency bound. Queue/running/outcome transitions each advance child revision within the aggregate; running records retain the owning lease incarnation. Results commit independently, preserving siblings. Dispatcher error is unknown, not definitive failure. Waiting outcomes need an explicit wait ID. Completed/failed children replay without dispatch; abandoned running children become unknown on owner recovery and cannot relaunch blindly. Dispatcher context masks parent activity/group/lease capabilities: a host child runner must establish its own execution boundary. Parent cancellation notifies workers and returns without awaiting non-cooperative callbacks; late writes remain fenced and use a detached context with a five-second I/O deadline. Store implementations must honor that context or their own stricter I/O bound. JoinChildren, ConfirmChildCancellation, ResolveChildWait and ReturnChildBudget provide separate persisted boundaries; launch alone does not perform them.
 
 Child-group design decision: the group belongs to one parent execution/node/activation and logical group key. Child execution identities derive from that full address plus stable child IDs; sorted IDs define launch/join order, not arrival time. Host codecs/projection provide detached input bytes per child. Group compatibility includes explicit merge, budget and cancellation labels, bounded concurrency, and fail-fast/collect-errors policy. Named allocations are fixed before launch, their sum cannot exceed available parent counters, and invalid/negative/unknown allocations reject before dispatch. They are not monetary reservations: host owns the external reservation port and its evidence. Unused counters return only after a confirmed resolved child; unknown/non-cooperative work retains allocation until explicit recovery evidence. Restart never blindly relaunches running work: it becomes unknown and requires reconciliation or addressed operator action. Cancellation persists a request, stops new launches and notifies active children; only worker confirmation permits canceled, while completed effects/results remain retained. No detached mode or implicit upgrade of inline subgraphs is introduced.
 
@@ -336,3 +336,35 @@ or reflectively cloned by the runtime.
 
 Observation and bridge scope, callback policies and bounded default dimensions
 are canonical in [runtime observation](runtime-observation-contract.md).
+
+
+## Child state and ownership boundaries
+
+Child copies use explicit detached maps/slices/bytes and copies of provenance
+pointers. Copying does not validate wire representation, rewrite invalid text/time,
+or collapse nil/empty collections. Admission still validates the flat DTO before
+publication. MaxConcurrency bounds admission within one group; active callbacks
+left after cancellation can coexist with later groups. A host-wide worker pool,
+quota and termination mechanism belong to the host. Cancellation signals intent
+and cannot preempt arbitrary Go callbacks. See [child budget](child-budget-contract.md)
+for parent metadata capability and serialized accounting requirements.
+
+| Current state | Allowed publication | Recovery/authority |
+|---|---|---|
+| planned, revision0 | queued after intent; local canceled on committed request | No external dispatch before queue/running commit |
+| queued | running under live incarnation; local canceled on request | Admission and allocation stay fixed |
+| running | completed/failed/waiting/unknown; confirmed canceled on request | Dispatcher error/panic is unknown; abandoned owner becomes unknown |
+| waiting | addressed completed/failed wait resolution; confirmed canceled on request | Exact wait and child revision required |
+| unknown | addressed completed/failed outcome resolution; confirmed canceled on request | No automatic redispatch or budget release |
+| completed/failed | retained outcome, explicit join and eligible usage return | No worker redispatch; partial/empty bytes retain explicit state |
+| canceled | retained confirmed stop, explicit join and eligible usage return | Confirmation is host evidence; not rollback proof |
+
+Every persisted transition validates revision/incarnation, outcome fields and
+provenance centrally; join is a group boundary, not a new child state. Migration
+keeps original group addresses plus exact current activation bindings. Missing,
+foreign or dangling references reject before node/dispatch; never infer a renamed
+identity. Late finish uses WithoutCancel only to permit bounded outcome I/O; it
+still requires the original live lease and exact child revision. A successor or
+confirmation can fence it out. Store context compliance is required; core cannot
+preempt a backend ignoring cancellation. See [child migration](child-migration-contract.md)
+and [typed composition](typed-child-contract.md) for cached join recovery.

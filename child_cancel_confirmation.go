@@ -45,7 +45,7 @@ func (r *DurableRunner[T, E]) ConfirmChildCancellation(ctx context.Context, toke
 			decision.RequestID, decision.DecisionID, decision.Reason, decision.Evidence) ||
 		decision.ExecutionID == "" || decision.ChildRevision == 0 || decision.RequestID == "" || decision.DecisionID == "" ||
 		decision.Reason == "" || decision.Evidence == "" {
-		return ResumeToken{}, ErrChildJoinInvalid
+		return ResumeToken{}, ErrChildInvalid
 	}
 	session, err := r.acquireSession(ctx, token.ThreadID)
 	if err != nil {

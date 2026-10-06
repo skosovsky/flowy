@@ -29,7 +29,7 @@ func TestChildInvalidOutcomeAndPanicCannotRelaunch(t *testing.T) {
 			runner := childLaunchRunner(t, store, persistedChildPlan(), dispatch)
 			// Act.
 			_, firstErr := runner.Start(ctx, "run", durableTestState{})
-			want := flowy.ErrChildJoinInvalid
+			want := flowy.ErrChildInvalid
 			if panics {
 				want = flowy.ErrChildrenUnresolved
 			}

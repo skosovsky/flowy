@@ -43,7 +43,7 @@ func CancelChildren(ctx context.Context, group ChildGroupRecord, request ChildCa
 	}
 	if request.ID == "" || !validRuntimeText(request.ID, request.Reason) || request.Reason == "" || notify == nil ||
 		!validChildGroupText(group) {
-		return ChildGroupRecord{}, ErrChildJoinInvalid
+		return ChildGroupRecord{}, ErrChildInvalid
 	}
 	return backend.cancelChildren(ctx, group, request, notify)
 }
