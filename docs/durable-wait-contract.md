@@ -100,3 +100,12 @@ DeliverWait and CancelWait retain separate authoritative reads before and after
 lease acquisition; each phase parses and validates its wait collection once and
 reuses it. Value/map/pointer copying preserves nil/empty shape without JSON
 round-trip loss; copying never replaces validation.
+
+## Authenticated approval composition
+
+The optional [approval/recovery recipe](approval-recovery-contract.md) persists the
+host intention and bound challenge before arming approval. Authentication precedes
+DeliverWait; Match and Apply remain pure. The signed decision is durable before
+host grant issuance, so a crash can redeliver the same event unchanged. Grant claim
+and current authorization occur later at effect dispatch. Wait timeout arbitration
+does not replace the grant's business expiry or revocation checks.

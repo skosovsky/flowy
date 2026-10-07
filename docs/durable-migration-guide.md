@@ -77,3 +77,17 @@ ACK, duplicate decisions, callbacks and postcommit decoding. Run all six module
 gates plus explicit persistent backend/blueprint tests; skipped backend tests do
 not count as passed. Real publishing is a separate authorized release operation
 following [release runbook](release.md).
+
+## Approval preparation and external effects
+
+Move pending approval preparation out of CallActivity into a checkpointed graph
+phase, then Await its authenticated decision. Persist the host OperationID before
+preparation and keep it across redelivery/recovery. Save the actual activity mapping
+before dispatch; do not equate it with provider CallID. Reauthorize through the
+bound execution gate before effect dispatch. Reconcile uses read-only inspection
+of complete terminal evidence; repair post-effect capture through a separate
+continuation. Existing token calls stay valid; use InspectExecutionResume for a core-issued
+address after losing result/token delivery. This is a read-only observation,
+not permission to repeat an unknown action.
+See the [complete before/after recipe](../examples/approval_recovery/README.md) and
+[crash contract](approval-recovery-contract.md).

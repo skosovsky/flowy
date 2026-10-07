@@ -429,3 +429,20 @@ still requires the original live lease and exact child revision. A successor or
 confirmation can fence it out. Store context compliance is required; core cannot
 preempt a backend ignoring cancellation. See [child migration](child-migration-contract.md)
 and [typed composition](typed-child-contract.md) for cached join recovery.
+
+## Host approval before durable external actions
+
+[Approval/recovery composition](approval-recovery-contract.md) defines the host-owned
+protocol and optional executable recipe. Preparation checkpoints a bound challenge
+before Await; authenticated DeliverWait and pure continuation callbacks do not
+consume grants or execute actions. CallActivity journals the effect only after
+current host authorization. Reconcile reads complete addressed outcome evidence;
+unknown does not imply safe retry. Capture has its own persisted continuation.
+No business approval policy or concrete backend is added to core.
+
+Read-only `InspectExecutionResume` issues an exact latest ResumeToken after validating
+the sealed execution and lifecycle collections. It invokes no host codecs, nodes,
+leases or recovery callbacks. This supports recovery after a process lost the
+result/token delivery. The token is an observed address, not authorization or
+permission to retry unknown work; a concurrent commit can make it stale and Resume
+still performs all compatibility, latest-revision and fencing checks.

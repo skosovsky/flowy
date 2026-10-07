@@ -6,7 +6,7 @@ Run from the repository root with Python 3.9+ (Git and the module-required Go
 version must be installed): `make release-patch` or `make release-break`.
 The Make targets run lint/tests first; the script itself does not replace those
 checks. MODULES must contain every tracked module exactly once, including
-`examples/durable_agent`. Tracked worktree/index changes reject preparation;
+`examples/durable_agent` and the optional `examples/approval_recovery` executable. Tracked worktree/index changes reject preparation;
 untracked files and unrelated local tags are preserved and never published.
 
 The script reads the push destination of origin and published root semver tags.
@@ -21,7 +21,7 @@ support rejects the release; there is no non-atomic fallback.
 Patch increments patch; break increments minor while v0, then major after v1.
 Versions v2+ are explicitly rejected until semantic import version paths and
 consumers are migrated. The module editor uses Python and Go, with no BSD sed
-dependency. Release preparation must pass the six-module clean consumer gate
+dependency. Release preparation must pass the seven-module clean consumer gate
 before real publication: build consumers against prepared module artifacts in a
 local Go module proxy, with `GOWORK=off`, no local replace directives and fresh
 module caches. The final remediation verification records this evidence; local
@@ -71,3 +71,10 @@ local bare origins. It checks exact scope, source preservation, atomic rejection
 failures before/during/after tagging, partial/unknown/conflicting outcomes, exact
 retry, portable module edits and v2 rejection. It does not contact the real origin
 or execute a real release.
+
+
+The approval example is published as an optional executable module, never imported
+by core or adapters. Its semantic published-consumer gate must pass after release:
+`python3 scripts/check_approval_consumer.py --mode published --version <released-tag>`.
+Run the checkout gate before publication. A tag/build alone does not prove its
+approval, binding, capture or process-recovery semantics.

@@ -143,3 +143,40 @@ jobs:
           set -o pipefail
           go test -tags=integration -run='^$' -bench='BenchmarkPostgresExecutionGrowth|BenchmarkIndexedDiscoveryTerminalArchive' -benchtime=1x -benchmem . | tee /tmp/flowy-postgres-bench.txt
           python3 ../../../scripts/check_benchmarks.py ../../../scripts/benchmarks-postgres.json /tmp/flowy-postgres-bench.txt
+
+  approval-consumer:
+    name: Approval semantic consumer (${{ matrix.mode }})
+    needs: lint
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [checkout, published]
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: flowy
+          POSTGRES_PASSWORD: flowy
+          POSTGRES_DB: flowy_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: examples/approval_recovery/go.mod
+      - name: Run actual binding, approval and process-recovery fixtures
+        env:
+          FLOWY_TEST_DATABASE_URL: postgres://flowy:flowy@localhost:5432/flowy_test?sslmode=disable
+        run: |
+          if [ "${{ matrix.mode }}" = checkout ]; then
+            python3 scripts/check_approval_consumer.py --mode checkout --backend-ref 82e51316c272de6241cae429d70a33ecbfad5220
+          else
+            python3 scripts/check_approval_consumer.py --mode published
+          fi

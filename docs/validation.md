@@ -2,7 +2,7 @@
 
 Go 1.27.1 or newer and golangci-lint 2.14 are the configured baseline. Makefile and
 CI discover project modules by go.mod, excluding hidden/vendor paths.
-Current inventory has exactly six modules:
+Current inventory has exactly seven modules:
 
 | Directory | Ordinary tests/lint | Tagged native gate |
 | --- | --- | --- |
@@ -12,9 +12,10 @@ Current inventory has exactly six modules:
 | `adapters/lease/postgres` | lease adapter | independent PostgreSQL connection locks/fences |
 | `adapters/lease/redis` | lease adapter | standalone Redis incarnation/atomic renew/release |
 | `examples/durable_agent` | separate blueprint module | real PostgreSQL recovery across six fresh worker pools |
+| `examples/approval_recovery` | optional authenticated approval consumer | PostgreSQL + file journal, abrupt OS process recovery |
 
 `go test ./...` from root excludes every nested module. `make test`,
-`make test-race`, `make test-goleak` and `make lint` visit all six; test-goleak
+`make test-race`, `make test-goleak` and `make lint` visit all seven; test-goleak
 repeats uncached suites that contain leak checks, not a universal leak proof.
 Lint does not claim native coverage. Run tagged lint with `--build-tags=integration`
 for changed adapters. `make verify-stress` targets ordinary handoff/resume/orphan
@@ -38,7 +39,7 @@ go test -v -race -tags=integration -count=1 -timeout=10m ./...
 ```
 
 CI's integration matrix contains those five modules and supplies both services;
-the root race/lint matrix includes all six modules. Real PostgreSQL proves native
+the root race/lint matrix includes all seven modules. Real PostgreSQL proves native
 transactions/locks/anchors, not external provider behavior. The agent blueprint
 uses fake model/tools while its execution persistence is PostgreSQL. Ordinary
 cookbook smoke and durable_runtime memory smoke do not replace native gates.
@@ -74,7 +75,7 @@ at 16/64/256 include accumulated snapshot work; no hidden compaction is implied.
 Copy microbenchmarks are local DTO fixtures, not backend performance evidence.
 
 Run benchmark checker rejection fixtures and [isolated release fixtures](release.md).
-Consumer installability must use all six module paths from one intended commit,
+Consumer installability must use all seven module paths from one intended commit,
 without local replaces; test via a disposable local module proxy when the commit
 is unpublished. This does not publish remote refs or prove a release occurred.
 The final task28 acceptance journal records actual terminal results and review
@@ -88,7 +89,7 @@ python3 scripts/check_installability.py
 ```
 
 The script archives committed HEAD only, edits dependency versions/replaces only
-inside its temporary directory, packages each of six modules separately and uses
+inside its temporary directory, packages each of seven modules separately and uses
 a synthetic v0.0.0-task28 version served by its local file proxy. It builds a
 consumer importing core and all four adapters and installs the blueprint binary.
 GOWORK and persisted Go environment are disabled, caches are fresh and downloaded
@@ -98,3 +99,15 @@ isolated synthetic-version check. This is source/module graph installability,
 not verification of an actual published tag, checksum-log entry or remote release.
 The temporary path/result.json is printed and retained for evidence. Repository
 refs/index/worktree and user Go environment are not rewritten by this command.
+
+
+## Approval semantic consumer gate
+
+The `approval-consumer` CI job executes both checkout and published modes with a
+real PostgreSQL service. Run `python3 scripts/check_approval_consumer.py --mode
+checkout` or `--mode published` with FLOWY_TEST_DATABASE_URL set. Both run all
+semantic tests and the required process integration suite with race/count=1.
+Published mode downloads released dependencies with GOWORK=off and removes all
+local replacements. The root test matrix discovers the seventh optional module;
+its operation backend stays out of the root dependency graph. Missing infrastructure
+fails this gate. No physical disk-crash acceptance is claimed.

@@ -16,8 +16,8 @@ def artifacts(source, attempt, commit):
     """Only committed files are admitted; generated caches/untracked inputs are excluded."""
     tracked = release.git(source, "ls-tree", "-r", "--name-only", commit).splitlines()
     modules = sorted(str(Path(name).parent) for name in tracked if Path(name).name == "go.mod")
-    if len(modules) != 6:
-        raise ValueError(f"expected six committed modules, found {len(modules)}")
+    if len(modules) != 7:
+        raise ValueError(f"expected seven committed modules, found {len(modules)}")
     clone = attempt / "source"
     clone.mkdir()
     archive = subprocess.check_output(["git", "-C", str(source), "archive", commit])
@@ -69,7 +69,7 @@ def verify(source, attempt):
     # Synthetic first-party versions only exist in this local proxy; public deps use their pinned versions.
     (consumer / "go.mod").write_text("module example.com/flowy-consumer\n\ngo 1.27.1\n\nrequire (\n" +
                                     "".join(f"\t{name} {version}\n" for name in paths) + ")\n")
-    libraries = [name for name in paths if not name.endswith("/examples/durable_agent")]
+    libraries = [name for name in paths if "/examples/" not in name]
     (consumer / "main.go").write_text("package main\n\nimport (\n" +
                                      "".join(f'\t_ "{name}"\n' for name in libraries) +
                                      ")\n\nfunc main() {}\n")
@@ -83,7 +83,7 @@ def verify(source, attempt):
     subprocess.run(["go", "mod", "tidy"], cwd=consumer, env=env, check=True)
     subprocess.run(["go", "build", "./..."], cwd=consumer, env=env, check=True)
     for name in paths:
-        if name.endswith("/examples/durable_agent"):
+        if "/examples/" in name:
             subprocess.run(["go", "install", f"{name}@{version}"], cwd=consumer, env=env, check=True)
     resolved = json.loads(subprocess.check_output(
         ["go", "mod", "edit", "-json"], cwd=consumer, env=env, text=True))
