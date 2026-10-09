@@ -18,7 +18,7 @@ type interruptedState struct {
 	Items map[string]int
 }
 
-func TestInterruptedStepPersistentEntryRecovery(t *testing.T) {
+func TestIntegrationInterruptedStepPersistentEntryRecovery(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, activity := range []bool{false, true} {
 			t.Run(fmt.Sprintf("stream=%t/activity=%t", stream, activity), func(t *testing.T) {
@@ -47,7 +47,7 @@ func assertInterruptedStepPersistentRecovery(t *testing.T, stream, activity bool
 		t.Fatalf("interruption not returned: %+v %v", first, startErr)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	saved, err := restartedStore.LoadExecution(restartCtx, id)
 	if err != nil {

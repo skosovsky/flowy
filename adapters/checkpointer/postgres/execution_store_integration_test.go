@@ -10,7 +10,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestExecutionStorePersistentMigrationAndFencing(t *testing.T) {
+func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 	// Arrange: separate store handles share durable state.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {

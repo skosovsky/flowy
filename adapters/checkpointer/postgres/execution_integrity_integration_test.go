@@ -11,7 +11,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T) {
+func TestIntegrationExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T) {
 	for kind, query := range map[string]string{
 		"seal":                   `UPDATE flowy_execution_history SET payload=payload-'digest' WHERE execution_id=$1`,
 		"identity":               `UPDATE flowy_execution_history SET payload=jsonb_set(payload,'{execution_id}','"other"') WHERE execution_id=$1`,

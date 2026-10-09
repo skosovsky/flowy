@@ -5,7 +5,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,7 +15,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestTerminalFailurePersistentRestart(t *testing.T) {
+func TestIntegrationTerminalFailurePersistentRestart(t *testing.T) {
 	// Arrange: the failed terminal is persisted independently of Go error identity.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -60,7 +59,7 @@ func TestTerminalFailurePersistentRestart(t *testing.T) {
 		t.Fatalf("live failure missing: %+v %v", live, liveErr)
 	}
 	pool.Close()
-	restartedPool, err := pgxpool.New(ctx, os.Getenv("FLOWY_TEST_DATABASE_URL"))
+	restartedPool, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
+func TestIntegrationActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 	// Arrange: content seal is valid, but the journal is semantically invalid.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -42,7 +42,7 @@ func TestActivityJournalPersistentRejectionBeforeExecution(t *testing.T) {
 	}
 	pool.Close()
 	// A new pool/handle must reject the persistent source without trying its invalid state codec.
-	restartCtx, restartedPool := racePool(t)
+	restartCtx, restartedPool := reopenPool(t, pool)
 	var calls atomic.Int32
 	builder := flowy.NewGraph[intState, flowy.NoEffect](func(_, update intState) intState { return update })
 	builder.AddNode("node", func(_ context.Context, state intState) (intState, flowy.Directive, error) {

@@ -92,7 +92,7 @@ func postgresChildWaitDecision(group flowy.ChildGroupRecord, index int) flowy.Ch
 		Result: flowy.ChildResult{State: flowy.ChildCompleted, Payload: []byte(child.Spec.ID)}}
 }
 
-func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
+func TestIntegrationChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 	// Arrange: completed a and external waits b/c are persisted before losing the pool.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -106,7 +106,7 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 		t.Fatalf("waits missing: %v", err)
 	}
 	pool.Close()
-	resolveCtx, resolvePool := racePool(t)
+	resolveCtx, resolvePool := reopenPool(t, pool)
 	resolveStore := NewExecutionStore(resolvePool)
 	group := postgresStoredChildGroup(resolveCtx, t, resolveStore, id)
 	// Act: resolve b through a new connection, then recover through another one.
@@ -120,7 +120,7 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	resolvePool.Close()
-	resumeCtx, resumePool := racePool(t)
+	resumeCtx, resumePool := reopenPool(t, pool)
 	resumeStore := NewExecutionStore(resumePool)
 	runner := postgresChildWaitRunner(t, resumeStore, &dispatches, &merges)
 	second, resumeErr := runner.Resume(resumeCtx, token)
@@ -136,7 +136,7 @@ func TestChildWaitPersistentRestartPreservesIndependentSibling(t *testing.T) {
 		t.Fatal(err)
 	}
 	resumePool.Close()
-	finalCtx, finalPool := racePool(t)
+	finalCtx, finalPool := reopenPool(t, pool)
 	_, err = postgresChildWaitRunner(t, NewExecutionStore(finalPool), &dispatches, &merges).Resume(finalCtx, token)
 	if err != nil || dispatches.Load() != 3 || merges.Load() != 1 {
 		t.Fatalf("wait/join restart: %v calls=%d merges=%d", err, dispatches.Load(), merges.Load())

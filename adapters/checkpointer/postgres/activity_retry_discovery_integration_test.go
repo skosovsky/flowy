@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing.T) {
+func TestIntegrationActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing.T) {
 	// Arrange: plain and not-yet-due heads precede a due, explicitly bound retry.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -45,7 +45,7 @@ func TestActivityRetryDiscoveryPersistentProfileDeadlineAndNoDispatch(t *testing
 	}
 	assertRetryDiscoveryLeaseReleased(ctx, t, store, base+"03")
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, profile)
 	if err != nil {
 		t.Fatal(err)

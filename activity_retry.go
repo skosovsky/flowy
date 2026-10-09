@@ -56,6 +56,8 @@ func activityRecordError(record ActivityRecord, revision uint64) error {
 			return ErrActivityAttemptsExhausted
 		}
 		return ErrActivityFailed
+	case ActivityRunning, ActivityCompleted, ActivityUnknown:
+		fallthrough
 	default:
 		return ErrActivityUnknown
 	}
@@ -125,6 +127,8 @@ func (c *executionCheckpointer[T, E]) recordActivityFailure(
 		}
 	case ActivityNonRetryable:
 		last.State, record.State = ActivityFailed, ActivityFailed
+	case ActivityAmbiguous:
+		fallthrough
 	default:
 		last.State, record.State = ActivityUnknown, ActivityUnknown
 	}

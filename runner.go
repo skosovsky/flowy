@@ -1765,6 +1765,8 @@ func (r *graphRunner[T, E]) applyDirective(
 		return r.applyDirectiveRetry(runCtx, current, state, meta, effects, base, sink)
 	case directiveFail:
 		return r.applyDirectiveFail(runCtx, threadID, current, state, meta, effects, base, sink)
+	case directiveEffect:
+		fallthrough
 	default:
 		unsupported := errors.New("flowy: node returned unsupported directive")
 		return r.terminalFailDirectiveStep(

@@ -5,9 +5,10 @@ package redis
 import (
 	"context"
 	"errors"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/testdocker"
 
 	goredis "github.com/redis/go-redis/v9"
 
@@ -16,12 +17,9 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestRedisServerFencingAndExactOCC(t *testing.T) {
+func TestIntegrationRedisServerFencingAndExactOCC(t *testing.T) {
 	t.Parallel()
-	address := os.Getenv("FLOWY_TEST_REDIS_ADDR")
-	if address == "" {
-		t.Skip("FLOWY_TEST_REDIS_ADDR not set")
-	}
+	address := testdocker.Redis(t)
 	// Arrange: independent clients use a unique isolated namespace on a real server.
 	first := goredis.NewClient(&goredis.Options{Addr: address})
 	second := goredis.NewClient(&goredis.Options{Addr: address})

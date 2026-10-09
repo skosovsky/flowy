@@ -53,7 +53,9 @@ func WithRetentionLimit(limit int) BuildOption {
 
 // applyBuildOptions applies opts and returns buildOpts; used in Compile.
 func applyBuildOptions(opts []BuildOption) buildOpts {
-	o := buildOpts{run: runConfig{maxSteps: defaultMaxSteps}}
+	o := buildOpts{
+		run: runConfig{maxSteps: defaultMaxSteps, deleteOnSuccess: false, retentionLimit: 0, budgetLimits: nil},
+	}
 	for _, opt := range opts {
 		opt(&o)
 	}

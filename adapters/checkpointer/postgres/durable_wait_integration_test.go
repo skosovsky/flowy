@@ -62,7 +62,7 @@ func postgresWaitRunner(t *testing.T, store flowy.ExecutionStore, spec flowy.Dur
 	return runner
 }
 
-func TestWaitRegistrationPersistentRestartAndDiscovery(t *testing.T) {
+func TestIntegrationWaitRegistrationPersistentRestartAndDiscovery(t *testing.T) {
 	// Arrange: an earlier non-due head must not hide the next due generation.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -84,7 +84,7 @@ func TestWaitRegistrationPersistentRestartAndDiscovery(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)
@@ -129,7 +129,7 @@ func (s *waitRegistrationFaultStore) RegisterWait(ctx context.Context, record fl
 	return nil
 }
 
-func TestWaitRegistrationFailurePersistentRecovery(t *testing.T) {
+func TestIntegrationWaitRegistrationFailurePersistentRecovery(t *testing.T) {
 	// Arrange: armed commit succeeds but the caller receives no registration acknowledgement.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -148,7 +148,7 @@ func TestWaitRegistrationFailurePersistentRecovery(t *testing.T) {
 		t.Fatalf("registration acknowledgement fault missing: %+v err=%v", armed, err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

@@ -77,7 +77,7 @@ func postgresChildNodeRunner(
 	return runner
 }
 
-func TestChildCancellationRequestAndConfirmationPersistentRestart(t *testing.T) {
+func TestIntegrationChildCancellationRequestAndConfirmationPersistentRestart(t *testing.T) {
 	// Arrange: stop acknowledgement leaves a durably requested external wait.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -95,7 +95,7 @@ func TestChildCancellationRequestAndConfirmationPersistentRestart(t *testing.T) 
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartStore := NewExecutionStore(restartPool)
 	runner := postgresChildCancelRunner(t, restartStore, &dispatches, &notices)
 	// Act: repeat notification after restart, then persist explicit host confirmation.
@@ -128,7 +128,7 @@ func TestChildCancellationRequestAndConfirmationPersistentRestart(t *testing.T) 
 		t.Fatal(err)
 	}
 	restartPool.Close()
-	finalCtx, finalPool := racePool(t)
+	finalCtx, finalPool := reopenPool(t, pool)
 	finalStore := NewExecutionStore(finalPool)
 	_, err = postgresChildCancelRunner(t, finalStore, &dispatches, &notices).Resume(finalCtx, token)
 	group = postgresStoredChildGroup(finalCtx, t, finalStore, id)

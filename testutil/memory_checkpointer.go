@@ -17,6 +17,7 @@ type MemoryCheckpointer[T, E any] struct {
 
 func NewMemoryCheckpointer[T, E any]() *MemoryCheckpointer[T, E] {
 	return &MemoryCheckpointer[T, E]{
+		mu:      sync.Mutex{},
 		history: make(map[string][]flowy.Snapshot[T, E]),
 	}
 }

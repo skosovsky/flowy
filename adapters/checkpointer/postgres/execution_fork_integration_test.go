@@ -83,7 +83,7 @@ func pgForkRunner(t *testing.T, store flowy.ExecutionStore, policy *flowy.ForkEx
 	return runner
 }
 
-func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *testing.T) {
+func TestIntegrationForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *testing.T) {
 	// Arrange: exact historical source survives original-pool closure.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -93,7 +93,7 @@ func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *test
 	base := testThreadID(t)
 	source, latest := seedPersistentForkSource(ctx, t, store, base+"source")
 	pool.Close()
-	forkCtx, forkPool := racePool(t)
+	forkCtx, forkPool := reopenPool(t, pool)
 	forkStore := NewExecutionStore(forkPool)
 	var nodes, live, fake atomic.Int32
 	readonly := pgForkRunner(t, forkStore, nil, &nodes, &live)
@@ -112,7 +112,7 @@ func TestForkPersistentHistoricalCreationStreamRecoveryAndFakeProvenance(t *test
 		t.Fatalf("creation executed work: %+v", token)
 	}
 	forkPool.Close()
-	recoveryCtx, recoveryPool := racePool(t)
+	recoveryCtx, recoveryPool := reopenPool(t, pool)
 	recovered := NewExecutionStore(recoveryPool)
 	_, denied := pgForkRunner(t, recovered, nil, &nodes, &live).Resume(recoveryCtx, token)
 	if !errors.Is(denied, flowy.ErrForkPolicy) || nodes.Load() != 0 {

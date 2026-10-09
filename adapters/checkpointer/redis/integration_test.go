@@ -18,7 +18,7 @@ import (
 )
 
 // E2E: paired lease adapter blocks DeleteIfIdle until Release.
-func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
+func TestIntegrationLeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
@@ -49,7 +49,7 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	}
 }
 
-func TestOCCConcurrencyConflict(t *testing.T) {
+func TestIntegrationOCCConcurrencyConflict(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()

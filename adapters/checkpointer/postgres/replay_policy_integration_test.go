@@ -13,7 +13,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestReplayPolicyPersistentMigration(t *testing.T) {
+func TestIntegrationReplayPolicyPersistentMigration(t *testing.T) {
 	// Arrange: all other compatibility labels match; policy change must still be explicit.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {

@@ -59,7 +59,7 @@ func postgresTypedChildRunner(
 	)
 }
 
-func TestTypedChildCommittedMergePersistentRestart(t *testing.T) {
+func TestIntegrationTypedChildCommittedMergePersistentRestart(t *testing.T) {
 	// Arrange: typed join succeeds, then terminal publication fails on the old pool.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -77,7 +77,7 @@ func TestTypedChildCommittedMergePersistentRestart(t *testing.T) {
 		t.Fatalf("terminal fault missing: %v", err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	// Act: a new pool/worker decodes cached typed merge bytes rather than rerunning it.
 	_, err = postgresTypedChildRunner(
 		t,

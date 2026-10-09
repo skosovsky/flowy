@@ -77,7 +77,7 @@ func postgresChildBudgetRunner(t *testing.T, store flowy.ExecutionStore, complet
 	)
 }
 
-func TestChildBudgetPersistentPartialReturnReplayAcrossPoolRestart(t *testing.T) {
+func TestIntegrationChildBudgetPersistentPartialReturnReplayAcrossPoolRestart(t *testing.T) {
 	// Arrange: return commits before an intentionally unjoined parent loses its pool.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -96,7 +96,7 @@ func TestChildBudgetPersistentPartialReturnReplayAcrossPoolRestart(t *testing.T)
 		t.Fatalf("partial return missing: %+v", claim)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartStore := NewExecutionStore(restartPool)
 	// Act: replay the first return and allocate seven remaining units on a new pool.
 	_, err = postgresChildBudgetRunner(t, restartStore, true, &dispatches).Resume(restartCtx, first.ResumeToken)

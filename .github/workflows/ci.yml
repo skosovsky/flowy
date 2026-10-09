@@ -1,110 +1,50 @@
 name: CI
-
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [main]
+    tags: ['v*']
   pull_request:
-    branches: [ "main", "master" ]
-
+    branches: [main]
+permissions:
+  contents: read
+env:
+  GOWORK: 'off'
+  CGO_ENABLED: '1'
+  GO_VERSION: '1.27.2'
+  LINT_VERSION: '2.14.0'
 jobs:
-  prepare-matrix:
+  check:
     runs-on: ubuntu-latest
-    outputs:
-      modules: ${{ steps.set-matrix.outputs.modules }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
-      - id: set-matrix
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@v6
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache-dependency-path: '**/go.sum'
+      - name: Download module dependencies
+        shell: bash
         run: |
-          MODULES=$(find . -type d \( -name ".*" -not -name "." -o -name "vendor" \) -prune -o -type f -name "go.mod" -exec dirname {} \; | jq -R -s -c 'split("\n") | map(select(length > 0))')
-          echo "modules=$MODULES" >> $GITHUB_OUTPUT
-
-  lint:
-    needs: prepare-matrix
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        module: ${{ fromJson(needs.prepare-matrix.outputs.modules) }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          go-version-file: ${{ matrix.module }}/go.mod
-      - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v9
-        with:
-          version: v2.14.0
-          working-directory: ${{ matrix.module }}
-          args: --timeout=5m
-
-  test:
-    name: Test
-    needs: [prepare-matrix, lint]
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        module: ${{ fromJson(needs.prepare-matrix.outputs.modules) }}
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          cache: true
-          go-version-file: ${{ matrix.module }}/go.mod
-      - name: Run tests
-        working-directory: ${{ matrix.module }}
-        run: go test -v -race ./...
-      - name: Hot-path benchmarks (alloc check)
-        working-directory: ${{ matrix.module }}
-        run: go test -bench='BenchmarkExecuteNode_(NoMiddleware|With5Middlewares)' -benchmem -count=1 -run=^$$ .
-
-  verify-stress:
-    name: Verify stress
-    needs: lint
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          cache: true
-          go-version-file: go.mod
-      - name: Run handoff stress gate
-        run: make verify-stress
-
-  integration:
-    name: Integration
-    needs: lint
-    runs-on: ubuntu-latest
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: flowy
-          POSTGRES_PASSWORD: flowy
-          POSTGRES_DB: flowy_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-    strategy:
-      fail-fast: false
-      matrix:
-        module:
-          - adapters/checkpointer/redis
-          - adapters/checkpointer/postgres
-          - adapters/lease/redis
-          - adapters/lease/postgres
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-go@v6
-        with:
-          cache: true
-          go-version-file: ${{ matrix.module }}/go.mod
-      - name: Run integration tests
-        working-directory: ${{ matrix.module }}
-        env:
-          FLOWY_TEST_DATABASE_URL: postgres://flowy:flowy@localhost:5432/flowy_test?sslmode=disable
-        run: go test -v -race -tags=integration ./...
+          make modules | while IFS= read -r module; do
+            printf '\n[download] %s\n' "$module"
+            (cd "$module" && go mod download all) || exit "$?"
+          done
+      - name: Check runtime prerequisites
+        run: |
+          docker info
+          cc --version
+          git --version
+          bash --version
+      - name: Install pinned linter
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v${{ env.LINT_VERSION }}
+      - name: Lint
+        run: make lint
+      - name: Unit tests
+        run: make test
+      - name: Integration tests
+        run: make test-integration
+      - name: End-to-end tests
+        run: make test-e2e

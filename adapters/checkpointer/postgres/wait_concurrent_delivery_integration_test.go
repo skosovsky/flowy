@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestWaitConcurrentDuplicateAndTimerPersistentSingleContinuation(t *testing.T) {
+func TestIntegrationWaitConcurrentDuplicateAndTimerPersistentSingleContinuation(t *testing.T) {
 	// Arrange: discard the arming pool before three concurrent deliveries.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -33,7 +33,7 @@ func TestWaitConcurrentDuplicateAndTimerPersistentSingleContinuation(t *testing.
 	timer := event
 	timer.ID, timer.Kind, timer.Payload = "timer", flowy.WaitTimer, nil
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

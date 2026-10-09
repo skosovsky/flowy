@@ -56,7 +56,7 @@ func postgresChildReferenceRunner(t *testing.T, store flowy.ExecutionStore, labe
 	return runner
 }
 
-func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
+func TestIntegrationChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 	// Arrange: a genuine completed child and two waits survive the original pool.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -84,7 +84,7 @@ func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 	}
 	pool.Close()
 	// Act: migrate through a new pool, then resolve children with their old addresses.
-	migrationCtx, migrationPool := racePool(t)
+	migrationCtx, migrationPool := reopenPool(t, pool)
 	migration := flowy.ExecutionMigration{
 		ID:     "move-children",
 		Source: source.Descriptor,
@@ -105,15 +105,15 @@ func TestChildMigrationPersistentOriginalResolutionAndJoin(t *testing.T) {
 		t.Fatalf("migration relaunched or rewrote children: %v load=%v", err, loadErr)
 	}
 	migrationPool.Close()
-	token := resolveMigratedPersistentChild(t, pending.ResumeToken, 1, &dispatches, &merges)
-	finishMigratedPersistentChildren(t, token, source, &dispatches, &merges)
+	token := resolveMigratedPersistentChild(t, pool.Config().ConnString(), pending.ResumeToken, 1, &dispatches, &merges)
+	finishMigratedPersistentChildren(t, pool.Config().ConnString(), token, source, &dispatches, &merges)
 }
 
-func resolveMigratedPersistentChild(t *testing.T, token flowy.ResumeToken, index int,
+func resolveMigratedPersistentChild(t *testing.T, dsn string, token flowy.ResumeToken, index int,
 	dispatches, merges *atomic.Int32,
 ) flowy.ResumeToken {
 	t.Helper()
-	ctx, pool := racePool(t)
+	ctx, pool := openRacePool(t, dsn)
 	store := NewExecutionStore(pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)
@@ -129,11 +129,11 @@ func resolveMigratedPersistentChild(t *testing.T, token flowy.ResumeToken, index
 	return pending.ResumeToken
 }
 
-func finishMigratedPersistentChildren(t *testing.T, token flowy.ResumeToken, source flowy.ExecutionEnvelope,
+func finishMigratedPersistentChildren(t *testing.T, dsn string, token flowy.ResumeToken, source flowy.ExecutionEnvelope,
 	dispatches, merges *atomic.Int32,
 ) {
 	t.Helper()
-	ctx, pool := racePool(t)
+	ctx, pool := openRacePool(t, dsn)
 	store := NewExecutionStore(pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)

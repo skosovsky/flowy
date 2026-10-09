@@ -35,6 +35,7 @@ formatters:
       # A list of prefixes, which, if set, checks import paths
       # with the given prefixes are grouped after 3rd-party packages.
       # Default: []
+      # Project-specific import grouping; keep shared lint rules unchanged.
       local-prefixes:
         - github.com/skosovsky/flowy
 
@@ -238,8 +239,6 @@ linters:
       check:
         - switch
         - map
-      # A default branch is enough for switches over open sets (e.g. reflect.Kind).
-      default-signifies-exhaustive: true
 
     exhaustruct_v5:
       # List of regular expressions to match type names that should be excluded from processing.
@@ -273,11 +272,9 @@ linters:
         - ^golang.org/x/tools/go/analysis.Analyzer$
         - ^google.golang.org/protobuf/.+Options$
         - ^gopkg.in/yaml.v3.Node$
-        # flowy: nodes return state deltas; internal structs are often partially filled.
-        - ^github.com/skosovsky/flowy\.(Step|executedStep|GraphBuilder|runConfig)$
+        # Event/result constructors populate only fields meaningful for that outcome.
         - ^github.com/skosovsky/flowy\.RunEvent$
         - ^github.com/skosovsky/flowy\.RunResult$
-        - ^github.com/skosovsky/flowy/testutil\.MemoryCheckpointer$
       # Allows empty structures in return statements.
       # Default: false
       allow-empty-returns: true
@@ -306,6 +303,11 @@ linters:
       # Minimal code complexity to report.
       # Default: 30 (but we recommend 10-20)
       min-complexity: 20
+
+    gomoddirectives:
+      # Nested modules use local development replacements; GOWORK is disabled.
+      # `make lint` runs golangci per module with cwd = that directory, so path-based issue excludes for go.mod do not apply.
+      replace-local: true
 
     gocritic:
       # Settings passed to gocritic.
@@ -478,7 +480,9 @@ linters:
       - path: '.*_test\.go$'
         linters: [ forbidigo ]
       - path: 'examples/'
-        linters: [ forbidigo, exhaustruct_v5 ]
+        linters:
+          - forbidigo
+          - exhaustruct_v5
       - path: '_test\.go'
         linters:
           - bodyclose
@@ -490,6 +494,3 @@ linters:
           - noctx
           - wrapcheck
           - exhaustruct_v5
-      # Adapter modules use replace github.com/skosovsky/ragy => ../.. for local workspace dev.
-      - path: '^adapters/.*/go\.mod$'
-        linters: [ gomoddirectives ]

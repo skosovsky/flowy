@@ -1,3 +1,5 @@
+//go:build e2e
+
 package flowy_test
 
 import (
@@ -8,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestExamplesSmoke(t *testing.T) {
+func TestE2EExamplesSmoke(t *testing.T) {
 	t.Parallel()
 
 	dirs := []string{
@@ -37,7 +39,7 @@ func TestExamplesSmoke(t *testing.T) {
 	for _, dir := range dirs {
 		t.Run(dir, func(t *testing.T) {
 			t.Parallel()
-			cmd := exec.Command("go", "run", ".")
+			cmd := exec.CommandContext(t.Context(), "go", "run", ".")
 			cmd.Dir = filepath.Join(examplesRoot, dir)
 			out, runErr := cmd.CombinedOutput()
 			if runErr != nil {

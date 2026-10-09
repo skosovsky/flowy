@@ -11,7 +11,7 @@ import (
 	pglease "github.com/skosovsky/flowy/adapters/lease/postgres"
 )
 
-func TestNativeLeaseSameOwnerABA(t *testing.T) {
+func TestIntegrationNativeLeaseSameOwnerABA(t *testing.T) {
 	// Arrange: independent connections reuse the same text owner after expiry.
 	ctx, pool := racePool(t)
 	id := testThreadID(t)

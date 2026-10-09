@@ -13,7 +13,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestImportDanglingReferencesPersistentNoPublication(t *testing.T) {
+func TestIntegrationImportDanglingReferencesPersistentNoPublication(t *testing.T) {
 	for _, children := range []bool{false, true} {
 		t.Run(map[bool]string{false: "journal", true: "children"}[children], func(t *testing.T) {
 			assertImportDanglingReferencesPersistent(t, children)
@@ -55,7 +55,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 	// Act: reject before publication; inspect absence using a separately created pool.
 	token, importErr := runner.Import(ctx, id, source, importer)
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	_, loadErr := restartedStore.LoadExecution(restartCtx, id)
 	_, historyErr := restartedStore.LoadCheckpoint(restartCtx, id, 1)

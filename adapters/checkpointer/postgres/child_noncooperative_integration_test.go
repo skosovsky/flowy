@@ -108,7 +108,7 @@ func recoveredPostgresChildNode(calls *atomic.Int32) flowy.Node[intState, flowy.
 	}
 }
 
-func TestChildNonCooperativeCancellationPersistentRecoveryFencesLiveOldConnection(t *testing.T) {
+func TestIntegrationChildNonCooperativeCancellationPersistentRecoveryFencesLiveOldConnection(t *testing.T) {
 	// Arrange: keep the old pool and callback alive while its coordinator releases ownership.
 	ctx, pool := racePool(t)
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
@@ -136,7 +136,7 @@ func TestChildNonCooperativeCancellationPersistentRecoveryFencesLiveOldConnectio
 		t.Fatalf("coordinator blocked on remote work: %v", err)
 	}
 	// Act: independent pool owns recovery/confirmation; the old database connection stays live.
-	recoveryCtx, recoveryPool := racePool(t)
+	recoveryCtx, recoveryPool := reopenPool(t, pool)
 	recoveryStore := NewExecutionStore(recoveryPool)
 	runner := postgresChildNodeRunner(t, recoveryStore, recoveredPostgresChildNode(&calls))
 	second, err := runner.Resume(recoveryCtx, first.ResumeToken)

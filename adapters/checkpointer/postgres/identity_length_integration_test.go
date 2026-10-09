@@ -20,7 +20,7 @@ import (
 
 const oldIdentityLength = 255
 
-func TestNativeCheckpointLongIdentitiesNeverAlias(t *testing.T) {
+func TestIntegrationNativeCheckpointLongIdentitiesNeverAlias(t *testing.T) {
 	// Arrange: fresh isolated native TEXT schema, two IDs with the same old-width prefix.
 	ctx, pool := identityPool(t)
 	prefix := strings.Repeat("x", oldIdentityLength)

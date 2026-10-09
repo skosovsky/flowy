@@ -22,6 +22,8 @@ func isTerminalEventType(t EventType) bool {
 	switch t {
 	case EventCompleted, EventSuspended, EventFailed, EventHandoff, EventContextCanceled:
 		return true
+	case EventNodeStarted, EventNodeCompleted, EventCheckpointFailed:
+		fallthrough
 	default:
 		return false
 	}

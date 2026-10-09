@@ -34,7 +34,7 @@ func (s *waitArmBarrierStore) CommitExecution(ctx context.Context, revision uint
 	return s.ExecutionStore.CommitExecution(ctx, revision, lease, envelope)
 }
 
-func TestWaitEarlyDeliveryPersistentNotArmedAndCallerRedelivery(t *testing.T) {
+func TestIntegrationWaitEarlyDeliveryPersistentNotArmedAndCallerRedelivery(t *testing.T) {
 	// Arrange: an event is not durably acknowledged before its arm boundary exists.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -99,7 +99,17 @@ func TestWaitEarlyDeliveryPersistentNotArmedAndCallerRedelivery(t *testing.T) {
 	armed := pgWaitDelivery(ctx, t, base, id)
 	event.Generation, event.ExpectedRevision = armed.Generation, armed.ExpectedRevision
 	pool.Close()
-	assertEarlyWaitRedeliveryAfterRestart(t, id, event, spec, clock, &nodes, &matches, &applies)
+	assertEarlyWaitRedeliveryAfterRestart(
+		t,
+		pool.Config().ConnString(),
+		id,
+		event,
+		spec,
+		clock,
+		&nodes,
+		&matches,
+		&applies,
+	)
 }
 
 func assertEarlyWaitNotAccepted(ctx context.Context, t *testing.T,
@@ -113,11 +123,11 @@ func assertEarlyWaitNotAccepted(ctx context.Context, t *testing.T,
 	}
 }
 
-func assertEarlyWaitRedeliveryAfterRestart(t *testing.T, id string, event flowy.WaitDelivery,
+func assertEarlyWaitRedeliveryAfterRestart(t *testing.T, dsn string, id string, event flowy.WaitDelivery,
 	spec flowy.DurableWaitSpec, clock waitAcceptanceClock, nodes, matches, applies *atomic.Int32,
 ) {
 	t.Helper()
-	ctx, pool := racePool(t)
+	ctx, pool := openRacePool(t, dsn)
 	store, err := NewWaitExecutionStore(pool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

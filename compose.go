@@ -147,6 +147,8 @@ func newSubgraphCheckpointer[Sub, E any](ctx context.Context) Checkpointer[Sub, 
 	case subgraphTestModeStaleInnerRevision:
 		base := newCaptureCheckpointer[Sub, E]()
 		return &bumpRevisionOnLoadCP[Sub, E]{captureCheckpointer: *base}
+	case subgraphTestModeNone:
+		fallthrough
 	default:
 		return newCaptureCheckpointer[Sub, E]()
 	}

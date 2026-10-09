@@ -304,14 +304,19 @@ See [consumer migration guide](docs/durable-migration-guide.md) for replacing ow
 
 ```bash
 make test          # все go.mod modules (рекомендуется)
-make test-race && make test-goleak && make lint
-go test -count=20 -run 'Close|Stop|Wait|Handoff|Lease|Checkpoint|ResumeStream|StreamCollect|ConsumeEvents' .
+make lint
+make test-integration
+make test-e2e
 ```
 
 Adapter-specific integration tests live with their adapter modules; keep adapter imports out of root integration tests to avoid import cycles.
 
-Stress gate для handoff/resume/orphan контрактов:
+Отдельные длительные проверки, вне CI/release gate:
 
 ```bash
 make verify-stress
+go test -count=20 -run 'Close|Stop|Wait|Handoff|Lease|Checkpoint|ResumeStream|StreamCollect|ConsumeEvents' .
 ```
+
+Актуальные команды, Docker prerequisites и профили тестов: [verification](docs/verification.md).
+Порядок релиза и восстановления: [release runbook](docs/release/runbook.md).

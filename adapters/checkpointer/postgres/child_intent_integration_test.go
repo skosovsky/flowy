@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestChildIntentPersistentRestartWithoutDuplicateGroup(t *testing.T) {
+func TestIntegrationChildIntentPersistentRestartWithoutDuplicateGroup(t *testing.T) {
 	// Arrange: intent-only node cannot complete until its children are joined.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -39,7 +39,7 @@ func TestChildIntentPersistentRestartWithoutDuplicateGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	// Act.
 	_, resumeErr := postgresChildIntentRunner(t, restartedStore, plan).Resume(restartCtx, first.ResumeToken)

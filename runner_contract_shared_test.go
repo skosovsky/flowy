@@ -163,6 +163,8 @@ func assertInfraFailureStreamSync[T, E any](
 		assertEventFailedReasonMatchesSync(t, events, wantReason)
 	case EventContextCanceled:
 		assertTerminalEventReasonMatchesSync(t, events, wantEvent, wantReason)
+	case EventNodeStarted, EventNodeCompleted, EventCompleted, EventSuspended, EventHandoff, EventCheckpointFailed:
+		fallthrough
 	default:
 		reason := terminalEventReason(events, wantEvent)
 		if reason != wantReason {

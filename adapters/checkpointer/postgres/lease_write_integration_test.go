@@ -15,7 +15,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestSnapshotAndOutboxWriteRejectStaleLease(t *testing.T) {
+func TestIntegrationSnapshotAndOutboxWriteRejectStaleLease(t *testing.T) {
 	// Arrange: takeover without a checkpoint advance makes OCC alone insufficient.
 	ctx, pool := racePool(t)
 	id := testThreadID(t)
@@ -76,7 +76,7 @@ func TestSnapshotAndOutboxWriteRejectStaleLease(t *testing.T) {
 	}
 }
 
-func TestOutboxExpiryBeforeCommitRollsBack(t *testing.T) {
+func TestIntegrationOutboxExpiryBeforeCommitRollsBack(t *testing.T) {
 	// Arrange: a live handle is valid when the transaction starts.
 	ctx, pool := racePool(t)
 	if _, schemaErr := pool.Exec(ctx, OutboxSchemaSQL()); schemaErr != nil {

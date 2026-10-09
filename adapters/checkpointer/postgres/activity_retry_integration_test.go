@@ -87,7 +87,7 @@ func postgresRetryRunner(t *testing.T, store flowy.ExecutionStore, at time.Time,
 	return runner
 }
 
-func TestActivityRetryPersistentRestart(t *testing.T) {
+func TestIntegrationActivityRetryPersistentRestart(t *testing.T) {
 	// Arrange: the worker clock advances, while persistence outlives connection pools.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -109,7 +109,7 @@ func TestActivityRetryPersistentRestart(t *testing.T) {
 		t.Fatal(loadErr)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	restarted := postgresRetryRunner(t, restartedStore, at, &calls)
 	blocked, blockedErr := restarted.Resume(restartCtx, failed.ResumeToken)

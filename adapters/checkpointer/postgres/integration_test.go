@@ -6,9 +6,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"testing"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/testdocker"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -38,11 +39,8 @@ func testSnapshot(threadID string, revision uint64, value int) flowy.Snapshot[in
 }
 
 // E2E: paired postgres lease adapter blocks DeleteIfIdle until Release.
-func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationLeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -77,11 +75,8 @@ func TestE2ELeaseAcquireBlocksDeleteUntilRelease(t *testing.T) {
 	}
 }
 
-func TestOCCConcurrencyConflict(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationOCCConcurrencyConflict(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -105,11 +100,8 @@ func TestOCCConcurrencyConflict(t *testing.T) {
 	}
 }
 
-func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -142,11 +134,8 @@ func TestSaveWithOutboxRollbackOnEnqueueFail(t *testing.T) {
 	}
 }
 
-func TestSaveWithOutboxSuccess(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationSaveWithOutboxSuccess(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -214,11 +203,8 @@ func TestSaveWithOutboxSuccess(t *testing.T) {
 	}
 }
 
-func TestSaveWithOutboxOCCConflict(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationSaveWithOutboxOCCConflict(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -260,11 +246,8 @@ func TestSaveWithOutboxOCCConflict(t *testing.T) {
 	}
 }
 
-func TestSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+func TestIntegrationSaveWithOutboxRollbackOnOutboxInsertFail(t *testing.T) {
+	dsn := testdocker.Postgres(t)
 
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
@@ -351,10 +334,7 @@ func (s *stubHandoffOutbox) EnqueueIntentTx(
 
 func pgRunnerPool(t *testing.T) (*pgxpool.Pool, *Checkpointer[runnerHandoffState, flowy.NoEffect]) {
 	t.Helper()
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set")
-	}
+	dsn := testdocker.Postgres(t)
 	ctx := context.Background()
 	pool, err := pgxpool.New(ctx, dsn)
 	if err != nil {
@@ -388,7 +368,7 @@ func pgHandoffGraph(t *testing.T) *flowy.Graph[runnerHandoffState, flowy.NoEffec
 	return g
 }
 
-func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
+func TestIntegrationRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	pool, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	g := pgHandoffGraph(t)
@@ -437,7 +417,7 @@ func TestRunnerHandoffPostgresTransactionalSuccess(t *testing.T) {
 	}
 }
 
-func TestRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
+func TestIntegrationRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{err: errors.New("broker down")}
 	g := pgHandoffGraph(t)
@@ -467,7 +447,7 @@ func TestRunnerHandoffPostgresTransactionalEnqueueFail(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	now := time.Now().UTC().Add(-time.Hour)
@@ -503,7 +483,7 @@ func TestRecoverStaleHandoffPostgresOrphaned(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	outbox := &stubHandoffOutbox{}
 	staleAt := time.Now().UTC().Add(-10 * time.Minute)
@@ -546,7 +526,7 @@ func TestRecoverStaleHandoffPostgresStalePending(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
@@ -572,7 +552,7 @@ func TestRecoverStaleHandoffPostgresFreshPendingRejected(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
@@ -594,7 +574,7 @@ func TestRecoverStaleHandoffPostgresWithoutOutbox(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{
@@ -618,7 +598,7 @@ func TestRecoverStaleHandoffPostgresAlreadyEnqueuedRejected(t *testing.T) {
 	}
 }
 
-func TestRecoverStaleHandoffPostgresNoneStatusRejected(t *testing.T) {
+func TestIntegrationRecoverStaleHandoffPostgresNoneStatusRejected(t *testing.T) {
 	_, cp := pgRunnerPool(t)
 	threadID := testThreadID(t)
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[runnerHandoffState, flowy.NoEffect]{

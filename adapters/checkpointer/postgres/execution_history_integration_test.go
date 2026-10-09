@@ -11,7 +11,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestHistoricalInspectionPersistentExactPrunedNeverLatest(t *testing.T) {
+func TestIntegrationHistoricalInspectionPersistentExactPrunedNeverLatest(t *testing.T) {
 	// Arrange: source revision one precedes an armed latest revision two.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -36,7 +36,7 @@ func TestHistoricalInspectionPersistentExactPrunedNeverLatest(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

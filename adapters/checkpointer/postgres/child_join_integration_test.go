@@ -74,7 +74,7 @@ func postgresChildJoinRunner(
 	return runner
 }
 
-func TestChildJoinCommittedResultSurvivesPersistentRestart(t *testing.T) {
+func TestIntegrationChildJoinCommittedResultSurvivesPersistentRestart(t *testing.T) {
 	// Arrange: join commits, but the following terminal publication fails.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -93,7 +93,7 @@ func TestChildJoinCommittedResultSurvivesPersistentRestart(t *testing.T) {
 		t.Fatalf("terminal failure missing: %v", err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	// Act: a fresh worker/pool must replay the committed join, not run its merge.
 	_, resumeErr := postgresChildJoinRunner(
 		t,

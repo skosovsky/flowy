@@ -44,7 +44,7 @@ func pgWaitContract(spec flowy.DurableWaitSpec, matches, applies *atomic.Int32) 
 		}}
 }
 
-func TestWaitAcceptancePersistentCrashBeforeContinuationAndLoserReplay(t *testing.T) {
+func TestIntegrationWaitAcceptancePersistentCrashBeforeContinuationAndLoserReplay(t *testing.T) {
 	// Arrange: accepted event is committed, but the worker disappears before Resume.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -69,7 +69,7 @@ func TestWaitAcceptancePersistentCrashBeforeContinuationAndLoserReplay(t *testin
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)
@@ -117,7 +117,7 @@ func (s *waitAcceptanceFaultStore) CommitExecution(ctx context.Context, revision
 	return s.ExecutionStore.CommitExecution(ctx, revision, lease, envelope)
 }
 
-func TestWaitAcceptancePersistentCommitFailureRetainsSource(t *testing.T) {
+func TestIntegrationWaitAcceptancePersistentCommitFailureRetainsSource(t *testing.T) {
 	// Arrange: fail the whole acceptance write, never just the state or journal side.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -156,7 +156,7 @@ func TestWaitAcceptancePersistentCommitFailureRetainsSource(t *testing.T) {
 		)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

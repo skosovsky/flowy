@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
+func TestIntegrationForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	// Arrange: retain a later head, remove only this fixture's initial history row.
 	ctx, pool := racePool(t)
 	store := NewExecutionStore(pool)
@@ -35,7 +35,7 @@ func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	}
 	pool.Close()
 	// Act: independent recovery uses the head anchor, not revision-one fallback.
-	recoveryCtx, recoveryPool := racePool(t)
+	recoveryCtx, recoveryPool := reopenPool(t, pool)
 	recovered := NewExecutionStore(recoveryPool)
 	loaded, loadErr := recovered.LoadExecution(recoveryCtx, head.ExecutionID)
 	_, absentErr := recovered.LoadCheckpoint(recoveryCtx, head.ExecutionID, creation.Revision)
@@ -52,7 +52,7 @@ func TestForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	}
 }
 
-func TestForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) {
+func TestIntegrationForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) {
 	for name, query := range map[string]string{
 		"erased": "UPDATE flowy_executions SET fork_lineage=NULL WHERE execution_id=$1",
 		"scalar": "UPDATE flowy_executions SET fork_lineage='1'::jsonb WHERE execution_id=$1",
@@ -69,7 +69,7 @@ func TestForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *testing.T) 
 				t.Fatal(err)
 			}
 			pool.Close()
-			recoveryCtx, recoveryPool := racePool(t)
+			recoveryCtx, recoveryPool := reopenPool(t, pool)
 			recovered := NewExecutionStore(recoveryPool)
 			lease, err := recovered.AcquireExecution(recoveryCtx, before.ExecutionID, "writer", time.Minute)
 			if err != nil {

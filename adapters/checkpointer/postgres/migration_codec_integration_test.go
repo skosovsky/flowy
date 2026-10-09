@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestMigrationInvalidCodecPersistentRestart(t *testing.T) {
+func TestIntegrationMigrationInvalidCodecPersistentRestart(t *testing.T) {
 	for _, stream := range []bool{false, true} {
 		for _, effects := range []bool{false, true} {
 			name := map[bool]string{false: "sync", true: "stream"}[stream] + "/" +
@@ -49,7 +49,7 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	var dispatches atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),

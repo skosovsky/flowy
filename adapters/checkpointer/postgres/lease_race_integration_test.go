@@ -5,10 +5,11 @@ package postgres
 import (
 	"context"
 	"errors"
-	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/testdocker"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -55,10 +56,16 @@ func (tx *lockBarrierTx) Exec(ctx context.Context, sql string, args ...any) (pgc
 
 func racePool(t *testing.T) (context.Context, *pgxpool.Pool) {
 	t.Helper()
-	dsn := os.Getenv("FLOWY_TEST_DATABASE_URL")
-	if dsn == "" {
-		t.Skip("FLOWY_TEST_DATABASE_URL not set; backend race not verified")
-	}
+	return openRacePool(t, testdocker.Postgres(t))
+}
+
+func reopenPool(t *testing.T, original *pgxpool.Pool) (context.Context, *pgxpool.Pool) {
+	t.Helper()
+	return openRacePool(t, original.Config().ConnString())
+}
+
+func openRacePool(t *testing.T, dsn string) (context.Context, *pgxpool.Pool) {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	t.Cleanup(cancel)
 	pool, err := pgxpool.New(ctx, dsn)
@@ -81,7 +88,7 @@ func awaitLock(ctx context.Context, t *testing.T, barrier *lockBarrierDB) {
 	}
 }
 
-func TestAcquireSameOwnerRace(t *testing.T) {
+func TestIntegrationAcquireSameOwnerRace(t *testing.T) {
 	for _, owner := range []string{"same-owner", "other-owner"} {
 		t.Run(owner, func(t *testing.T) { assertAcquireConcurrentOwners(t, owner) })
 	}
@@ -117,7 +124,7 @@ func assertAcquireConcurrentOwners(t *testing.T, secondOwner string) {
 	}
 }
 
-func TestDeleteIfIdleAcquireRace(t *testing.T) {
+func TestIntegrationDeleteIfIdleAcquireRace(t *testing.T) {
 	for _, firstOp := range []string{"acquire", "delete"} {
 		t.Run(firstOp, func(t *testing.T) {
 			assertDeleteAcquireOrder(t, firstOp)

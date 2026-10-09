@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -18,7 +17,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestExplicitImportPersistentRestart(t *testing.T) {
+func TestIntegrationExplicitImportPersistentRestart(t *testing.T) {
 	// Arrange: the original artifact is not a current execution envelope.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -85,7 +84,7 @@ func TestExplicitImportPersistentRestart(t *testing.T) {
 		t.Fatal("import dispatched a node")
 	}
 	pool.Close()
-	restartedPool, err := pgxpool.New(ctx, os.Getenv("FLOWY_TEST_DATABASE_URL"))
+	restartedPool, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

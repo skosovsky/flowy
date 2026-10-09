@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
+func TestIntegrationActivityMigratedRetryPersistentRestart(t *testing.T) {
 	// Arrange: independent pools and explicit runtime clocks around a persisted deadline.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -63,7 +63,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 				return state, nil
 			}},
 	}
-	earlyCtx, earlyPool := racePool(t)
+	earlyCtx, earlyPool := reopenPool(t, pool)
 	earlyStore := NewExecutionStore(earlyPool)
 	earlyRunner := persistentReferenceRunnerOptions(
 		t,
@@ -85,7 +85,7 @@ func TestActivityMigratedRetryPersistentRestart(t *testing.T) {
 		t.Fatalf("migration reset deadline: %v %+v", earlyErr, entry)
 	}
 	earlyPool.Close()
-	resumeCtx, resumePool := racePool(t)
+	resumeCtx, resumePool := reopenPool(t, pool)
 	options.Clock, options.Migrations = persistedRetryClock{at: now.Add(time.Hour)}, nil
 	restartedStore := NewExecutionStore(resumePool)
 	restarted := persistentReferenceRunnerOptions(

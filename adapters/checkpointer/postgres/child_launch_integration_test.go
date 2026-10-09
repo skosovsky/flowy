@@ -12,7 +12,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestChildCompletedLaunchPersistentReplayWithoutDispatch(t *testing.T) {
+func TestIntegrationChildCompletedLaunchPersistentReplayWithoutDispatch(t *testing.T) {
 	// Arrange: complete a child but deliberately leave the explicit parent join pending.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -44,7 +44,7 @@ func TestChildCompletedLaunchPersistentReplayWithoutDispatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	// Act.
 	_, replayErr := postgresChildLaunchRunner(t, restartedStore, plan, dispatch).Resume(restartCtx, first.ResumeToken)

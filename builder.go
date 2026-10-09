@@ -39,6 +39,8 @@ type GraphBuilder[T, E any] struct {
 func NewGraph[T, E any](reducer Reducer[T]) *GraphBuilder[T, E] {
 	return &GraphBuilder[T, E]{
 		reducer:               reducer,
+		middlewares:           nil,
+		entryPoint:            "",
 		nodes:                 make(map[string]nodeDef[T, E]),
 		edges:                 make(map[string]string),
 		conditionalEdges:      make(map[string]conditionalEdgeDef[T]),

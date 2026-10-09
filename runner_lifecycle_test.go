@@ -682,11 +682,14 @@ func TestResumeResetsStepCount(t *testing.T) {
 func TestInvariantBlocksContextCancelSave(t *testing.T) {
 	t.Parallel()
 
+	// Arrange: cancel only after the node has produced its invalid state.
 	type state struct{ OK bool }
+	ready := make(chan struct{})
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("slow", func(ctx context.Context, s state) (state, Directive, error) {
 		s.OK = false
+		close(ready)
 		<-ctx.Done()
 		return s, Completed(), nil
 	})
@@ -699,7 +702,8 @@ func TestInvariantBlocksContextCancelSave(t *testing.T) {
 
 	cp := newMemoryCP[state, NoEffect]()
 	runner := g.NewRunner(cp)
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -710,10 +714,16 @@ func TestInvariantBlocksContextCancelSave(t *testing.T) {
 			return nil
 		}))
 	}()
-	waitForHandoffCoordination()
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("node did not enter before the deadline")
+	}
+	// Act.
 	cancel()
 	<-done
 
+	// Assert.
 	if _, _, loadErr := cp.Load(context.Background(), "th"); !errors.Is(loadErr, ErrThreadNotFound) {
 		t.Fatalf("invalid state must not be checkpointed on cancel, err=%v", loadErr)
 	}
@@ -1105,7 +1115,11 @@ func TestLeaseHeartbeatPreventsTakeoverDuringActiveRun(t *testing.T) {
 func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 	t.Parallel()
 
+	// Arrange: wait for worker-a to own the lease before advancing the clock.
 	type state struct{}
+	ready := make(chan struct{})
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	t.Cleanup(cancel)
 
 	now := time.Date(2026, 5, 28, 14, 0, 0, 0, time.UTC)
 	var nowMu sync.Mutex
@@ -1120,12 +1134,9 @@ func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
 	b.AddNode("work", func(ctx context.Context, s state) (state, Directive, error) {
-		for {
-			if err := ctx.Err(); err != nil {
-				return s, Completed(), err
-			}
-			time.Sleep(2 * time.Millisecond)
-		}
+		close(ready)
+		<-ctx.Done()
+		return s, Completed(), ctx.Err()
 	})
 	b.AllowNoOutgoingRoute("work")
 	b.SetEntryPoint("work")
@@ -1140,7 +1151,7 @@ func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		_, startErr := runner.Start(
-			context.Background(),
+			ctx,
 			"takeover-th",
 			state{},
 			WithRunLease[state, NoEffect]("worker-a", ttl),
@@ -1148,7 +1159,12 @@ func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 		done <- startErr
 	}()
 
-	time.Sleep(15 * time.Millisecond)
+	select {
+	case <-ready:
+	case <-ctx.Done():
+		t.Fatal("worker-a did not enter its node before the deadline")
+	}
+	// Act: expire the acquired lease and let worker-b take over.
 	nowMu.Lock()
 	now = now.Add(ttl + 20*time.Millisecond)
 	nowMu.Unlock()
@@ -1156,6 +1172,7 @@ func TestLeaseLostWhenTakeoverAfterTTLExpiry(t *testing.T) {
 		t.Fatalf("worker-b acquire after expiry: %v", acquireErr)
 	}
 
+	// Assert: the original owner observes lease loss, not acquisition failure.
 	err = <-done
 	if !errors.Is(err, ErrLeaseLost) {
 		t.Fatalf("expected ErrLeaseLost after takeover, got %v", err)

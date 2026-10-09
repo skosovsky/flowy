@@ -14,7 +14,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestWaitStaleMatcherCannotOverwriteTimerWinnerOnLiveOldConnection(t *testing.T) {
+func TestIntegrationWaitStaleMatcherCannotOverwriteTimerWinnerOnLiveOldConnection(t *testing.T) {
 	// Arrange: old matcher ignores cancellation while a separate pool takes its expired lease.
 	ctx, oldPool := racePool(t)
 	if _, err := oldPool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -24,7 +24,7 @@ func TestWaitStaleMatcherCannotOverwriteTimerWinnerOnLiveOldConnection(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	newCtx, newPool := racePool(t)
+	newCtx, newPool := reopenPool(t, oldPool)
 	newStore, err := NewWaitExecutionStore(newPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)
@@ -102,14 +102,14 @@ SET lease_expiry=clock_timestamp()-interval '1 second' WHERE execution_id=@execu
 	}
 	oldPool.Close()
 	newPool.Close()
-	assertStaleWaitLoserPersistentRedelivery(t, id, event, spec, &nodes)
+	assertStaleWaitLoserPersistentRedelivery(t, oldPool.Config().ConnString(), id, event, spec, &nodes)
 }
 
-func assertStaleWaitLoserPersistentRedelivery(t *testing.T, id string, event flowy.WaitDelivery,
+func assertStaleWaitLoserPersistentRedelivery(t *testing.T, dsn string, id string, event flowy.WaitDelivery,
 	spec flowy.DurableWaitSpec, nodes *atomic.Int32,
 ) {
 	t.Helper()
-	ctx, pool := racePool(t)
+	ctx, pool := openRacePool(t, dsn)
 	store, err := NewWaitExecutionStore(pool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

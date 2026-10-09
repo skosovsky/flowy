@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"os"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,7 +16,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestManualActivityResolutionPersistentRestart(t *testing.T) {
+func TestIntegrationManualActivityResolutionPersistentRestart(t *testing.T) {
 	// Arrange: remote delivery is ambiguous; the operator later supplies evidence.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -99,7 +98,7 @@ func TestManualActivityResolutionPersistentRestart(t *testing.T) {
 	}
 	// Act: manual commit and resumed execution each use a fresh pool.
 	pool.Close()
-	resolvePool, err := pgxpool.New(ctx, os.Getenv("FLOWY_TEST_DATABASE_URL"))
+	resolvePool, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +111,7 @@ func TestManualActivityResolutionPersistentRestart(t *testing.T) {
 		t.Fatal("resolution dispatched")
 	}
 	resolvePool.Close()
-	restartPool, err := pgxpool.New(ctx, os.Getenv("FLOWY_TEST_DATABASE_URL"))
+	restartPool, err := pgxpool.New(ctx, pool.Config().ConnString())
 	if err != nil {
 		t.Fatal(err)
 	}

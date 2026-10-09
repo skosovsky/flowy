@@ -77,6 +77,6 @@ Runnable-примеры на API `Graph[T,E]`, `Runner.Start/Resume/Stream/Resum
 Список examples совпадает с [`examples_smoke_test.go`](../examples_smoke_test.go) (15 каталогов, `go run .`).
 
 ```bash
-go test ./... -run TestExamplesSmoke -count=1
-make test
+make test-e2e
+make test  # compile examples and run ordinary tests
 ```

@@ -17,7 +17,7 @@ func pgWaitCancellation(delivery flowy.WaitDelivery) flowy.WaitCancellation {
 		Evidence: "host-evidence"}
 }
 
-func TestWaitCancellationPersistentLateDeliveryAndResumeCannotRevive(t *testing.T) {
+func TestIntegrationWaitCancellationPersistentLateDeliveryAndResumeCannotRevive(t *testing.T) {
 	// Arrange: cancellation is committed on one pool, late delivery on its replacement.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -43,7 +43,7 @@ func TestWaitCancellationPersistentLateDeliveryAndResumeCannotRevive(t *testing.
 		t.Fatal(err)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)
@@ -71,7 +71,7 @@ func TestWaitCancellationPersistentLateDeliveryAndResumeCannotRevive(t *testing.
 			replayed, replayErr, late, lateErr, source, loadErr)
 	}
 	restartPool.Close()
-	finalCtx, finalPool := racePool(t)
+	finalCtx, finalPool := reopenPool(t, pool)
 	finalStore, err := NewWaitExecutionStore(finalPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func (s *waitCancelFaultStore) CommitExecution(ctx context.Context, revision uin
 	return s.ExecutionStore.CommitExecution(ctx, revision, lease, envelope)
 }
 
-func TestWaitCancellationPersistentCommitFaultRetainsArmedSource(t *testing.T) {
+func TestIntegrationWaitCancellationPersistentCommitFaultRetainsArmedSource(t *testing.T) {
 	// Arrange.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -132,7 +132,7 @@ func TestWaitCancellationPersistentCommitFaultRetainsArmedSource(t *testing.T) {
 		t.Fatalf("cancel fault leaked: token=%+v err=%v after=%+v load=%v", failed, failedErr, after, loadErr)
 	}
 	pool.Close()
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restarted, err := NewWaitExecutionStore(restartPool, postgresWaitProfile())
 	if err != nil {
 		t.Fatal(err)

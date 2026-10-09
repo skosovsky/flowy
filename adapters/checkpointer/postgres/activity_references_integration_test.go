@@ -14,7 +14,7 @@ import (
 	"github.com/skosovsky/flowy/checkpoint"
 )
 
-func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) {
+func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) {
 	// Arrange: unresolved source, migrated cursor, operator decision and replay use separate pools.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
@@ -39,7 +39,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 	}
 	entry := persistentReferenceEntry(t, source)
 	pool.Close()
-	migrateCtx, migratePool := racePool(t)
+	migrateCtx, migratePool := reopenPool(t, pool)
 	targetDescriptor := referenceDescriptor("new")
 	migration := flowy.ExecutionMigration{ID: "move", Source: oldDescriptor, Target: targetDescriptor,
 		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
@@ -66,7 +66,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 		t.Fatal(err)
 	}
 	migratePool.Close()
-	operatorCtx, operatorPool := racePool(t)
+	operatorCtx, operatorPool := reopenPool(t, pool)
 	operator := persistentReferenceRunner(
 		t,
 		NewExecutionStore(operatorPool),
@@ -93,7 +93,7 @@ func TestActivityMigrationReferencePersistentManualStreamRecovery(t *testing.T) 
 		t.Fatal(err)
 	}
 	operatorPool.Close()
-	replayCtx, replayPool := racePool(t)
+	replayCtx, replayPool := reopenPool(t, pool)
 	replayedStore := NewExecutionStore(replayPool)
 	replayed := persistentReferenceRunner(t, replayedStore, targetDescriptor, "new-node", request, nil)
 	handle, err := replayed.ResumeStream(replayCtx, token)

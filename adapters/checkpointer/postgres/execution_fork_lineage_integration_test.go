@@ -16,7 +16,7 @@ import (
 	"github.com/skosovsky/flowy"
 )
 
-func TestForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
+func TestIntegrationForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 	for _, kind := range []string{"erase", "mode", "source", "label", "time"} {
 		t.Run(kind, func(t *testing.T) {
 			// Arrange: change stored payload and its seal, but not immutable creation metadata.
@@ -56,7 +56,7 @@ func TestForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 			}
 			pool.Close()
 			// Act: recover through a fresh pool, with executable fake policy present.
-			recoveryCtx, recoveryPool := racePool(t)
+			recoveryCtx, recoveryPool := reopenPool(t, pool)
 			recovered := NewExecutionStore(recoveryPool)
 			_, loadErr := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			_, exactErr := recovered.LoadCheckpoint(recoveryCtx, before.ExecutionID, before.Revision)
@@ -102,7 +102,7 @@ func createForkLineageFixture(ctx context.Context, t *testing.T, pool *pgxpool.P
 	return before
 }
 
-func TestForkPersistentLineageCannotBeRewrittenUnderValidFence(t *testing.T) {
+func TestIntegrationForkPersistentLineageCannotBeRewrittenUnderValidFence(t *testing.T) {
 	for name, mutate := range map[string]func(*flowy.ExecutionEnvelope){
 		"erase": func(e *flowy.ExecutionEnvelope) { e.Fork = nil },
 		"live mode": func(e *flowy.ExecutionEnvelope) {
@@ -121,7 +121,7 @@ func TestForkPersistentLineageCannotBeRewrittenUnderValidFence(t *testing.T) {
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, base, &nodes, &live)
 			pool.Close()
-			recoveryCtx, recoveryPool := racePool(t)
+			recoveryCtx, recoveryPool := reopenPool(t, pool)
 			recovered := NewExecutionStore(recoveryPool)
 			candidate, err := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			if err != nil {

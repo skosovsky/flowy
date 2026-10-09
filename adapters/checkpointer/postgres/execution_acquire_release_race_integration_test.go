@@ -46,7 +46,7 @@ func (tx *executionHolderBarrierTx) QueryRow(ctx context.Context, sql string, ar
 	return tx.Tx.QueryRow(ctx, sql, args...)
 }
 
-func TestExecutionAcquireRefusedThenOwnerReleasedReturnsTypedContention(t *testing.T) {
+func TestIntegrationExecutionAcquireRefusedThenOwnerReleasedReturnsTypedContention(t *testing.T) {
 	// Arrange: deterministically release between refused UPDATE and holder inspection.
 	ctx, pool := racePool(t)
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {

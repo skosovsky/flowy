@@ -32,7 +32,7 @@ func (s *activityPoolFaultStore) CommitExecution(ctx context.Context, revision u
 	return s.ExecutionStore.CommitExecution(ctx, revision, lease, envelope)
 }
 
-func TestActivityPersistentCrashBoundaries(t *testing.T) {
+func TestIntegrationActivityPersistentCrashBoundaries(t *testing.T) {
 	for _, boundary := range []struct {
 		name         string
 		failAt       int32
@@ -79,7 +79,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 	if failAt < 5 && !errors.Is(startErr, flowy.ErrActivityJournalUnavailable) {
 		t.Fatalf("real outage lost stable classification: %v", startErr)
 	}
-	restartCtx, restartPool := racePool(t)
+	restartCtx, restartPool := reopenPool(t, pool)
 	restartedStore := NewExecutionStore(restartPool)
 	source, err := restartedStore.LoadExecution(restartCtx, id)
 	if err != nil {
@@ -98,7 +98,7 @@ func assertActivityPersistentCrashBoundary(t *testing.T, failAt, initialCalls in
 			return []byte("remote receipt"), nil
 		}
 		restartPool.Close()
-		resolveCtx, resolvePool := racePool(t)
+		resolveCtx, resolvePool := reopenPool(t, pool)
 		restartedStore = NewExecutionStore(resolvePool)
 		restarted = persistentReferenceRunner(t, restartedStore, referenceDescriptor("fault"), "node", request, nil)
 		result, resumeErr = restarted.Resume(resolveCtx, result.ResumeToken)
