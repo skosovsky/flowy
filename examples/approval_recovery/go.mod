@@ -4,8 +4,8 @@ go 1.27.2
 
 require (
 	github.com/jackc/pgx/v5 v5.11.0
-	github.com/skosovsky/flowy v0.14.1
-	github.com/skosovsky/flowy/adapters/checkpointer/postgres v0.14.0
+	github.com/skosovsky/flowy v0.14.2
+	github.com/skosovsky/flowy/adapters/checkpointer/postgres v0.14.2
 	github.com/skosovsky/toolsy v0.18.0
 	github.com/stretchr/testify v1.12.1
 )
@@ -20,7 +20,3 @@ require (
 	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
-
-replace github.com/skosovsky/flowy => ../..
-
-replace github.com/skosovsky/flowy/adapters/checkpointer/postgres => ../../adapters/checkpointer/postgres
