@@ -340,13 +340,13 @@ func (r *graphRunner[T, E]) tryTransactionalHandoffSave(
 	expectedRevision uint64,
 	snapshot Snapshot[T, E],
 	meta RunMetadata,
-	_ runInvocationOptions[T, E],
+	inv runInvocationOptions[T, E],
 	outbox HandoffOutbox,
 	result *RunResult[T, E],
 ) (uint64, bool, error) {
 	txCP, ok := resolveTransactionalCheckpointer(r.checkpointer)
-	// Silent fallback to 3-phase FSM when the checkpointer does not implement SaveWithOutbox.
-	// ErrTransactionalOutboxUnsupported is surfaced only from lease-guard transactional paths.
+	// The default permits the documented multi-phase fallback; atomic invocations
+	// have already rejected missing capabilities before execution.
 	if !ok || outbox == nil {
 		return 0, false, nil
 	}
@@ -359,11 +359,15 @@ func (r *graphRunner[T, E]) tryTransactionalHandoffSave(
 	snapshot.RunMeta = meta
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(runCtx), contextCancelSaveTimeout)
 	defer cancelSave()
+	prepared, prepErr := r.prepareSnapshot(saveCtx, snapshot, inv)
+	if prepErr != nil {
+		return 0, true, prepErr
+	}
 	var validatedTxRevision uint64
 	newRev, err := txCP.SaveWithOutbox(
 		saveCtx,
 		expectedRevision,
-		snapshot,
+		prepared,
 		func(ctx context.Context, tx TransactionHandle, savedRevision uint64) error {
 			expectedSavedRevision := expectedRevision + 1
 			if savedRevision != expectedSavedRevision {

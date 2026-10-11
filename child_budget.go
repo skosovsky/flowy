@@ -1,11 +1,11 @@
 package flowy
 
-// PlanChildBudgetReturn computes detached unused named units from an explicit
+// ComputeChildBudgetReturn computes detached unused named units from an explicit
 // host consumption claim. It never releases a reservation or changes runtime
 // accounting. Completion alone is not evidence of zero consumption.
-func PlanChildBudgetReturn(child ChildRecord, used map[string]int) (map[string]int, error) {
+func ComputeChildBudgetReturn(child ChildRecord, used map[string]int) (map[string]int, error) {
 	if validateChildRecordState(child) != nil {
-		return nil, ErrChildJoinInvalid
+		return nil, ErrChildInvalid
 	}
 	if !settledChild(child) {
 		return nil, ErrChildrenUnresolved

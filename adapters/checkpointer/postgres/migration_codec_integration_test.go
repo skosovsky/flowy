@@ -30,13 +30,13 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	envelope := flowy.ExecutionEnvelope{ExecutionID: id, Descriptor: referenceDescriptor("old"), Activation: 1,
-		Progress:       flowy.MigrationState{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "old-node", StatePayload: []byte("opaque-old-state")},
 		EffectsPayload: []byte("[]")}
 	if effects {
 		envelope.EffectsPayload = []byte("invalid-effects")
@@ -50,22 +50,28 @@ func assertMigrationInvalidCodecPersistentRestart(t *testing.T, stream, effects 
 	}
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	var dispatches atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 			dispatches.Add(1)
 			return []byte("must not run"), nil
 		}}
-	migration := flowy.ExecutionMigration{ID: "invalid-codec", Source: source.Descriptor,
-		Target: referenceDescriptor("new"), Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+	migration := flowy.ExecutionMigration{
+		ID:     "invalid-codec",
+		Source: source.Descriptor,
+		Target: referenceDescriptor(
+			"new",
+		),
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "node"
 			state.StatePayload = []byte("invalid-state")
 			if effects {
 				state.StatePayload = []byte(`{"value":1}`)
 			}
 			return state, nil
-		}}
+		},
+	}
 	runner := persistentReferenceRunner(t, restartedStore, referenceDescriptor("new"), "node", request,
 		[]flowy.ExecutionMigration{migration})
 	token := flowy.ResumeToken{ThreadID: id, SnapshotRevision: source.Revision}

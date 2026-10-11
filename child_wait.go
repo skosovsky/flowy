@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -32,21 +33,23 @@ type ChildWaitResolutionRecord struct {
 
 // ResolveChildWait atomically resolves exactly one waiting child without
 // invoking codecs, nodes or dispatch. It does not resume the parent implicitly.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token ResumeToken,
-	resolution ChildWaitResolution) (ResumeToken, error) {
+	resolution ChildWaitResolution) (result ResumeToken, retErr error) {
 	if resolution.Node == "" || resolution.Activation == 0 || resolution.GroupKey == "" || resolution.ChildID == "" ||
 		!validRuntimeText(string(resolution.Node), resolution.GroupKey, resolution.ChildID, resolution.ExecutionID,
-			resolution.WaitID, resolution.DecisionID) ||
+			resolution.WaitID, resolution.DecisionID, resolution.Result.Error) ||
 		resolution.ExecutionID == "" || resolution.ChildRevision == 0 || resolution.WaitID == "" || resolution.DecisionID == "" ||
 		(resolution.Result.State != ChildCompleted && resolution.Result.State != ChildFailed) || resolution.Result.WaitID != "" {
-		return ResumeToken{}, ErrChildJoinInvalid
+		return ResumeToken{}, ErrChildInvalid
 	}
 	resolution.Result.Payload = bytes.Clone(resolution.Result.Payload)
 	session, err := r.acquireSession(ctx, token.ThreadID)
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.childMutationSource(session.ctx, token)
 	if err != nil {
 		return ResumeToken{}, err
@@ -54,6 +57,24 @@ func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token Resume
 	if source.Activation != resolution.Activation {
 		return ResumeToken{}, ErrChildRevision
 	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := childObservation(
+		source,
+		LifecycleChildResolve,
+		childExecutionIdentity(
+			source.ExecutionID,
+			resolution.Node,
+			resolution.Activation,
+			resolution.GroupKey,
+			"",
+		),
+		resolution.ChildID,
+	)
+	event.Stage, event.ChildExecutionID, event.DecisionID = LifecycleStarted, resolution.ExecutionID, resolution.DecisionID
+	event.Node = resolution.Node
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	groups, err := executionChildGroups(source)
 	if err != nil {
 		return ResumeToken{}, err
@@ -87,10 +108,13 @@ func (r *DurableRunner[T, E]) ResolveChildWait(ctx context.Context, token Resume
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.Code = LifecycleCommitted, committed.Revision, childObservationCode(
+		resolution.Result.State,
+	)
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 
@@ -129,6 +153,7 @@ func validChildWaitResolution(child ChildRecord) bool {
 		return true
 	}
 	return decision.WaitID != "" && decision.DecisionID != "" && decision.SourceRevision > 0 &&
+		validRuntimeText(decision.WaitID, decision.DecisionID, child.Error) &&
 		decision.Incarnation > 0 &&
 		!decision.At.IsZero() &&
 		decision.ChildRevision > 2 &&

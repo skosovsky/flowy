@@ -32,7 +32,7 @@ func migratedForkRunner(t *testing.T, store flowy.ExecutionStore, policy *flowy.
 		Target: durableDescriptor(
 			"fork-migrated",
 		),
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			transforms.Add(1)
 			state.ExecutionPointer = "renamed"
 			state.StatePayload = []byte(`{"Value":40,"Approved":false}`)

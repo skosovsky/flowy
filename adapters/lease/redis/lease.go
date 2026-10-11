@@ -8,13 +8,21 @@ import (
 	"fmt"
 	"strconv"
 	"time"
+	"unicode/utf8"
 
 	goredis "github.com/redis/go-redis/v9"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
+	"github.com/skosovsky/flowy/internal/rediskeys"
 )
 
 const defaultPrefix = "flowy"
+
+var (
+	ErrConfiguration         = errors.New("flowy redis: invalid standalone configuration")
+	ErrDeploymentUnsupported = errors.New("flowy redis: only standalone deployment supported")
+)
 
 const acquireReplyFields = 3
 
@@ -23,19 +31,28 @@ type Options struct {
 	Prefix string
 }
 
-// LeaseManager stores thread leases at {prefix}:lease:{threadID}.
+// LeaseManager stores fenced leases in standalone Redis key schema v2.
 type LeaseManager struct {
 	client goredis.Cmdable
 	prefix string
 }
 
-// NewLeaseManager creates a Redis-backed lease manager.
-func NewLeaseManager(client goredis.Cmdable, opts Options) *LeaseManager {
+// NewLeaseManager supports only a standalone Redis server. Cmdable wrappers
+// must address the same standalone server; ClusterClient and Ring are rejected.
+func NewLeaseManager(client goredis.Cmdable, opts Options) (*LeaseManager, error) {
+	if nilvalue.IsNil(client) || !utf8.ValidString(opts.Prefix) {
+		return nil, ErrConfiguration
+	}
+	switch client.(type) {
+	case *goredis.ClusterClient, *goredis.Ring:
+		return nil, ErrDeploymentUnsupported
+	}
+
 	prefix := opts.Prefix
 	if prefix == "" {
 		prefix = defaultPrefix
 	}
-	return &LeaseManager{client: client, prefix: prefix}
+	return &LeaseManager{client: client, prefix: prefix}, nil
 }
 
 const acquireScript = `
@@ -44,7 +61,8 @@ if current then
   if cjson.decode(current).owner == ARGV[1] then return {0, '', ''} end
   return {-1, '', ''}
 end
-redis.call('INCR', KEYS[2])
+local incremented = redis.pcall('INCR', KEYS[2])
+if type(incremented) == 'table' and incremented.err then return {-2, '', ''} end
 local fence = redis.call('GET', KEYS[2])
 if fence == '0' or string.sub(fence, 1, 1) == '-' then return {-2, '', ''} end
 local time = redis.call('TIME')
@@ -64,7 +82,7 @@ func (m *LeaseManager) Acquire(
 	if ttl <= 0 {
 		return flowy.ExecutionLease{}, errors.New("flowy: lease ttl must be positive")
 	}
-	result, err := m.client.Eval(ctx, acquireScript, []string{m.leaseKey(threadID), m.fenceKey(threadID)}, owner, max(ttl.Milliseconds(), 1)).
+	result, err := m.client.Eval(ctx, acquireScript, []string{m.leaseKey(threadID), m.fenceKey(threadID)}, owner, leaseTTLMillis(ttl)).
 		Slice()
 	if err != nil {
 		return flowy.ExecutionLease{}, err
@@ -112,7 +130,7 @@ func (m *LeaseManager) Renew(
 	if lease.ExecutionID == "" || lease.Owner == "" || lease.Incarnation == 0 || ttl <= 0 {
 		return flowy.ExecutionLease{}, flowy.ErrLeaseLost
 	}
-	millis := max(ttl.Milliseconds(), 1)
+	millis := leaseTTLMillis(ttl)
 	result, err := m.client.Eval(ctx, renewScript, []string{m.leaseKey(lease.ExecutionID)}, lease.Owner, strconv.FormatUint(lease.Incarnation, 10), millis).
 		Text()
 	if err != nil {
@@ -171,11 +189,11 @@ func (m *LeaseManager) Holder(ctx context.Context, threadID string) (string, boo
 }
 
 func (m *LeaseManager) leaseKey(threadID string) string {
-	return fmt.Sprintf("%s:lease:%s", m.prefix, threadID)
+	return rediskeys.Key(m.prefix, threadID, "lease")
 }
 
 func (m *LeaseManager) fenceKey(threadID string) string {
-	return fmt.Sprintf("%s:lease-fence:%s", m.prefix, threadID)
+	return rediskeys.Key(m.prefix, threadID, "fence")
 }
 
 func decodeAcquiredLease(threadID, owner string, reply []any) (flowy.ExecutionLease, error) {
@@ -205,3 +223,12 @@ func (*LeaseManager) NativeLeaseManager() {}
 
 var _ flowy.LeaseManager = (*LeaseManager)(nil)
 var _ flowy.NativeLeaseManager = (*LeaseManager)(nil)
+
+// Redis expiry precision is milliseconds; positive fractions must not expire early.
+func leaseTTLMillis(ttl time.Duration) int64 {
+	millis := ttl.Milliseconds()
+	if ttl%time.Millisecond != 0 {
+		millis++
+	}
+	return millis
+}

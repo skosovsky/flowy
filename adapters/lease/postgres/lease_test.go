@@ -22,6 +22,7 @@ type leaseFakeDB struct {
 	}
 	fences   map[string]uint64
 	execRows int64
+	ttlArgs  []float64
 }
 
 type leaseFakeTx struct {
@@ -53,6 +54,9 @@ func (d *leaseFakeDB) Exec(_ context.Context, sql string, args ...any) (pgconn.C
 	threadID, _ := named["thread_id"].(string)
 	owner, _ := named["owner"].(string)
 	ttlSec, _ := named["ttl_seconds"].(float64)
+	if _, exists := named["ttl_seconds"]; exists {
+		d.ttlArgs = append(d.ttlArgs, ttlSec)
+	}
 	incarnation, _ := named["incarnation"].(uint64)
 
 	if strings.Contains(sql, "INSERT INTO flowy_leases") {
@@ -145,7 +149,10 @@ func (r leaseFakeRow) Scan(dest ...any) error {
 func TestLeaseManagerAcquireConflict(t *testing.T) {
 	t.Parallel()
 	db := &leaseFakeDB{}
-	lm := NewLeaseManager(db)
+	lm, constructorErr := NewLeaseManager(db)
+	if constructorErr != nil {
+		t.Fatal(constructorErr)
+	}
 	ctx := context.Background()
 	lease, err := lm.Acquire(ctx, "th-1", "a", time.Minute)
 	if err != nil {

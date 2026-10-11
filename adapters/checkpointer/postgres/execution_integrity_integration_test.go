@@ -26,7 +26,7 @@ func TestIntegrationExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T
 				t.Fatal(err)
 			}
 			id := testThreadID(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 			if err != nil {
 				t.Fatal(err)
@@ -37,13 +37,13 @@ func TestIntegrationExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T
 			_, err = store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 				ExecutionID: id,
 				Descriptor: flowy.ExecutionDescriptor{
-					GraphID:           "g",
-					GraphRevision:     "r",
-					StateCodec:        "s",
+					GraphID:       "g",
+					GraphRevision: "r",
+					StateCodec:    "s", EffectsCodec: "host-effects-v1",
 					ExecutionContract: "e",
 					ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 				},
-				Progress: flowy.MigrationState{ExecutionPointer: "node"},
+				Progress: flowy.ExecutionProgress{ExecutionPointer: "node"},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -52,7 +52,7 @@ func TestIntegrationExecutionStoreRejectsCorruptPersistentAggregate(t *testing.T
 				t.Fatal(err)
 			}
 			// Act: another handle observes the persisted corruption.
-			restarted := NewExecutionStore(pool)
+			restarted := mustExecutionStore(t, pool)
 			_, latestErr := restarted.LoadExecution(ctx, id)
 			// Assert: a lost latest history row must not be mistaken for a new run.
 			if !errors.Is(latestErr, flowy.ErrExecutionCorrupt) {

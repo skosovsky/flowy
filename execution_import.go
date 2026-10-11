@@ -38,7 +38,7 @@ func (s LegacyExecutionSource) Validate() error {
 // ImportedExecutionState contains target data, not a reconstructed journal.
 // Old external effects must not be reclassified as completed activities.
 type ImportedExecutionState struct {
-	Progress       MigrationState
+	Progress       ExecutionProgress
 	EffectsPayload []byte
 	RunMeta        RunMetadata
 }
@@ -59,12 +59,14 @@ type ImportProvenance struct {
 
 // Import creates a new target execution without executing nodes or activities.
 // It never overwrites an existing execution or guesses an old record's format.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) Import(
 	ctx context.Context,
 	id string,
 	source LegacyExecutionSource,
 	importer ExecutionImporter,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) {
 	if importer.ID == "" || importer.Format != source.Format || importer.Transform == nil ||
 		!validRuntimeText(importer.ID) {
 		return ResumeToken{}, ErrExecutionImportInvalid
@@ -80,7 +82,7 @@ func (r *DurableRunner[T, E]) Import(
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	ctx = session.ctx
 	if _, loadErr := r.store.LoadExecution(ctx, id); !errors.Is(loadErr, ErrThreadNotFound) {
 		if loadErr != nil {
@@ -91,6 +93,11 @@ func (r *DurableRunner[T, E]) Import(
 	if ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(ctx)
 	}
+	event := lifecycleObservation(LifecycleImport, LifecycleStarted, id, "")
+	event.SourceExecutionID, event.SourceRevision, event.TargetExecutionID = source.ID, source.Revision, id
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(ctx, event) }()
 	state, err := importer.Transform(bytes.Clone(source.Payload))
 	if err != nil {
 		return ResumeToken{}, fmt.Errorf("%w: %w", ErrExecutionImportInvalid, err)
@@ -126,7 +133,7 @@ func (r *DurableRunner[T, E]) Import(
 		RunMeta:         state.RunMeta,
 		Activation:      1,
 		Import:          &ImportProvenance{Source: source, ImporterID: importer.ID},
-		Fork:            nil,
+		Fork:            nil, Rollover: nil, Transfer: nil,
 	})
 	if collectionsErr := validateExecutionCollections(envelope); collectionsErr != nil {
 		return ResumeToken{}, errors.Join(ErrExecutionImportInvalid, collectionsErr)
@@ -134,9 +141,10 @@ func (r *DurableRunner[T, E]) Import(
 	if metadataErr := validateExecutionSourceMetadata(envelope); metadataErr != nil {
 		return ResumeToken{}, errors.Join(ErrExecutionImportInvalid, metadataErr)
 	}
-	committed, err := r.store.CommitExecution(ctx, 0, session.lease, envelope)
+	committed, err := commitExecution(ctx, r.store, 0, session.lease, envelope)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.TargetRevision = LifecycleCommitted, committed.Revision, committed.Revision
 	return ResumeToken{ThreadID: id, SnapshotRevision: committed.Revision}, nil
 }

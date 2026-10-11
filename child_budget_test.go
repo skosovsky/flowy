@@ -12,7 +12,7 @@ func TestChildBudgetReturnPlanningIsDetachedAndRequiresSettledEvidence(t *testin
 	child.Spec.Allocation = map[string]int{"units": 9, "requests": 3}
 	used := map[string]int{"units": 4, "requests": 1}
 	// Act.
-	returned, err := PlanChildBudgetReturn(child, used)
+	returned, err := ComputeChildBudgetReturn(child, used)
 	// Assert: exact subtraction, with no mutation or shared return map.
 	if err != nil || returned["units"] != 5 || returned["requests"] != 2 || used["units"] != 4 ||
 		child.Spec.Allocation["units"] != 9 {
@@ -48,7 +48,7 @@ func TestChildBudgetReturnRejectsUnknownAndInvalidUsage(t *testing.T) {
 				delete(used, "units")
 			}
 			// Act.
-			_, err := PlanChildBudgetReturn(child, used)
+			_, err := ComputeChildBudgetReturn(child, used)
 			// Assert: no release is authorized for unresolved work or unbounded claims.
 			if !errors.Is(err, want) {
 				t.Fatalf("invalid return accepted: %v want=%v", err, want)

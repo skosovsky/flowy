@@ -13,3 +13,5 @@ require (
 	github.com/jackc/puddle/v2 v2.2.3 // indirect
 	golang.org/x/text v0.42.0 // indirect
 )
+
+replace github.com/skosovsky/flowy => ../../..

@@ -26,7 +26,7 @@ func TestDurableMigrationInvalidCodecPreservesSource(t *testing.T) {
 				var nodes atomic.Int32
 				migration := flowy.ExecutionMigration{
 					ID: "invalid-codec", Source: source.Descriptor, Target: durableDescriptor("target"),
-					Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+					Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 						state.ExecutionPointer = "node"
 						state.StatePayload = []byte("invalid-state")
 						if malformedEffects {

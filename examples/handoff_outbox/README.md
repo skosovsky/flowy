@@ -63,7 +63,10 @@ Recovery cron should retry on `ErrHandoffPatchFailed` when the cause is `ErrConc
 
 ## Observability
 
-Пример подключает lifecycle observer adapter для counters.
+В `main.go` observer не установлен. Host может установить callback через
+`SetLifecycleObserver` или OTel adapter через `InstallLifecycleObserverWithTracing`.
+Default counters используют bounded operation/stage dimensions; runtime IDs
+остаются в traces. См. [контракт наблюдаемости](../../docs/runtime-observation-contract.md).
 
 ## Production notes
 

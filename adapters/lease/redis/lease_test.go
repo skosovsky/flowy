@@ -18,7 +18,7 @@ func TestLeaseManagerAcquireRelease(t *testing.T) {
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	defer func() { _ = client.Close() }()
 
-	lm := NewLeaseManager(client, Options{Prefix: "flowy"})
+	lm := mustLeaseManager(t, client, Options{Prefix: "flowy"})
 	ctx := context.Background()
 	lease, err := lm.Acquire(ctx, "th-1", "worker-a", time.Minute)
 	if err != nil {

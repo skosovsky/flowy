@@ -88,7 +88,7 @@ func seedActivityReferenceRecovery(ctx context.Context, t *testing.T, store flow
 		return []byte("confirmed"), nil
 	}
 	migration := flowy.ExecutionMigration{ID: "move", Source: source.Descriptor, Target: durableDescriptor("new"),
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.JournalReferences = map[string]string{"operation": identity}
 			return state, nil

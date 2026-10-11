@@ -20,18 +20,22 @@ func TestIntegrationActivityJournalPersistentRejectionBeforeExecution(t *testing
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	lease, err := store.AcquireExecution(ctx, id, "seed", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID: "journal-test", GraphRevision: "current", StateCodec: "json-state", ExecutionContract: "sync",
-		ReplayPolicy: flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
+		GraphID:           "journal-test",
+		GraphRevision:     "current",
+		StateCodec:        "json-state",
+		EffectsCodec:      "host-effects-v1",
+		ExecutionContract: "sync",
+		ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: id, Descriptor: descriptor,
-		Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("not-decodable")},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("not-decodable")},
 		JournalPayload: []byte("null"),
 	})
 	if err != nil {
@@ -53,7 +57,7 @@ func TestIntegrationActivityJournalPersistentRejectionBeforeExecution(t *testing
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := flowy.NewDurableRunner(graph, NewExecutionStore(restartedPool), descriptor,
+	runner, err := flowy.NewDurableRunner(graph, mustExecutionStore(t, restartedPool), descriptor,
 		checkpoint.JSONSerializer[intState]{}, checkpoint.JSONSerializer[[]flowy.NoEffect]{},
 		flowy.DurableOptions{Owner: "worker", LeaseTTL: time.Minute})
 	if err != nil {
@@ -68,7 +72,7 @@ func TestIntegrationActivityJournalPersistentRejectionBeforeExecution(t *testing
 		calls.Load() != 0 {
 		t.Fatalf("invalid journal executed: resume=%v stream=%v calls=%d", resumeErr, streamErr, calls.Load())
 	}
-	latest, err := NewExecutionStore(restartedPool).LoadExecution(restartCtx, id)
+	latest, err := mustExecutionStore(t, restartedPool).LoadExecution(restartCtx, id)
 	if err != nil || latest.Revision != source.Revision || latest.Digest != source.Digest {
 		t.Fatalf("rejection changed source: %+v %v", latest, err)
 	}

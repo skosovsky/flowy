@@ -26,12 +26,18 @@ func TestActivityMigratedRetryPreservesIdentityAttemptsAndDeadline(t *testing.T)
 		Implementation: "host",
 		Input:          []byte("input"),
 		Retry: flowy.ActivityRetryPolicy{
-			Label:             "bounded",
-			MaxAttempts:       2,
-			Delay:             time.Hour,
+			Label:       "bounded",
+			MaxAttempts: 2,
+			Schedule: flowy.ActivityRetrySchedule{
+				Kind:         flowy.ActivityRetryFixed,
+				InitialDelay: time.Hour,
+				MaxDelay:     time.Hour,
+			},
 			SafeRetryContract: "idempotent",
 		},
-		Classify: func(error) flowy.ActivityFailureClass { return flowy.ActivityRetryable },
+		Classify: func(error) flowy.ActivityFailureDecision {
+			return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable}
+		},
 		Dispatch: func(_ context.Context, invocation flowy.ActivityInvocation) ([]byte, error) {
 			if calls.Add(1) == 1 {
 				identity = invocation.Identity
@@ -54,7 +60,7 @@ func TestActivityMigratedRetryPreservesIdentityAttemptsAndDeadline(t *testing.T)
 	}
 	options.Migrations = []flowy.ExecutionMigration{
 		{ID: "move", Source: source.Descriptor, Target: durableDescriptor("new"),
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.ExecutionPointer = "new-node"
 				state.JournalReferences = map[string]string{"operation": identity}
 				return state, nil

@@ -52,6 +52,9 @@ func validateActivityRecord(record ActivityRecord) error {
 	if decisionErr := validateActivityDecisions(record); decisionErr != nil {
 		return decisionErr
 	}
+	if scheduleErr := validateActivityRecordSchedules(record); scheduleErr != nil {
+		return scheduleErr
+	}
 	if historyErr := validateActivityAttemptHistory(record); historyErr != nil {
 		return historyErr
 	}
@@ -153,7 +156,7 @@ func validateActivityRecordState(record ActivityRecord) error {
 func validPreparedActivity(record ActivityRecord, last ActivityAttempt) bool {
 	return record.Classification == ActivityRetryable && !record.NextAttemptAt.IsZero() &&
 		record.Retry.SafeRetryContract != "" && len(record.Attempts) < record.Retry.MaxAttempts &&
-		(last.State == ActivityFailed || (record.Origin == ActivityManual && last.State == ActivityUnknown)) && len(record.Outcome) == 0
+		(last.State == ActivityFailed || (record.Origin == ActivityManual && last.State == ActivityUnknown)) && len(record.Outcome) == 0 && validPreparedActivitySchedule(record, last)
 }
 
 func validCompletedActivity(record ActivityRecord, last ActivityAttempt) bool {

@@ -85,7 +85,7 @@ func TestIntegrationChildBudgetPersistentPartialReturnReplayAcrossPoolRestart(t 
 	}
 	id := testThreadID(t)
 	var dispatches atomic.Int32
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildBudgetRunner(t, store, false, &dispatches).Start(ctx, id, intState{})
 	if first == nil || !errors.Is(err, flowy.ErrChildrenUnresolved) {
 		t.Fatalf("parent bypassed pending join: %v", err)
@@ -97,7 +97,7 @@ func TestIntegrationChildBudgetPersistentPartialReturnReplayAcrossPoolRestart(t 
 	}
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartStore := NewExecutionStore(restartPool)
+	restartStore := mustExecutionStore(t, restartPool)
 	// Act: replay the first return and allocate seven remaining units on a new pool.
 	_, err = postgresChildBudgetRunner(t, restartStore, true, &dispatches).Resume(restartCtx, first.ResumeToken)
 	latest, loadErr := restartStore.LoadExecution(restartCtx, id)

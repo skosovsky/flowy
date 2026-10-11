@@ -199,7 +199,7 @@ func TestCheckpointerSaveAndLoad(t *testing.T) {
 		},
 	}
 	db := &fakeDB{row: row, saveRow: fakeRow{values: []any{uint64(1)}}}
-	cp := NewCheckpointer[sampleState, string](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, string](t, db, checkpoint.JSONSerializer[sampleState]{})
 
 	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[sampleState, string]{
 		ThreadID:         "thread-1",
@@ -242,7 +242,7 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 		},
 	}
 	db := &fakeDB{row: row, saveRow: fakeRow{values: []any{uint64(1)}}}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 
 	_, err := cp.Save(context.Background(), 0, flowy.Snapshot[sampleState, flowy.NoEffect]{
 		ThreadID:         "router-th",
@@ -266,7 +266,7 @@ func TestExecutionPointerRoundtrip(t *testing.T) {
 func TestLoadNoSnapshot(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{row: fakeRow{err: pgx.ErrNoRows}}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	_, _, err := cp.Load(context.Background(), "missing")
 	if !errors.Is(err, flowy.ErrThreadNotFound) || !errors.Is(err, checkpoint.ErrNoSnapshot) {
 		t.Fatalf("expected ErrThreadNotFound wrapping ErrNoSnapshot, got %v", err)
@@ -303,7 +303,7 @@ func TestGetHistory(t *testing.T) {
 		},
 	}
 	db := &fakeDB{rows: rows}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	history, err := cp.GetHistory(context.Background(), "thread-1", 10)
 	if err != nil {
 		t.Fatalf("history: %v", err)
@@ -319,7 +319,7 @@ func TestGetHistory(t *testing.T) {
 func TestPruneRetainsLatestN(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.Prune(context.Background(), "thread-1", 3); err != nil {
 		t.Fatalf("prune: %v", err)
 	}
@@ -331,7 +331,7 @@ func TestPruneRetainsLatestN(t *testing.T) {
 func TestPruneNoopOnMissingThread(t *testing.T) {
 	t.Parallel()
 	db := &fakeDB{}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.Prune(context.Background(), "missing-thread", 5); err != nil {
 		t.Fatalf("prune missing: %v", err)
 	}
@@ -366,7 +366,7 @@ func (d *deleteIfIdleDB) QueryRow(_ context.Context, sql string, _ ...any) pgx.R
 func TestDeleteIfIdleSucceedsWhenNoLease(t *testing.T) {
 	t.Parallel()
 	db := &deleteIfIdleDB{deleteRows: 1, leaseHeld: false}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	if err := cp.DeleteIfIdle(context.Background(), "thread-1"); err != nil {
 		t.Fatalf("delete if idle: %v", err)
 	}
@@ -378,7 +378,7 @@ func TestDeleteIfIdleSucceedsWhenNoLease(t *testing.T) {
 func TestDeleteIfIdleBlockedByActiveLease(t *testing.T) {
 	t.Parallel()
 	db := &deleteIfIdleDB{deleteRows: 0, leaseHeld: true}
-	cp := NewCheckpointer[sampleState, flowy.NoEffect](db, checkpoint.JSONSerializer[sampleState]{})
+	cp := mustCheckpointer[sampleState, flowy.NoEffect](t, db, checkpoint.JSONSerializer[sampleState]{})
 	err := cp.DeleteIfIdle(context.Background(), "thread-1")
 	if !errors.Is(err, flowy.ErrThreadLeaseBusy) {
 		t.Fatalf("expected ErrThreadLeaseBusy, got %v", err)

@@ -49,7 +49,7 @@ func TestInstallLifecycleObserverWithTracing(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 lifecycle span, got %d", len(spans))
 	}
-	if spans[0].Name() != "flowy.lifecycle.handoff_enqueued" {
+	if spans[0].Name() != "flowy.lifecycle.handoff.failed" {
 		t.Fatalf("unexpected span name: %s", spans[0].Name())
 	}
 	if !hasHandoffSpanStatus(spans[0].Attributes(), "enqueue_failed") {
@@ -88,7 +88,7 @@ func TestInstallLifecycleObserverWithTracingHandoffSuccess(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 lifecycle span, got %d", len(spans))
 	}
-	if spans[0].Name() != "flowy.lifecycle.handoff_enqueued" {
+	if spans[0].Name() != "flowy.lifecycle.handoff.committed" {
 		t.Fatalf("unexpected span name: %s", spans[0].Name())
 	}
 	if !hasHandoffSpanStatus(spans[0].Attributes(), "success") {
@@ -135,7 +135,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffFromOrphaned(t *t
 	}
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.handoff_enqueued" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.handoff.committed" {
 		t.Fatalf("expected handoff_enqueued span, got %+v", spans)
 	}
 	if !hasHandoffSpanStatus(spans[0].Attributes(), "success") {
@@ -183,7 +183,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffStalePending(t *t
 	}
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.handoff_enqueued" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.handoff.committed" {
 		t.Fatalf("expected handoff_enqueued span, got %+v", spans)
 	}
 	if !hasHandoffSpanStatus(spans[0].Attributes(), "success") {
@@ -228,7 +228,7 @@ func TestInstallLifecycleObserverWithTracingRecoverStaleHandoffFreshPending(t *t
 	_, _ = runner.RecoverStaleHandoff(context.Background(), "trace-recover-pending-th")
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume_rejected" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume.failed" {
 		t.Fatalf("expected resume_rejected span, got %+v", spans)
 	}
 	if !hasResumeRejectedReason(spans[0].Attributes(), "handoff_pending") {
@@ -270,7 +270,7 @@ func TestInstallLifecycleObserverWithTracingResumeRejected(t *testing.T) {
 	})
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume_rejected" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume.failed" {
 		t.Fatalf("expected resume_rejected span, got %+v", spans)
 	}
 	if !hasResumeRejectedReason(spans[0].Attributes(), "handoff_pending") {
@@ -307,7 +307,7 @@ func TestInstallLifecycleObserverWithTracingCheckpointSoftError(t *testing.T) {
 	)
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.checkpoint_soft_error" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.checkpoint.failed" {
 		t.Fatalf("expected checkpoint_soft_error span, got %+v", spans)
 	}
 	if !hasSpanStringAttr(spans[0].Attributes(), "thread_id", "trace-soft-error-th") {
@@ -348,7 +348,7 @@ func TestInstallLifecycleObserverWithTracingSkipOnSaveErrorHandoff(t *testing.T)
 	)
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.checkpoint_soft_error" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.checkpoint.failed" {
 		t.Fatalf("expected checkpoint_soft_error span, got %+v", spans)
 	}
 	if !hasSpanStringAttr(spans[0].Attributes(), "thread_id", "trace-skip-handoff-th") {
@@ -388,7 +388,7 @@ func TestInstallLifecycleObserverWithTracingHandoffSaveFailed(t *testing.T) {
 	if len(spans) != 1 {
 		t.Fatalf("expected 1 span, got %d", len(spans))
 	}
-	if spans[0].Name() != "flowy.lifecycle.handoff_enqueued" {
+	if spans[0].Name() != "flowy.lifecycle.handoff.failed" {
 		t.Fatalf("unexpected span name: %s", spans[0].Name())
 	}
 	if !hasHandoffSpanStatus(spans[0].Attributes(), "save_failed") {

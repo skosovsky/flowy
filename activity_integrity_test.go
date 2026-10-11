@@ -149,7 +149,7 @@ func TestActivityJournalValidatesExecutionAddressAndRetainsHistoricalNode(t *tes
 				t.Fatal(err)
 			}
 			envelope := ExecutionEnvelope{ExecutionID: test.id, Activation: test.activation,
-				Progress: MigrationState{ExecutionPointer: "migrated-node"}, JournalPayload: payload}
+				Progress: ExecutionProgress{ExecutionPointer: "migrated-node"}, JournalPayload: payload}
 			// Act.
 			journal, err := executionActivityJournal(envelope)
 			// Assert.
@@ -191,7 +191,7 @@ func TestActivityJournalRejectsUnresolvedOrDanglingMigrationReferences(t *testin
 			envelope := ExecutionEnvelope{
 				ExecutionID: "run",
 				Activation:  test.activation,
-				Progress: MigrationState{
+				Progress: ExecutionProgress{
 					ExecutionPointer:  "migrated",
 					JournalReferences: test.refs,
 				},

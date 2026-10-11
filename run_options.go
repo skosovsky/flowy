@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"math"
 	"time"
 )
 
@@ -28,6 +29,8 @@ type RunOption[T, E any] interface {
 }
 
 type runInvocationOptions[T, E any] struct {
+	cloneState         ValueCloner[T]
+	cloneEffect        ValueCloner[E]
 	bindings           *RunBindings
 	overlay            *T
 	overlayMerger      StateMerger[T]
@@ -38,6 +41,7 @@ type runInvocationOptions[T, E any] struct {
 	leaseTTL           time.Duration
 	lease              ExecutionLease
 	handoffOutbox      HandoffOutbox
+	atomicHandoff      bool
 	checkpointPolicy   CheckpointFailurePolicy
 }
 
@@ -101,11 +105,37 @@ func WithHandoffOutbox[T, E any](outbox HandoffOutbox) RunOption[T, E] {
 	})
 }
 
+// WithAtomicHandoff requires transactional snapshot/outbox publication for this
+// invocation. Missing capabilities reject admission before lease/node/save work.
+// Attach a transactional outbox with WithHandoffOutbox or WithRunnerHandoffOutbox.
+func WithAtomicHandoff[T, E any]() RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.atomicHandoff = true
+	})
+}
+
+func (r *graphRunner[T, E]) resolveRunOptions(opts ...RunOption[T, E]) (runInvocationOptions[T, E], error) {
+	inv, err := applyRunOptions(opts...)
+	if err != nil || !inv.atomicHandoff {
+		return inv, err
+	}
+	_, transactional := resolveTransactionalCheckpointer(r.checkpointer)
+	_, transactionalOutbox := r.resolveHandoffOutbox(inv).(TransactionalHandoffOutbox)
+	if !transactional || !transactionalOutbox {
+		return inv, ErrTransactionalOutboxUnsupported
+	}
+	return inv, nil
+}
+
 // WithCheckpointErrorPolicy sets behavior when Checkpointer.Save fails during terminal saves.
 // CheckpointPolicySkipOnSaveError emits EventCheckpointFailed on Stream/ResumeStream only; sync Start/Resume swallow
 // the save error without observable signal and do not populate ResumeToken. Terminal flow
 // continues with reason suffixes suspended_checkpoint_skipped, handoff_checkpoint_skipped, or
 // context_canceled_checkpoint_skipped when the checkpoint was not persisted.
+// Invariant/interceptor rejection and known structural/OCC/lease/capability
+// errors are always hard failures. Other adapter Save errors can be suppressed;
+// arbitrary Checkpointer errors are not necessarily infrastructure failures.
+// SaveWithOutbox errors remain hard failures regardless of this policy.
 func WithCheckpointErrorPolicy[T, E any](policy CheckpointFailurePolicy) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
 		opts.checkpointPolicy = policy
@@ -127,21 +157,47 @@ func applyRunOptions[T, E any](opts ...RunOption[T, E]) (runInvocationOptions[T,
 	return out, nil
 }
 
-// UseBudget records consumption of a named budget in run metadata.
-// See also BudgetUsed for read access.
+// ErrBudgetInvalid rejects invalid names, negative units and counter overflow.
+var ErrBudgetInvalid = errors.New("flowy: invalid budget accounting")
+
+// ErrBudgetContext reports accounting outside an execution metadata context.
+var ErrBudgetContext = errors.New("flowy: budget metadata unavailable")
+
+// UseBudget records actual host units; it never reserves external resources.
+// Valid new names create counters. Only declared graph limits are enforced.
+// Host calls within a node must be serialized.
 func UseBudget(ctx context.Context, name string, amount int) error {
-	meta, ok := runMetadataFromContext(ctx)
-	if !ok {
-		return nil
+	if name == "" || !validRuntimeText(name) || amount < 0 {
+		return ErrBudgetInvalid
 	}
-	if amount < 0 {
+	meta, ok := runMetadataFromContext(ctx)
+	if !ok || meta == nil {
+		return ErrBudgetContext
+	}
+	used := meta.BudgetCounts[name]
+	if used < 0 || amount > math.MaxInt-used {
+		return ErrBudgetInvalid
+	}
+	if amount == 0 {
 		return nil
 	}
 	if meta.BudgetCounts == nil {
 		meta.BudgetCounts = map[string]int{}
 	}
-	meta.BudgetCounts[name] += amount
+	meta.BudgetCounts[name] = used + amount
 	return nil
+}
+
+// ValueCloner detaches a host value without mutation, I/O or panics.
+// A nil cloner requires immutable values across shared boundaries.
+type ValueCloner[T any] func(T) T
+
+// WithEventCloners isolates stream state/effects using pure host cloners.
+// It does not clone node inputs or change checkpoint storage ownership.
+func WithEventCloners[T, E any](state ValueCloner[T], effect ValueCloner[E]) RunOption[T, E] {
+	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {
+		opts.cloneState, opts.cloneEffect = state, effect
+	})
 }
 
 // BudgetUsed returns the consumed units for a named budget from the active execution context.

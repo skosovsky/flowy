@@ -12,7 +12,7 @@ func TestLeaseGuardCheckpointerDelegatesSaveWithOutbox(t *testing.T) {
 
 	type state struct{}
 	inner := &transactionalMemoryCP[state, NoEffect]{memoryCP: newMemoryCP[state, NoEffect]()}
-	guarded, ok := NewLeaseGuardCheckpointer[state, NoEffect](inner, &noopLeaseManager{}).(TransactionalCheckpointer[state, NoEffect])
+	guarded, ok := NewAdvisoryLeaseGuardCheckpointer[state, NoEffect](inner, &noopLeaseManager{}).(TransactionalCheckpointer[state, NoEffect])
 	if !ok {
 		t.Fatal("expected lease guard to implement TransactionalCheckpointer")
 	}

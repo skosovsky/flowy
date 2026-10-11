@@ -4,6 +4,7 @@ package testutil
 import (
 	"context"
 	"maps"
+	"math"
 	"sync"
 
 	"github.com/skosovsky/flowy"
@@ -11,15 +12,43 @@ import (
 
 // MemoryCheckpointer is a thread-safe in-memory implementation of flowy.Checkpointer with OCC.
 type MemoryCheckpointer[T, E any] struct {
-	mu      sync.Mutex
-	history map[string][]flowy.Snapshot[T, E]
+	mu          sync.Mutex
+	history     map[string][]flowy.Snapshot[T, E]
+	cloneState  flowy.ValueCloner[T]
+	cloneEffect flowy.ValueCloner[E]
 }
 
 func NewMemoryCheckpointer[T, E any]() *MemoryCheckpointer[T, E] {
 	return &MemoryCheckpointer[T, E]{
-		mu:      sync.Mutex{},
-		history: make(map[string][]flowy.Snapshot[T, E]),
+		mu:          sync.Mutex{},
+		history:     make(map[string][]flowy.Snapshot[T, E]),
+		cloneState:  nil,
+		cloneEffect: nil,
 	}
+}
+
+// NewMemoryCheckpointerWithCloners models storage isolation for mutable BYOT values.
+// Nil cloners require immutable domain values, as in NewMemoryCheckpointer.
+func NewMemoryCheckpointerWithCloners[T, E any](
+	state flowy.ValueCloner[T],
+	effect flowy.ValueCloner[E],
+) *MemoryCheckpointer[T, E] {
+	m := NewMemoryCheckpointer[T, E]()
+	m.cloneState, m.cloneEffect = state, effect
+	return m
+}
+
+func (m *MemoryCheckpointer[T, E]) copySnapshot(snapshot flowy.Snapshot[T, E]) flowy.Snapshot[T, E] {
+	copied := copySnapshot(snapshot)
+	if m.cloneState != nil {
+		copied.State = m.cloneState(snapshot.State)
+	}
+	if m.cloneEffect != nil {
+		for i, effect := range copied.Effects {
+			copied.Effects[i] = m.cloneEffect(effect)
+		}
+	}
+	return copied
 }
 
 func (m *MemoryCheckpointer[T, E]) Save(
@@ -27,6 +56,16 @@ func (m *MemoryCheckpointer[T, E]) Save(
 	expectedRevision uint64,
 	snapshot flowy.Snapshot[T, E],
 ) (uint64, error) {
+	if expectedRevision == math.MaxUint64 {
+		return 0, flowy.ErrExecutionCapability
+	}
+	if err := flowy.ValidateSnapshotHeader(
+		snapshot.ThreadID,
+		expectedRevision+1,
+		snapshot.ExecutionPointer,
+	); err != nil {
+		return 0, err
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -39,7 +78,7 @@ func (m *MemoryCheckpointer[T, E]) Save(
 		return 0, flowy.ErrConcurrencyConflict
 	}
 	newRevision := expectedRevision + 1
-	copied := copySnapshot(snapshot)
+	copied := m.copySnapshot(snapshot)
 	copied.Revision = newRevision
 	m.history[snapshot.ThreadID] = append(items, copied)
 	return newRevision, nil
@@ -52,7 +91,7 @@ func (m *MemoryCheckpointer[T, E]) Load(_ context.Context, threadID string) (flo
 	if len(items) == 0 {
 		return flowy.Snapshot[T, E]{}, 0, flowy.ErrThreadNotFound
 	}
-	latest := copySnapshot(items[len(items)-1])
+	latest := m.copySnapshot(items[len(items)-1])
 	return latest, latest.Revision, nil
 }
 
@@ -72,7 +111,7 @@ func (m *MemoryCheckpointer[T, E]) GetHistory(
 	}
 	out := make([]flowy.Snapshot[T, E], 0, limit)
 	for i := len(items) - 1; i >= len(items)-limit; i-- {
-		out = append(out, copySnapshot(items[i]))
+		out = append(out, m.copySnapshot(items[i]))
 	}
 	return out, nil
 }
@@ -96,7 +135,7 @@ func (m *MemoryCheckpointer[T, E]) Prune(_ context.Context, threadID string, ret
 	return nil
 }
 
-// DeleteIfIdle delegates to Delete (no lease store). Use NewLeaseGuardCheckpointer for in-process lease checks.
+// DeleteIfIdle delegates to Delete (no lease store). Use NewAdvisoryLeaseGuardCheckpointer for in-process lease checks.
 func (m *MemoryCheckpointer[T, E]) DeleteIfIdle(ctx context.Context, threadID string) error {
 	return m.Delete(ctx, threadID)
 }
@@ -118,6 +157,9 @@ func copySnapshot[T, E any](snapshot flowy.Snapshot[T, E]) flowy.Snapshot[T, E] 
 	if snapshot.RunMeta.BudgetCounts != nil {
 		cloned.RunMeta.BudgetCounts = make(map[string]int, len(snapshot.RunMeta.BudgetCounts))
 		maps.Copy(cloned.RunMeta.BudgetCounts, snapshot.RunMeta.BudgetCounts)
+	}
+	if snapshot.RunMeta.TelemetryContext != nil {
+		cloned.RunMeta.TelemetryContext = maps.Clone(snapshot.RunMeta.TelemetryContext)
 	}
 	return cloned
 }

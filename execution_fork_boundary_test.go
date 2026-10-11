@@ -23,7 +23,10 @@ func TestForkUnresolvedSourceRejectsBeforeTransformAndTargetLease(t *testing.T) 
 			var nodes, live, transforms atomic.Int32
 			runner := forkRunnerForTest(t, store, nil, &nodes, &live)
 			request := forkRequestForTest(source, "target")
-			request.Transform.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) { transforms.Add(1); return state, nil }
+			request.Transform.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
+				transforms.Add(1)
+				return state, nil
+			}
 			// Act.
 			token, err := runner.Fork(context.Background(), request)
 			_, targetErr := store.LoadExecution(context.Background(), "target")
@@ -100,9 +103,13 @@ func seedUnresolvedForkActivity(t *testing.T, store *testutil.MemoryExecutionSto
 	}
 	var calls atomic.Int32
 	policy := flowy.ActivityRetryPolicy{
-		Label:             "bounded",
-		MaxAttempts:       2,
-		Delay:             time.Hour,
+		Label:       "bounded",
+		MaxAttempts: 2,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
 		SafeRetryContract: "host-idempotent-write",
 	}
 	_, err := retryActivityRunner(t, backend, wallFixtureClock{}, policy, classification, &calls).
@@ -193,30 +200,30 @@ func invalidForkTransformFixture(request *flowy.ForkRequest, kind string) error 
 	switch kind {
 	case "source digest mismatch":
 		request.Source.Digest = strings.Repeat("0", 64)
-		want = flowy.ErrForkSourceDigest
+		want = flowy.ErrExecutionSourceDigest
 	case "missing checkpoint":
 		request.Source.Revision = 99
 		want = flowy.ErrExecutionCheckpointUnavailable
 	case "zero revision":
 		request.Source.Revision = 0
-		want = flowy.ErrForkInvalid
+		want = flowy.ErrExecutionLifecycleInvalid
 	case "transform error":
-		request.Transform.Transform = func(flowy.MigrationState) (flowy.MigrationState, error) {
-			return flowy.MigrationState{}, errInjectedCommit
+		request.Transform.Transform = func(flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
+			return flowy.ExecutionProgress{}, errInjectedCommit
 		}
 		want = flowy.ErrForkTransform
 	case "projection error":
 		request.Projection = &flowy.ForkProjection{
 			Label: "failed-sanitation",
-			Project: func(flowy.MigrationState) (flowy.MigrationState, error) {
-				return flowy.MigrationState{}, errInjectedCommit
+			Project: func(flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
+				return flowy.ExecutionProgress{}, errInjectedCommit
 			},
 		}
 		want = flowy.ErrForkTransform
 	case "wrong source descriptor":
 		request.Transform.Source = durableDescriptor("wrong")
 	default:
-		request.Transform.Transform = func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		request.Transform.Transform = func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			if kind == "bad pointer" {
 				state.ExecutionPointer = "absent"
 			} else {

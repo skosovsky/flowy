@@ -65,7 +65,7 @@ func assertTracingResumeRejected(
 	_, _ = runner.Resume(context.Background(), token)
 
 	spans := sr.Ended()
-	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume_rejected" {
+	if len(spans) != 1 || spans[0].Name() != "flowy.lifecycle.resume.failed" {
 		t.Fatalf("expected resume_rejected span, got %+v", spans)
 	}
 	if !hasResumeRejectedReason(spans[0].Attributes(), wantReason) {
@@ -179,7 +179,7 @@ func tracingResumeRejectSetupInvalidSnapshot(
 	t.Helper()
 	cp := testutil.NewMemoryCheckpointer[tracingResumeRejectState, flowy.NoEffect]()
 	if _, err := cp.Save(context.Background(), 0, flowy.Snapshot[tracingResumeRejectState, flowy.NoEffect]{
-		ThreadID: "trace-invalid-snap-th", ExecutionPointer: "", State: tracingResumeRejectState{},
+		ThreadID: "trace-invalid-snap-th", ExecutionPointer: "work", State: tracingResumeRejectState{},
 	}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
@@ -187,8 +187,13 @@ func tracingResumeRejectSetupInvalidSnapshot(
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	return tracingResumeRejectWorkGraph(t).NewRunner(cp),
-		flowy.ResumeToken{ThreadID: "trace-invalid-snap-th", SnapshotRevision: rev}
+	return tracingResumeRejectWorkGraph(
+			t,
+		).NewRunner(&invalidSnapshotCheckpointer[tracingResumeRejectState, flowy.NoEffect]{MemoryCheckpointer: cp}),
+		flowy.ResumeToken{
+			ThreadID:         "trace-invalid-snap-th",
+			SnapshotRevision: rev,
+		}
 }
 
 func tracingResumeRejectSetupInvalidPointer(

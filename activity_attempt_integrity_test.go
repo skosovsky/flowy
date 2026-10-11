@@ -29,7 +29,17 @@ func TestActivityAttemptHistoryRequiresSafeTransition(t *testing.T) {
 			record.Attempts[0].State, record.Attempts[0].Classification = test.state, test.class
 			record.Attempts[0].FinishedAt = time.Now().UTC()
 			record.Attempts = append(record.Attempts, second)
-			record.Retry = ActivityRetryPolicy{Label: "safe", MaxAttempts: 2, SafeRetryContract: "idempotent"}
+			record.Retry = ActivityRetryPolicy{
+				Schedule:          ActivityRetrySchedule{Kind: ActivityRetryFixed},
+				Label:             "safe",
+				MaxAttempts:       2,
+				SafeRetryContract: "idempotent",
+			}
+			if test.state == ActivityFailed && test.class == ActivityRetryable {
+				choice := chooseActivityRetrySchedule(record.Retry, 1, record.Attempts[0].FinishedAt, time.Time{}, nil)
+				record.Attempts[0].RetrySchedule = &choice
+				record.Attempts[1].StartedAt = choice.Deadline
+			}
 			if test.manual {
 				record.Resolutions = []ActivityResolutionRecord{
 					{
@@ -45,6 +55,9 @@ func TestActivityAttemptHistoryRequiresSafeTransition(t *testing.T) {
 						SafeRetryContract: "idempotent",
 					},
 				}
+				choice := chooseActivityRetrySchedule(record.Retry, 1, record.Resolutions[0].At, time.Time{}, nil)
+				record.Resolutions[0].RetrySchedule = &choice
+				record.Attempts[1].StartedAt = choice.Deadline
 			}
 			// Act.
 			err := validateActivityRecord(record)

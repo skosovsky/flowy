@@ -20,11 +20,11 @@ func TestIntegrationReplayPolicyPersistentMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	old := flowy.ExecutionDescriptor{
-		GraphID:           "policy-test",
-		GraphRevision:     "current",
-		StateCodec:        "json-state",
+		GraphID:       "policy-test",
+		GraphRevision: "current",
+		StateCodec:    "json-state", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "old-safe", Mode: flowy.StepReplaySafe},
 	}
@@ -39,7 +39,7 @@ func TestIntegrationReplayPolicyPersistentMigration(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID:    id,
 			Descriptor:     old,
-			Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
+			Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
 			EffectsPayload: []byte(`[]`),
 			Activation:     1,
 		},
@@ -66,7 +66,7 @@ func TestIntegrationReplayPolicyPersistentMigration(t *testing.T) {
 	bind := func(migrations []flowy.ExecutionMigration) *flowy.DurableRunner[intState, flowy.NoEffect] {
 		runner, bindErr := flowy.NewDurableRunner(
 			graph,
-			NewExecutionStore(pool),
+			mustExecutionStore(t, pool),
 			target,
 			checkpoint.JSONSerializer[intState]{},
 			checkpoint.JSONSerializer[[]flowy.NoEffect]{},
@@ -87,7 +87,7 @@ func TestIntegrationReplayPolicyPersistentMigration(t *testing.T) {
 		ID:        "policy-change",
 		Source:    old,
 		Target:    target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil },
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil },
 	}
 	result, err := bind([]flowy.ExecutionMigration{migration}).Resume(ctx, token)
 	// Assert: exact source policy survives and target policy has its own committed lineage.

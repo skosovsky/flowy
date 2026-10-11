@@ -23,7 +23,7 @@ func TestSaveRejectsInvalidHeadWithoutMutation(t *testing.T) {
 			client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 			t.Cleanup(func() { _ = client.Close() })
 			ctx := context.Background()
-			cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+			cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 			if err := client.LPush(ctx, cp.historyKey("t1"), raw).Err(); err != nil {
 				t.Fatal(err)
 			}
@@ -47,7 +47,7 @@ func TestSaveRevisionExhaustionDoesNotWrap(t *testing.T) {
 	mr := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: mr.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	cp := NewCheckpointer[state, string](client, Options{}, checkpoint.JSONSerializer[state]{})
+	cp := mustCheckpointer[state, string](t, client, Options{}, checkpoint.JSONSerializer[state]{})
 	// Act.
 	_, err := cp.Save(context.Background(), math.MaxUint64, testSnapshot(0, "wrap"))
 	// Assert.

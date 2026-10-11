@@ -28,13 +28,15 @@ func (r *DurableRunner[T, E]) prepareStart(
 	if ctx.Err() != nil {
 		return ExecutionEnvelope{}, context.Cause(ctx)
 	}
-	return r.store.CommitExecution(ctx, 0, lease, ExecutionEnvelope{
+	meta := newRunMetadata()
+	meta.TelemetryContext = extractTelemetryContext(ctx)
+	return commitExecution(ctx, r.store, 0, lease, ExecutionEnvelope{
 		ExecutionID:    lease.ExecutionID,
 		Revision:       0,
 		Digest:         "",
 		Descriptor:     r.descriptor,
 		RuntimeProfile: r.options.WaitProfile,
-		Progress: MigrationState{
+		Progress: ExecutionProgress{
 			StatePayload:         state,
 			ExecutionPointer:     ExecutionPointer(r.graph.entryPoint),
 			ChildCursors:         nil,
@@ -45,12 +47,12 @@ func (r *DurableRunner[T, E]) prepareStart(
 		JournalPayload:  nil,
 		ChildrenPayload: nil,
 		WaitsPayload:    nil,
-		RunMeta:         newRunMetadata(),
+		RunMeta:         meta,
 		Activation:      1,
 		Terminal:        nil,
 		Migration:       nil,
 		Import:          nil,
-		Fork:            nil,
+		Fork:            nil, Rollover: nil, Transfer: nil,
 	})
 }
 
@@ -76,7 +78,11 @@ func (r *DurableRunner[T, E]) Stream(
 func (r *DurableRunner[T, E]) preparedStream(
 	ctx context.Context, id string,
 	prepare func(context.Context, ExecutionLease) (ExecutionEnvelope, error), opts ...RunOption[T, E],
-) (StreamHandle[T, E], error) {
+) (handle StreamHandle[T, E], retErr error) { //nolint:nonamedreturns // Admission failures must report cleanup.
+	inv, err := applyRunOptions(opts...)
+	if err != nil {
+		return nil, err
+	}
 	session, err := r.acquireSession(ctx, id)
 	if err != nil {
 		return nil, err
@@ -84,7 +90,7 @@ func (r *DurableRunner[T, E]) preparedStream(
 	transferred := false
 	defer func() {
 		if !transferred {
-			session.finish()
+			retErr = errors.Join(retErr, session.finish())
 		}
 	}()
 	envelope, err := prepare(session.ctx, session.lease)
@@ -95,11 +101,11 @@ func (r *DurableRunner[T, E]) preparedStream(
 	if !ok {
 		return nil, ErrExecutionCapability
 	}
-	handle := base.startStream(
+	handle = base.startStream(
 		session.ctx,
-		id,
-		func(streamCtx context.Context, sink eventSink[T, E]) (*RunResult[T, E], error) {
-			defer session.finish()
+		inv,
+		func(streamCtx context.Context, sink eventSink[T, E]) (result *RunResult[T, E], runErr error) { //nolint:nonamedreturns // Join cleanup on all exit paths.
+			defer func() { runErr = errors.Join(runErr, session.finish()) }()
 			return r.runWithSink(streamCtx, session.lease, envelope, sink, opts...)
 		},
 	)

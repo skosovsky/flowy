@@ -39,7 +39,7 @@ func (f ForkLineage) Validate() error {
 		!validRuntimeText(f.TargetID, f.Source.ExecutionID, f.PolicyLabel, f.TransformLabel, f.ProjectionLabel) ||
 		f.TargetID == "" || f.TargetID == f.Source.ExecutionID || f.PolicyLabel == "" || f.TransformLabel == "" ||
 		f.CreatedAt.IsZero() || f.CreatedAt.Location() != time.UTC {
-		return ErrForkInvalid
+		return ErrExecutionLifecycleInvalid
 	}
 	if f.Mode != ForkFake && f.Mode != ForkLive {
 		return ErrForkPolicy
@@ -65,12 +65,12 @@ type ForkExecutionPolicy struct {
 type ForkTransform struct {
 	Label     string
 	Source    ExecutionDescriptor
-	Transform func(MigrationState) (MigrationState, error)
+	Transform func(ExecutionProgress) (ExecutionProgress, error)
 }
 
 type ForkProjection struct {
 	Label   string
-	Project func(MigrationState) (MigrationState, error)
+	Project func(ExecutionProgress) (ExecutionProgress, error)
 }
 
 type ForkRequest struct {

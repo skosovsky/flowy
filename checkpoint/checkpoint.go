@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // ErrNoSnapshot is returned when thread snapshot is absent.
@@ -36,19 +37,32 @@ type sanitizingSerializer[T any] struct {
 	sanitize func(*T)
 }
 
-// WithSanitizer wraps serializer with pre/post sanitize hook.
+// WithSanitizer sanitizes detached values using a base codec round trip.
+// Base Unmarshal must return a value isolated from prior inputs.
 func WithSanitizer[T any](
 	base flowy.StateSerializer[T],
 	sanitize func(*T),
-) flowy.StateSerializer[T] {
-	return &sanitizingSerializer[T]{base: base, sanitize: sanitize}
+) (flowy.StateSerializer[T], error) {
+	if nilvalue.IsNil(base) {
+		return nil, fmt.Errorf("%w: nil state serializer", flowy.ErrExecutionCapability)
+	}
+	return &sanitizingSerializer[T]{base: base, sanitize: sanitize}, nil
 }
 
 func (s *sanitizingSerializer[T]) Marshal(state T) ([]byte, error) {
-	if s.sanitize != nil {
-		s.sanitize(&state)
+	if s.sanitize == nil {
+		return s.base.Marshal(state)
 	}
-	return s.base.Marshal(state)
+	encoded, err := s.base.Marshal(state)
+	if err != nil {
+		return nil, err
+	}
+	detached, err := s.base.Unmarshal(encoded)
+	if err != nil {
+		return nil, err
+	}
+	s.sanitize(&detached)
+	return s.base.Marshal(detached)
 }
 
 func (s *sanitizingSerializer[T]) Unmarshal(data []byte) (T, error) {
@@ -86,9 +100,22 @@ func EncodeRecord[T, E any](
 	snapshot flowy.Snapshot[T, E],
 	serializer flowy.StateSerializer[T],
 ) (Record, error) {
+	if err := flowy.ValidateSnapshotHeader(
+		snapshot.ThreadID,
+		snapshot.Revision,
+		snapshot.ExecutionPointer,
+	); err != nil {
+		return Record{}, fmt.Errorf("%w: %w", ErrInvalidRecord, err)
+	}
+	if nilvalue.IsNil(serializer) {
+		return Record{}, fmt.Errorf("%w: nil state serializer", flowy.ErrExecutionCapability)
+	}
 	statePayload, err := serializer.Marshal(snapshot.State)
 	if err != nil {
 		return Record{}, fmt.Errorf("checkpoint: marshal state: %w", err)
+	}
+	if !json.Valid(statePayload) {
+		return Record{}, invalidRecordError("state serializer must produce valid JSON")
 	}
 	metaPayload, err := json.Marshal(snapshot.RunMeta)
 	if err != nil {
@@ -116,14 +143,15 @@ func DecodeRecord[T, E any](
 	serializer flowy.StateSerializer[T],
 	opts DecodeRecordOptions,
 ) (flowy.Snapshot[T, E], error) {
-	if record.ThreadID == "" {
-		return flowy.Snapshot[T, E]{}, invalidRecordError("empty thread_id")
+	if err := flowy.ValidateSnapshotHeader(
+		record.ThreadID,
+		record.Revision,
+		flowy.ExecutionPointer(record.NodeID),
+	); err != nil {
+		return flowy.Snapshot[T, E]{}, fmt.Errorf("%w: %w", ErrInvalidRecord, err)
 	}
-	if record.Revision == 0 {
-		return flowy.Snapshot[T, E]{}, invalidRecordError("zero revision")
-	}
-	if record.NodeID == "" {
-		return flowy.Snapshot[T, E]{}, invalidRecordError("empty node_id")
+	if nilvalue.IsNil(serializer) {
+		return flowy.Snapshot[T, E]{}, fmt.Errorf("%w: nil state serializer", flowy.ErrExecutionCapability)
 	}
 	if opts.ExpectedThreadID != "" && record.ThreadID != opts.ExpectedThreadID {
 		return flowy.Snapshot[T, E]{}, invalidRecordError(fmt.Sprintf(

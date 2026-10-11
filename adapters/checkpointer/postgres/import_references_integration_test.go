@@ -29,7 +29,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls atomic.Int32
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"),
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
@@ -43,7 +43,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 		Digest: hex.EncodeToString(sum[:]), Payload: payload}
 	importer := flowy.ExecutionImporter{ID: "host-import", Format: source.Format,
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
-			state := flowy.ImportedExecutionState{Progress: flowy.MigrationState{
+			state := flowy.ImportedExecutionState{Progress: flowy.ExecutionProgress{
 				ExecutionPointer: "node", StatePayload: []byte(`{"value":1}`)}, EffectsPayload: []byte("[]")}
 			if children {
 				state.Progress.ChildGroupReferences = map[string]string{"group": "absent"}
@@ -56,7 +56,7 @@ func assertImportDanglingReferencesPersistent(t *testing.T, children bool) {
 	token, importErr := runner.Import(ctx, id, source, importer)
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	_, loadErr := restartedStore.LoadExecution(restartCtx, id)
 	_, historyErr := restartedStore.LoadCheckpoint(restartCtx, id, 1)
 	// Assert: no successful token/head/history/dispatch survived the invalid import.

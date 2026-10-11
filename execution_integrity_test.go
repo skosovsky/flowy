@@ -25,7 +25,7 @@ func TestExecutionIntegrityCoversRawAggregateAndAddress(t *testing.T) {
 			// Arrange: revision is part of the seal, assigned before sealing.
 			sealed, err := SealExecutionEnvelope(ExecutionEnvelope{
 				ExecutionID: "run", Revision: 2, Descriptor: descriptorForTest("current"),
-				Progress:       MigrationState{ExecutionPointer: "node", StatePayload: []byte("state")},
+				Progress:       ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("state")},
 				EffectsPayload: []byte("effects"), JournalPayload: []byte("journal"), Activation: 1,
 			})
 			if err != nil {
@@ -48,7 +48,11 @@ func TestExecutionIntegrityCoversRawAggregateAndAddress(t *testing.T) {
 func TestExecutionSealIsStableButDoesNotAuthorizeDifferentAddress(t *testing.T) {
 	t.Parallel()
 	// Arrange.
-	envelope := ExecutionEnvelope{ExecutionID: "run", Revision: 3, Progress: MigrationState{ExecutionPointer: "node"}}
+	envelope := ExecutionEnvelope{
+		ExecutionID: "run",
+		Revision:    3,
+		Progress:    ExecutionProgress{ExecutionPointer: "node"},
+	}
 	first, err := SealExecutionEnvelope(envelope)
 	if err != nil {
 		t.Fatal(err)

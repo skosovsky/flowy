@@ -9,3 +9,4 @@ tmp/
 *.prof
 *.cpu
 *.mem
+scripts/__pycache__/

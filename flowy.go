@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 // Node is the basic execution unit. It returns state update plus a directive.
@@ -189,6 +191,7 @@ type RunStatus string
 
 const (
 	RunStatusCompleted       RunStatus = "completed"
+	RunStatusTransferred     RunStatus = "transferred"
 	RunStatusSuspended       RunStatus = "suspended"
 	RunStatusContextCanceled RunStatus = "context_canceled"
 	RunStatusFailed          RunStatus = "failed"
@@ -343,7 +346,12 @@ type StateSerializer[T any] interface {
 	Unmarshal(data []byte) (T, error)
 }
 
-// StateInterceptor can mutate state before save and after load.
+// StateInterceptor converts between runtime/domain state and its persisted representation.
+// BeforeSave runs once per state preparation, after domain invariant validation,
+// on both Save and SaveWithOutbox paths. Metadata-only handoff patches reuse the
+// persisted state. AfterLoad restores domain state before resume validation.
+// Reference-backed BYOT state is value-copied: hooks must replace shared state with
+// detached representations instead of mutating resources owned by the caller.
 type StateInterceptor[T any] interface {
 	BeforeSave(ctx context.Context, state *T) error
 	AfterLoad(ctx context.Context, state *T) error
@@ -506,6 +514,8 @@ const (
 )
 
 // RunResult is the final state returned to the application.
+// With ErrDurableStateUnavailable, State/Effects/RunMeta are diagnostic local
+// values, not a restored committed boundary. Load and inspect storage to recover.
 type RunResult[T, E any] struct {
 	State            T
 	Status           RunStatus
@@ -543,15 +553,16 @@ type RunEvent[T, E any] struct {
 
 // StreamHandle controls the lifecycle of asynchronous graph streaming.
 //
-// Events: best-effort progress/telemetry stream. When the buffer is full events may be dropped;
+// Events: bounded best-effort progress/telemetry stream. A full buffer immediately drops events;
+// execution never waits for a consumer. Values are immutable unless WithEventCloners detaches them.
 // terminal RunResult from WaitResult is authoritative.
 //
-// RequestStop: closes the event sink and cancels the in-flight run context (cancelSessionForConsumerStop).
+// RequestStop: closes the event sink and cancels the in-flight run context owned by this handle.
 // Do not call RequestLocalHandoff after RequestStop; the run has already terminated and the API returns
 // [ErrNoActiveExecution]. A terminal event may be dropped after consumer stop; the checkpointer snapshot
 // is the source of truth for terminal state and reason (persist-vs-event semantics).
 //
-// Wait: call exactly once. WaitResult returns the same terminal error plus the RunResult.
+// Wait and WaitResult observe the same result and do not affect event delivery.
 // RequestStop after persisted cancel save returns nil; RequestStop with skip-on-save-error policy returns
 // [ErrCheckpointSkipped]; parent context cancel returns [context.Canceled]; retention or enqueue
 // enqueue failures return their respective errors.
@@ -601,6 +612,7 @@ var (
 	ErrLeaseOwnerRequired = errors.New(
 		"flowy: WithRunLease owner is required when LeaseManager is configured",
 	)
+	ErrRunCleanup                       = errors.New("flowy: run cleanup failed")
 	ErrLeaseLost                        = errors.New("flowy: thread lease lost or expired")
 	ErrNoActiveExecution                = errors.New("flowy: no active execution to hand off")
 	ErrThreadAlreadyRunning             = errors.New("flowy: thread already has an active in-process execution")
@@ -658,17 +670,19 @@ func withRunThreadID(ctx context.Context, threadID string) context.Context {
 	return context.WithValue(ctx, runThreadContextKey, threadID)
 }
 
-// TelemetryBridge serializes runtime tracing metadata across suspend/resume boundaries.
+// TelemetryBridge captures/restores detached correlation metadata across resume.
+// Callbacks are synchronous, prompt, concurrency-safe and must not panic. Restore
+// preserves cancellation and existing context values; carriers are not authority.
 type TelemetryBridge interface {
-	Extract(ctx context.Context) map[string]string
-	Inject(ctx context.Context, metadata map[string]string) context.Context
+	Capture(ctx context.Context) map[string]string
+	Restore(ctx context.Context, metadata map[string]string) context.Context
 }
 
 type noopTelemetryBridge struct{}
 
-func (noopTelemetryBridge) Extract(context.Context) map[string]string { return nil }
+func (noopTelemetryBridge) Capture(context.Context) map[string]string { return nil }
 
-func (noopTelemetryBridge) Inject(ctx context.Context, _ map[string]string) context.Context {
+func (noopTelemetryBridge) Restore(ctx context.Context, _ map[string]string) context.Context {
 	return ctx
 }
 
@@ -677,22 +691,41 @@ var (
 	telemetryBridge   TelemetryBridge = noopTelemetryBridge{} //nolint:gochecknoglobals // process-wide bridge slot
 )
 
-// SetTelemetryBridge installs the process-wide telemetry bridge (stateless Extract/Inject only).
+// SetTelemetryBridge installs the process-wide telemetry bridge (synchronous Capture/Restore only).
 func SetTelemetryBridge(bridge TelemetryBridge) {
 	telemetryBridgeMu.Lock()
 	defer telemetryBridgeMu.Unlock()
-	if bridge == nil {
+	if nilvalue.IsNil(bridge) {
 		telemetryBridge = noopTelemetryBridge{}
 		return
 	}
 	telemetryBridge = bridge
 }
 
-func extractTelemetryContext(ctx context.Context) map[string]string {
+type telemetryBridgeContextKey struct{}
+
+// WithTelemetryBridge selects this context's bridge rather than the global
+// default. Nil (including typed nil) explicitly disables capture and restoration.
+// Reattach the instance bridge to a fresh worker's resume context.
+func WithTelemetryBridge(ctx context.Context, bridge TelemetryBridge) context.Context {
+	if nilvalue.IsNil(bridge) {
+		bridge = noopTelemetryBridge{}
+	}
+	return context.WithValue(ctx, telemetryBridgeContextKey{}, bridge)
+}
+
+func telemetryBridgeForContext(ctx context.Context) TelemetryBridge {
+	if bridge, ok := ctx.Value(telemetryBridgeContextKey{}).(TelemetryBridge); ok {
+		return bridge
+	}
 	telemetryBridgeMu.RLock()
-	bridge := telemetryBridge
-	telemetryBridgeMu.RUnlock()
-	metadata := bridge.Extract(ctx)
+	defer telemetryBridgeMu.RUnlock()
+	return telemetryBridge
+}
+
+func extractTelemetryContext(ctx context.Context) map[string]string {
+	bridge := telemetryBridgeForContext(ctx)
+	metadata := bridge.Capture(ctx)
 	if len(metadata) == 0 {
 		return nil
 	}
@@ -707,10 +740,8 @@ func injectTelemetryContext(ctx context.Context, metadata map[string]string) con
 	}
 	copyMetadata := make(map[string]string, len(metadata))
 	maps.Copy(copyMetadata, metadata)
-	telemetryBridgeMu.RLock()
-	bridge := telemetryBridge
-	telemetryBridgeMu.RUnlock()
-	return bridge.Inject(ctx, copyMetadata)
+	bridge := telemetryBridgeForContext(ctx)
+	return bridge.Restore(ctx, copyMetadata)
 }
 
 func newSegmentInfo() SegmentInfo {

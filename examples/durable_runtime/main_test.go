@@ -23,9 +23,9 @@ func TestDurableRuntimeExample(t *testing.T) {
 
 func TestMigrationExampleRejectsMalformedSource(t *testing.T) {
 	// Arrange: target transformation must not replace an unreadable source with a zero value.
-	source := flowy.MigrationState{ExecutionPointer: workNode, StatePayload: []byte("{")}
+	source := flowy.ExecutionProgress{ExecutionPointer: workNode, StatePayload: []byte("{")}
 	// Act.
-	result, err := correctMigrationState(source)
+	result, err := correctExecutionProgress(source)
 	// Assert: preserve the failed source and propagate its decode error.
 	if err == nil || result.ExecutionPointer != source.ExecutionPointer ||
 		!bytes.Equal(result.StatePayload, source.StatePayload) {

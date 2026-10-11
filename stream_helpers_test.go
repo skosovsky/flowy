@@ -46,7 +46,10 @@ func TestConsumeEventsAndWaitEarlyStop(t *testing.T) {
 	type state struct{ N int }
 	ready := make(chan struct{})
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		select {
 		case <-ready:
@@ -131,7 +134,10 @@ func TestConsumeEventsAndWaitSilentDrainAfterFalse(t *testing.T) {
 
 	type state struct{ N int }
 	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.AddNode("loop", func(_ context.Context, s state) (state, Directive, error) {
+	b.AddNode("loop", func(ctx context.Context, s state) (state, Directive, error) {
+		if s.N > 0 {
+			<-ctx.Done()
+		}
 		s.N++
 		return s, Completed(), nil
 	})

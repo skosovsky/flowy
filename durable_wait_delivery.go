@@ -40,29 +40,30 @@ func (contract WaitDeliveryContract[T]) check(spec DurableWaitSpec) error {
 // and permission checks. No durable decision is returned on a failed write.
 func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID string,
 	delivery WaitDelivery, contract WaitDeliveryContract[T],
-) (WaitDeliveryResult, error) {
+) (result WaitDeliveryResult, retErr error) { //nolint:nonamedreturns // Preserve committed result and cleanup error.
 	if executionID == "" || delivery.Generation == "" || delivery.ID == "" ||
 		!validRuntimeText(executionID, delivery.Generation, delivery.ID, delivery.CorrelationID) {
 		return WaitDeliveryResult{}, ErrWaitInvalid
 	}
 	delivery.Payload = bytes.Clone(delivery.Payload)
 	// Early delivery must not acquire/create a missing execution head.
-	if _, err := r.waitDeliverySource(ctx, executionID, delivery.Generation); err != nil {
+	if _, _, err := r.waitDeliverySource(ctx, executionID, delivery.Generation); err != nil {
 		return WaitDeliveryResult{}, err
 	}
 	session, err := r.acquireSession(ctx, executionID)
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
-	defer session.finish()
-	source, err := r.waitDeliverySource(session.ctx, executionID, delivery.Generation)
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
+	source, waits, err := r.waitDeliverySource(session.ctx, executionID, delivery.Generation)
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
-	waits, err := executionWaits(source)
-	if err != nil {
-		return WaitDeliveryResult{}, err
-	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := waitObservation(source, LifecycleWaitDelivery, delivery.Generation, delivery.ID)
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	identity, record, err := findWaitGeneration(waits, delivery.Generation)
 	if err != nil {
 		return WaitDeliveryResult{}, err
@@ -74,7 +75,9 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
+	event.Code = "wait_" + string(decision.Status)
 	if replay {
+		event.Stage, event.Revision = LifecycleReplayed, source.Revision
 		return WaitDeliveryResult{Decision: decision, Replay: true,
 			ResumeToken: ResumeToken{ThreadID: executionID, SnapshotRevision: source.Revision}}, nil
 	}
@@ -93,10 +96,11 @@ func (r *DurableRunner[T, E]) DeliverWait(ctx context.Context, executionID strin
 	if session.ctx.Err() != nil {
 		return WaitDeliveryResult{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return WaitDeliveryResult{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return WaitDeliveryResult{Decision: decision, Replay: false,
 		ResumeToken: ResumeToken{ThreadID: executionID, SnapshotRevision: committed.Revision}}, nil
 }
@@ -116,52 +120,45 @@ func findWaitGeneration(waits map[string]DurableWaitRecord, generation string) (
 func (r *DurableRunner[T, E]) waitDeliverySource(
 	ctx context.Context,
 	id, generation string,
-) (ExecutionEnvelope, error) {
+) (ExecutionEnvelope, map[string]DurableWaitRecord, error) {
 	source, err := r.store.LoadExecution(ctx, id)
 	if errors.Is(err, ErrThreadNotFound) {
-		return ExecutionEnvelope{}, ErrWaitNotArmed
+		return ExecutionEnvelope{}, nil, ErrWaitNotArmed
 	}
 	if err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = ValidateExecutionIntegrity(source, id, source.Revision); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
-	if err = validateExecutionCollections(source); err != nil {
-		return ExecutionEnvelope{}, err
+	waits, err := validateExecutionCollectionsWithWaits(source)
+	if err != nil {
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = validateExecutionSourceMetadata(source); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if err = r.checkRuntimeProfile(source.RuntimeProfile); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
-	_, record, err := findWaitGenerationMustDecode(source, generation)
+	_, record, err := findWaitGeneration(waits, generation)
 	if err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if r.waitBackend == nil || r.options.WaitProfile == nil || record.Profile != *r.options.WaitProfile ||
 		r.waitBackend.WaitCapabilities() != record.Profile {
-		return ExecutionEnvelope{}, ErrExecutionCapability
+		return ExecutionEnvelope{}, nil, ErrExecutionCapability
 	}
 	if err = source.Descriptor.Check(r.descriptor); err != nil {
-		return ExecutionEnvelope{}, err
+		return ExecutionEnvelope{}, nil, err
 	}
 	if r.validatePointer(source.Progress.ExecutionPointer) != nil {
-		return ExecutionEnvelope{}, ErrExecutionIncompatible
+		return ExecutionEnvelope{}, nil, ErrExecutionIncompatible
 	}
 	if r.validatePointer(record.Spec.EventPointer) != nil || r.validatePointer(record.Spec.TimeoutPointer) != nil {
-		return ExecutionEnvelope{}, ErrExecutionIncompatible
+		return ExecutionEnvelope{}, nil, ErrExecutionIncompatible
 	}
-	return source, nil
-}
-
-func findWaitGenerationMustDecode(source ExecutionEnvelope, generation string) (string, DurableWaitRecord, error) {
-	waits, err := executionWaits(source)
-	if err != nil {
-		return "", DurableWaitRecord{}, err
-	}
-	return findWaitGeneration(waits, generation)
+	return source, waits, nil
 }
 
 func (r *DurableRunner[T, E]) prepareWaitDelivery(session *executionSession, source ExecutionEnvelope,

@@ -8,48 +8,41 @@ import (
 )
 
 type ActivityRetryScanPage struct {
-	Retries          []flowy.PendingActivityRetry
-	AfterExecutionID string
-	More             bool
+	Retries     []flowy.PendingActivityRetry
+	Cursor      DiscoveryCursor
+	More        bool
+	Diagnostics []DiscoveryDiagnostic
 }
 
-// DiscoverDueActivityRetries observes only executions explicitly bound to this
-// runtime profile. It does not acquire a lease, Resume, dispatch, classify an
-// error, replenish attempts or move a persisted absolute deadline.
+// DiscoverDueActivityRetries observes indexed work bound to this runtime profile.
+// It does not acquire a lease, dispatch, reset attempts or move deadlines.
 func (s *ExecutionStore) DiscoverDueActivityRetries(ctx context.Context, now time.Time,
-	afterExecutionID string, scanLimit int,
+	cursor DiscoveryCursor, scanLimit int,
 ) (ActivityRetryScanPage, error) {
-	if s.waitProfile == nil {
-		return ActivityRetryScanPage{}, flowy.ErrExecutionCapability
+	var empty DiscoveryCursor
+	page := ActivityRetryScanPage{
+		Retries:     make([]flowy.PendingActivityRetry, 0),
+		Cursor:      empty,
+		More:        false,
+		Diagnostics: nil,
 	}
-	if now.IsZero() || scanLimit <= 0 || scanLimit > maxWaitScanHeads {
-		return ActivityRetryScanPage{}, flowy.ErrWaitInvalid
-	}
-	page := ActivityRetryScanPage{Retries: make([]flowy.PendingActivityRetry, 0),
-		AfterExecutionID: afterExecutionID, More: false}
-	position, err := s.scanExecutionHeads(
-		ctx,
-		afterExecutionID,
-		scanLimit,
-		func(envelope flowy.ExecutionEnvelope) error {
-			if envelope.RuntimeProfile == nil || *envelope.RuntimeProfile != *s.waitProfile {
-				return nil
-			}
+	position, diagnostics, more, err := s.scanDueCandidates(ctx, now, cursor, scanLimit, "retry",
+		func(envelope flowy.ExecutionEnvelope, candidate dueCandidate) error {
 			retries, inspectErr := flowy.InspectPendingActivityRetries(envelope)
 			if inspectErr != nil {
 				return inspectErr
 			}
 			for _, retry := range retries {
-				if !now.Before(retry.Deadline) {
+				if retry.Identity == candidate.Identity && !now.Before(retry.Deadline) {
 					page.Retries = append(page.Retries, retry)
+					return nil
 				}
 			}
-			return nil
-		},
-	)
+			return flowy.ErrExecutionCorrupt
+		})
 	if err != nil {
 		return ActivityRetryScanPage{}, err
 	}
-	page.AfterExecutionID, page.More = position.AfterExecutionID, position.More
+	page.Cursor, page.Diagnostics, page.More = position, diagnostics, more
 	return page, nil
 }

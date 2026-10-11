@@ -85,7 +85,7 @@ func TestIntegrationChildCancellationRequestAndConfirmationPersistentRestart(t *
 	}
 	id := testThreadID(t)
 	var dispatches, notices atomic.Int32
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildCancelRunner(t, store, &dispatches, &notices).Start(ctx, id, intState{})
 	if first == nil || !errors.Is(err, flowy.ErrChildrenUnresolved) {
 		t.Fatalf("requested wait missing: %v", err)
@@ -96,7 +96,7 @@ func TestIntegrationChildCancellationRequestAndConfirmationPersistentRestart(t *
 	}
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartStore := NewExecutionStore(restartPool)
+	restartStore := mustExecutionStore(t, restartPool)
 	runner := postgresChildCancelRunner(t, restartStore, &dispatches, &notices)
 	// Act: repeat notification after restart, then persist explicit host confirmation.
 	second, resumeErr := runner.Resume(restartCtx, first.ResumeToken)
@@ -129,7 +129,7 @@ func TestIntegrationChildCancellationRequestAndConfirmationPersistentRestart(t *
 	}
 	restartPool.Close()
 	finalCtx, finalPool := reopenPool(t, pool)
-	finalStore := NewExecutionStore(finalPool)
+	finalStore := mustExecutionStore(t, finalPool)
 	_, err = postgresChildCancelRunner(t, finalStore, &dispatches, &notices).Resume(finalCtx, token)
 	group = postgresStoredChildGroup(finalCtx, t, finalStore, id)
 	// Assert: confirmed state/provenance survive another pool, with no remote relaunch.

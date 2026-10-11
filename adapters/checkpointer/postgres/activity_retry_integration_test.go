@@ -33,12 +33,18 @@ func postgresRetryRunner(t *testing.T, store flowy.ExecutionStore, at time.Time,
 			Implementation: "stable",
 			Input:          []byte("input"),
 			Retry: flowy.ActivityRetryPolicy{
-				Label:             "bounded",
-				MaxAttempts:       2,
-				Delay:             time.Hour,
+				Label:       "bounded",
+				MaxAttempts: 2,
+				Schedule: flowy.ActivityRetrySchedule{
+					Kind:         flowy.ActivityRetryFixed,
+					InitialDelay: time.Hour,
+					MaxDelay:     time.Hour,
+				},
 				SafeRetryContract: "host-idempotency",
 			},
-			Classify: func(error) flowy.ActivityFailureClass { return flowy.ActivityRetryable },
+			Classify: func(error) flowy.ActivityFailureDecision {
+				return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable}
+			},
 			Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 				if calls.Add(1) == 1 {
 					return nil, errors.New("dispatch failed")
@@ -66,9 +72,9 @@ func postgresRetryRunner(t *testing.T, store flowy.ExecutionStore, at time.Time,
 		graph,
 		store,
 		flowy.ExecutionDescriptor{
-			GraphID:           "retry",
-			GraphRevision:     "current",
-			StateCodec:        "json",
+			GraphID:       "retry",
+			GraphRevision: "current",
+			StateCodec:    "json", EffectsCodec: "host-effects-v1",
 			ExecutionContract: "sync",
 			ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 		},
@@ -95,7 +101,7 @@ func TestIntegrationActivityRetryPersistentRestart(t *testing.T) {
 	}
 	id := testThreadID(t)
 	at := time.Date(2026, time.October, 4, 0, 0, 0, 0, time.UTC)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var calls atomic.Int32
 	runner := postgresRetryRunner(t, store, at, &calls)
 	// Act: commit retry, discard the pool, then resume using independent connections.
@@ -110,7 +116,7 @@ func TestIntegrationActivityRetryPersistentRestart(t *testing.T) {
 	}
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	restarted := postgresRetryRunner(t, restartedStore, at, &calls)
 	blocked, blockedErr := restarted.Resume(restartCtx, failed.ResumeToken)
 	// Assert: no dispatch or journal mutation before the persisted deadline.

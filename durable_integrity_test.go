@@ -62,7 +62,7 @@ func TestDurableIntegrityRejectsBeforeCodecAndDispatch(t *testing.T) {
 			}
 			source, err := base.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 				ExecutionID: "run", Descriptor: durableDescriptor("current"),
-				Progress: flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque")},
+				Progress: flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque")},
 			})
 			if err != nil {
 				t.Fatal(err)
@@ -79,7 +79,7 @@ func TestDurableIntegrityRejectsBeforeCodecAndDispatch(t *testing.T) {
 						ID:        "old-to-current",
 						Source:    durableDescriptor("old"),
 						Target:    durableDescriptor("current"),
-						Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { probes.Add(1); return state, nil },
+						Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { probes.Add(1); return state, nil },
 					},
 				}})
 			if err != nil {

@@ -21,7 +21,7 @@ func TestIntegrationForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			// Arrange: change stored payload and its seal, but not immutable creation metadata.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, testThreadID(t), &nodes, &live)
 			candidate := before
@@ -57,7 +57,7 @@ func TestIntegrationForkPersistentRecoveryRejectsResealedLineage(t *testing.T) {
 			pool.Close()
 			// Act: recover through a fresh pool, with executable fake policy present.
 			recoveryCtx, recoveryPool := reopenPool(t, pool)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			_, loadErr := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			_, exactErr := recovered.LoadCheckpoint(recoveryCtx, before.ExecutionID, before.Revision)
 			policy := &flowy.ForkExecutionPolicy{
@@ -90,7 +90,7 @@ func createForkLineageFixture(ctx context.Context, t *testing.T, pool *pgxpool.P
 			ExecutionID: source.ExecutionID, Revision: source.Revision, Digest: source.Digest,
 		},
 		TargetID: base + "target", Transform: flowy.ForkTransform{Label: "copy", Source: source.Descriptor,
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) { return state, nil }},
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) { return state, nil }},
 	}
 	if _, err := pgForkRunner(t, store, nil, nodes, live).Fork(ctx, request); err != nil {
 		t.Fatal(err)
@@ -116,13 +116,13 @@ func TestIntegrationForkPersistentLineageCannotBeRewrittenUnderValidFence(t *tes
 		t.Run(name, func(t *testing.T) {
 			// Arrange: create fork, close its pool, acquire a genuine successor lease.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			base := testThreadID(t)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, base, &nodes, &live)
 			pool.Close()
 			recoveryCtx, recoveryPool := reopenPool(t, pool)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			candidate, err := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			if err != nil {
 				t.Fatal(err)

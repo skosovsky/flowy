@@ -8,8 +8,8 @@ import (
 var (
 	ErrExecutionHistoryUnsupported    = errors.New("flowy: execution history unsupported")
 	ErrExecutionCheckpointUnavailable = errors.New("flowy: exact execution checkpoint absent or pruned")
-	ErrForkInvalid                    = errors.New("flowy: invalid execution fork contract")
-	ErrForkSourceDigest               = errors.New("flowy: fork source digest mismatch")
+	ErrExecutionLifecycleInvalid      = errors.New("flowy: invalid execution lifecycle contract")
+	ErrExecutionSourceDigest          = errors.New("flowy: execution source digest mismatch")
 )
 
 // HistoricalCheckpointReference addresses exactly one immutable raw checkpoint.
@@ -22,10 +22,10 @@ type HistoricalCheckpointReference struct {
 
 func (s HistoricalCheckpointReference) Validate() error {
 	if s.ExecutionID == "" || !validRuntimeText(s.ExecutionID) || s.Revision == 0 {
-		return ErrForkInvalid
+		return ErrExecutionLifecycleInvalid
 	}
 	if !validActivityDigest(s.Digest) {
-		return ErrForkSourceDigest
+		return ErrExecutionSourceDigest
 	}
 	return nil
 }
@@ -54,7 +54,7 @@ func InspectExecutionCheckpoint(ctx context.Context, store ExecutionStore,
 		return ExecutionEnvelope{}, err
 	}
 	if envelope.Digest != source.Digest {
-		return ExecutionEnvelope{}, ErrForkSourceDigest
+		return ExecutionEnvelope{}, ErrExecutionSourceDigest
 	}
 	if err = envelope.Descriptor.Validate(); err != nil {
 		return ExecutionEnvelope{}, err

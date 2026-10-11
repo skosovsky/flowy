@@ -63,7 +63,7 @@ func TestIntegrationChildMigrationPersistentOriginalResolutionAndJoin(t *testing
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var dispatches, merges atomic.Int32
 	_, err := postgresChildReferenceRunner(t, store, "old", "old-node", &dispatches, &merges, nil).
 		Start(ctx, id, intState{})
@@ -89,13 +89,13 @@ func TestIntegrationChildMigrationPersistentOriginalResolutionAndJoin(t *testing
 		ID:     "move-children",
 		Source: source.Descriptor,
 		Target: referenceDescriptor("new"),
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.ChildGroupReferences = map[string]string{"waits": identity}
 			return state, nil
 		},
 	}
-	migrationStore := NewExecutionStore(migrationPool)
+	migrationStore := mustExecutionStore(t, migrationPool)
 	pending, err := postgresChildReferenceRunner(t, migrationStore, "new", "new-node", &dispatches, &merges,
 		[]flowy.ExecutionMigration{migration}).Resume(migrationCtx,
 		flowy.ResumeToken{ThreadID: id, SnapshotRevision: source.Revision})
@@ -114,7 +114,7 @@ func resolveMigratedPersistentChild(t *testing.T, dsn string, token flowy.Resume
 ) flowy.ResumeToken {
 	t.Helper()
 	ctx, pool := openRacePool(t, dsn)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)
 	next, err := runner.ResolveChildWait(ctx, token, postgresChildWaitDecision(group, index))
@@ -134,7 +134,7 @@ func finishMigratedPersistentChildren(t *testing.T, dsn string, token flowy.Resu
 ) {
 	t.Helper()
 	ctx, pool := openRacePool(t, dsn)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	runner := postgresChildReferenceRunner(t, store, "new", "new-node", dispatches, merges, nil)
 	group := postgresStoredChildGroup(ctx, t, store, token.ThreadID)
 	next, err := runner.ResolveChildWait(ctx, token, postgresChildWaitDecision(group, 2))

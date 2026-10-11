@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 //go:embed sql/upsert_lease.sql
@@ -45,8 +46,11 @@ type LeaseManager struct {
 }
 
 // NewLeaseManager creates a PostgreSQL-backed lease manager.
-func NewLeaseManager(db DB) *LeaseManager {
-	return &LeaseManager{db: db}
+func NewLeaseManager(db DB) (*LeaseManager, error) {
+	if nilvalue.IsNil(db) {
+		return nil, flowy.ErrExecutionCapability
+	}
+	return &LeaseManager{db: db}, nil
 }
 
 const (
@@ -93,9 +97,13 @@ func (m *LeaseManager) Acquire(
 	tag, err := tx.Exec(ctx, upsertLeaseSQL, pgx.NamedArgs{
 		threadIDArgument: threadID,
 		ownerArgument:    owner,
-		"ttl_seconds":    ttl.Seconds(),
+		"ttl_seconds":    leaseTTLSeconds(ttl),
 	})
 	if err != nil {
+		var storageErr *pgconn.PgError
+		if errors.As(err, &storageErr) && storageErr.Code == "22003" {
+			return flowy.ExecutionLease{}, fmt.Errorf("%w: %w", flowy.ErrExecutionCapability, err)
+		}
 		return flowy.ExecutionLease{}, err
 	}
 	if tag.RowsAffected() == 0 {
@@ -137,7 +145,7 @@ func (m *LeaseManager) Renew(
 		threadIDArgument:    lease.ExecutionID,
 		ownerArgument:       lease.Owner,
 		incarnationArgument: lease.Incarnation,
-		"ttl_seconds":       ttl.Seconds(),
+		"ttl_seconds":       leaseTTLSeconds(ttl),
 	})
 	if err != nil {
 		return flowy.ExecutionLease{}, err
@@ -227,3 +235,12 @@ func (*LeaseManager) NativeLeaseManager() {}
 
 var _ flowy.LeaseManager = (*LeaseManager)(nil)
 var _ flowy.NativeLeaseManager = (*LeaseManager)(nil)
+
+// PostgreSQL timestamp/interval precision is microseconds.
+func leaseTTLSeconds(ttl time.Duration) float64 {
+	micros := ttl.Microseconds()
+	if ttl%time.Microsecond != 0 {
+		micros++
+	}
+	return float64(micros) / float64(time.Second/time.Microsecond)
+}

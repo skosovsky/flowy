@@ -7,6 +7,7 @@ import (
 	"errors"
 	"maps"
 	"slices"
+	"unicode/utf8"
 )
 
 type childGroupContextKey struct{}
@@ -35,20 +36,11 @@ func childPlanBytes(plan ChildGroupPlan) []byte {
 	return encoded
 }
 
-func detachedChildGroup(group ChildGroupRecord) ChildGroupRecord {
-	encoded, _ := json.Marshal(group)
-	var result ChildGroupRecord
-	_ = json.Unmarshal(encoded, &result)
-	return result
-}
-
-func (c *executionCheckpointer[T, E]) prepareChildren(
+func (c *executionCheckpointer[T, E]) prepareChildrenLocked(
 	ctx context.Context,
 	plan ChildGroupPlan,
 	available map[string]int,
 ) (ChildGroupRecord, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	groups, err := executionChildGroups(c.envelope)
 	if err != nil {
 		return ChildGroupRecord{}, err
@@ -59,7 +51,7 @@ func (c *executionCheckpointer[T, E]) prepareChildren(
 			return ChildGroupRecord{}, ErrBudgetExceeded
 		}
 		if !bytes.Equal(childPlanBytes(prior.Plan), childPlanBytes(plan)) {
-			return ChildGroupRecord{}, ErrChildJoinInvalid
+			return ChildGroupRecord{}, ErrChildInvalid
 		}
 		return detachedChildGroup(prior), nil
 	}
@@ -82,7 +74,7 @@ func (c *executionCheckpointer[T, E]) prepareChildren(
 	if err != nil {
 		return ChildGroupRecord{}, err
 	}
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return ChildGroupRecord{}, err
@@ -96,10 +88,16 @@ func executionChildGroups(envelope ExecutionEnvelope) (map[string]ChildGroupReco
 	if len(envelope.ChildrenPayload) == 0 {
 		return groups, validateChildGroupReferences(envelope, groups)
 	}
+	if !utf8.Valid(envelope.ChildrenPayload) {
+		return nil, ErrExecutionCorrupt
+	}
 	if err := json.Unmarshal(envelope.ChildrenPayload, &groups); err != nil {
 		return nil, errors.Join(ErrExecutionCorrupt, err)
 	}
 	if groups == nil {
+		return nil, ErrExecutionCorrupt
+	}
+	if !validChildOutcomeDecisionIDs(groups) {
 		return nil, ErrExecutionCorrupt
 	}
 	for identity, group := range groups {
@@ -126,6 +124,9 @@ func validChildGroupProvenance(group ChildGroupRecord, revision uint64) bool {
 		return false
 	}
 	for _, child := range group.Children {
+		if !validChildOutcomeGroupProvenance(group, child, revision) {
+			return false
+		}
 		if child.CancelConfirmation != nil && (child.CancelConfirmation.SourceRevision >= revision ||
 			group.CancelRequest == nil || child.CancelConfirmation.RequestID != group.CancelRequest.ID ||
 			child.CancelConfirmation.SourceRevision <= group.CancelRequest.SourceRevision) {
@@ -180,7 +181,7 @@ func (c *executionCheckpointer[T, E]) persistChildGroupsLocked(
 		return err
 	}
 	target.ChildrenPayload = payload
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return err

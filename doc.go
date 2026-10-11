@@ -11,14 +11,17 @@
 //
 // # Durable execution
 //
-// [DurableRunner] is an explicit synchronous durable profile, separate from the
-// ordinary Runner semantics below. Bind a compiled BYOT graph, [ExecutionStore],
+// [DurableRunner] supports synchronous Start/Resume and asynchronous Stream/ResumeStream,
+// separate from ordinary Runner semantics below. Bind a compiled BYOT graph, [ExecutionStore],
 // host state/effect codecs, an [ExecutionDescriptor] and [DurableOptions]. The
 // descriptor requires explicit graph, codec and execution-contract labels and a
 // named replay-safe step policy. Core has no mandatory infrastructure or domain
 // model. The host owns authentication, domain permissions, payloads and codecs.
 //
-// Durable execution commits the initial boundary before node calls, each step
+// Durable Stream returns a handle only after its initial boundary commits;
+// WaitResult is authoritative, while events remain best-effort. Start also commits
+// the initial boundary before node calls. Resume entry points validate the saved
+// boundary before starting continuation. Durable execution commits each step
 // before the next node, and terminal outcomes before announcing completion.
 // Every aggregate write checks OCC and a live lease incarnation. A stale owner
 // cannot write simply because its expected revision still matches. Resume checks
@@ -88,7 +91,8 @@
 // Recovery cron should be single-leader or protected by an external lock.
 // RecoverStaleHandoff itself does not acquire run leases.
 // Checkpointer Save/Load use strict OCC (expectedRevision uint64); ErrConcurrencyConflict on conflict.
-// LifecycleObserver (SetLifecycleObserver) receives handoff/resume/checkpoint-soft events.
+// WithLifecycleObserver scopes value-only runtime observations through ObserveLifecycle;
+// SetLifecycleObserver installs a synchronized default.
 // Soft checkpoint: WithCheckpointErrorPolicy(CheckpointPolicySkipOnSaveError) emits EventCheckpointFailed on
 // Stream/ResumeStream without aborting terminal flow; sync Start/Resume have no event sink.
 // ResumeToken is set only after a persisted Suspend/Handoff terminal save. When skip-on-save-error
@@ -113,8 +117,10 @@
 // ErrThreadAlreadyRunning is returned when Start/Stream/ResumeStream/Resume targets a threadID with an active in-process session (without lease). ErrThreadLeaseBusy is lease-layer only.
 // Invalid ResumeAt targets set ReasonHandoffResumeTargetInvalid or ReasonSuspendResumeTargetInvalid.
 //
-// Dual retention: in-loop Prune failures fail the terminal return; postRunCleanup Prune on
-// Completed/Failed only logs a warning (does not change RunResult).
+// Cleanup release and Completed/Failed prune/delete use detached contexts bounded to five seconds.
+// Failures wrap ErrRunCleanup and retain their cause, joined with execution errors.
+// RunResult retains its execution outcome; a cleanup failure does not undo a committed result.
+// In-loop retention errors retain the terminal status and report their existing reason suffix.
 //
 // ErrConcurrencyConflict (stale or zero SnapshotRevision), ErrInvalidResumeToken,
 // ErrHandoffPending, ErrHandoffOrphaned, ErrHandoffEnqueueFailed, ErrHandoffPatchFailed,
@@ -139,7 +145,15 @@
 //
 // DeleteIfIdle and delete-on-success run after execute and releaseLease
 // (postRunCleanup). Prune (retention) runs in-loop on suspend/handoff/cancel
-// before releaseLease.
+// before releaseLease. Rejected resume admission also performs bounded release.
+// RequestLocalHandoff acknowledges checkpoint/session completion; Start/WaitResult
+// additionally reports subsequent cleanup errors. A stale/rejected stream handle
+// cancels only its own context, and execute releases its owned context on every return.
+// Active-run Canceled/DeadlineExceeded (including wrapped node errors) checkpoint
+// continuation; a node-local deadline with a live run is a node failure.
+// Failed live RunResult metadata closes its segment with UTC EndTime and EndReason fail.
+// AddRetryRoute requires AllowNoOutgoingRoute: split Retry and Completed routing
+// into separate nodes. This restriction never authorizes automatic I/O retries.
 //
 // Named budgets use UseBudget to record consumption and BudgetUsed to read
 // current usage from the active execution context. ContextWithRunMetadata

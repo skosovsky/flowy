@@ -25,7 +25,7 @@ func ProjectChildSpecs[P, I any](
 	project func(context.Context, P, string) (I, error),
 ) ([]ChildSpec, error) {
 	if parentCodec == nil || inputCodec == nil || project == nil || len(specs) == 0 {
-		return nil, ErrChildJoinInvalid
+		return nil, ErrChildInvalid
 	}
 	if err := validateChildProjectionSpecs(specs); err != nil {
 		return nil, err
@@ -67,7 +67,7 @@ func validateChildProjectionSpecs(specs []ChildProjectionSpec) error {
 	seen := make(map[string]bool)
 	for _, spec := range specs {
 		if spec.ID == "" || !validRuntimeText(spec.ID) || !validChildCapacity(spec.Allocation) {
-			return ErrChildJoinInvalid
+			return ErrChildInvalid
 		}
 		if seen[spec.ID] {
 			return ErrChildDuplicate
@@ -92,7 +92,7 @@ type TypedChildResult[O any] struct {
 func TypedChildDispatcher[I, O any](inputCodec StateSerializer[I], resultCodec StateSerializer[O],
 	worker func(context.Context, TypedChildInvocation[I]) (TypedChildResult[O], error)) (ChildDispatcher, error) {
 	if inputCodec == nil || resultCodec == nil || worker == nil {
-		return nil, ErrChildJoinInvalid
+		return nil, ErrChildInvalid
 	}
 	return func(ctx context.Context, invocation ChildInvocation) (ChildResult, error) {
 		input, err := inputCodec.Unmarshal(bytes.Clone(invocation.Input))
@@ -107,7 +107,7 @@ func TypedChildDispatcher[I, O any](inputCodec StateSerializer[I], resultCodec S
 			return ChildResult{}, err
 		}
 		if !validChildResultState(outcome.State) {
-			return ChildResult{}, ErrChildJoinInvalid
+			return ChildResult{}, ErrChildInvalid
 		}
 		payload, err := resultCodec.Marshal(outcome.Result)
 		if err != nil {
@@ -137,7 +137,7 @@ type TypedChildOutcome[O any] struct {
 
 func DecodeChildOutcomes[O any](group ChildGroupRecord, codec StateSerializer[O]) ([]TypedChildOutcome[O], error) {
 	if codec == nil || validateChildGroup(group) != nil {
-		return nil, ErrChildJoinInvalid
+		return nil, ErrChildInvalid
 	}
 	return decodeTypedChildRecords(group.Children, codec)
 }
@@ -170,11 +170,14 @@ func decodeTypedChildRecords[O any](children []ChildRecord, codec StateSerialize
 	return outcomes, nil
 }
 
+// JoinTypedChildren may return ErrChildCodec after a successful join commit
+// when decoding cached merged bytes fails. Inspect/redecode the committed group
+// or replay with its current assertion; do not repeat merge/dispatch as recovery.
 func JoinTypedChildren[O, R any](ctx context.Context, group ChildGroupRecord, outcomeCodec StateSerializer[O],
 	mergedCodec StateSerializer[R], merge func(context.Context, []TypedChildOutcome[O]) (R, error)) (R, error) {
 	var zero R
 	if outcomeCodec == nil || mergedCodec == nil || merge == nil {
-		return zero, ErrChildJoinInvalid
+		return zero, ErrChildInvalid
 	}
 	payload, err := JoinChildren(ctx, group, func(ctx context.Context, children []ChildRecord) ([]byte, error) {
 		outcomes, decodeErr := decodeTypedChildRecords(children, outcomeCodec)

@@ -3,6 +3,7 @@ package flowy
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"time"
 )
@@ -32,28 +33,29 @@ type WaitCancellationRecord struct {
 // execution. Identical addressed cancellation is replayed without another write.
 func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	request WaitCancellation,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) { //nolint:nonamedreturns // Preserve committed result and cleanup error.
 	if token.ThreadID == "" || token.SnapshotRevision == 0 || request.Generation == "" || request.ID == "" ||
-		!validRuntimeText(token.ThreadID, request.Generation, request.ID, request.Evidence) ||
+		!validRuntimeText(token.ThreadID, request.Generation, request.ID, request.Reason, request.Evidence) ||
 		request.Reason == "" || request.Evidence == "" {
 		return ResumeToken{}, ErrWaitInvalid
 	}
-	if _, err := r.waitDeliverySource(ctx, token.ThreadID, request.Generation); err != nil {
+	if _, _, err := r.waitDeliverySource(ctx, token.ThreadID, request.Generation); err != nil {
 		return ResumeToken{}, err
 	}
 	session, err := r.acquireSession(ctx, token.ThreadID)
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
-	source, err := r.waitDeliverySource(session.ctx, token.ThreadID, request.Generation)
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
+	source, waits, err := r.waitDeliverySource(session.ctx, token.ThreadID, request.Generation)
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	waits, err := executionWaits(source)
-	if err != nil {
-		return ResumeToken{}, err
-	}
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := waitObservation(source, LifecycleWaitCancel, request.Generation, request.ID)
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
 	identity, record, err := findWaitGeneration(waits, request.Generation)
 	if err != nil {
 		return ResumeToken{}, err
@@ -61,7 +63,9 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if cancelErr := validateWaitCancellationRequest(source, record, token, request); cancelErr != nil {
 		return ResumeToken{}, cancelErr
 	}
+	event.Code = "wait_canceled"
 	if record.State == WaitCanceled {
+		event.Stage, event.Revision = LifecycleReplayed, source.Revision
 		return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: source.Revision}, nil
 	}
 	now := r.options.Clock.Now().UTC()
@@ -83,10 +87,11 @@ func (r *DurableRunner[T, E]) CancelWait(ctx context.Context, token ResumeToken,
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision = LifecycleCommitted, committed.Revision
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 
@@ -128,7 +133,7 @@ func validWaitCancellation(record DurableWaitRecord, revision uint64) bool {
 	cancel := record.Cancellation
 	return cancel != nil && cancel.ID != "" && cancel.Reason != "" && cancel.Evidence != "" &&
 		cancel.SourceRevision >= record.ArmRevision && cancel.SourceRevision < revision &&
-		cancel.Incarnation != 0 && !cancel.At.IsZero()
+		cancel.Incarnation != 0 && !cancel.At.IsZero() && validRuntimeText(cancel.ID, cancel.Reason, cancel.Evidence)
 }
 
 func validCanceledWaitTerminal(envelope ExecutionEnvelope, record DurableWaitRecord) bool {

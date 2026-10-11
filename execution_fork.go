@@ -8,7 +8,9 @@ import (
 
 // Fork creates only a fresh saved boundary. Resume requires the recorded policy;
 // source history and latest are never changed or implicitly migrated.
-func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (ResumeToken, error) {
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
+func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (result ResumeToken, retErr error) {
 	// Freeze caller-owned registration before any host callback can mutate it.
 	if request.Projection != nil {
 		projection := *request.Projection
@@ -18,6 +20,12 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	ctx = injectTelemetryContext(ctx, source.RunMeta.TelemetryContext)
+	event := executionObservation(source, LifecycleFork, LifecycleStarted)
+	event.SourceExecutionID, event.ExecutionID, event.TargetExecutionID = source.ExecutionID, request.TargetID, request.TargetID
+	observeLifecycle(ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(ctx, event) }()
 	lineage, err := r.prepareForkLineage(ctx, source, request)
 	if err != nil {
 		return ResumeToken{}, err
@@ -32,7 +40,7 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	if err = r.forkTargetAbsent(session.ctx, request.TargetID); err != nil {
 		return ResumeToken{}, err
 	}
@@ -51,11 +59,13 @@ func (r *DurableRunner[T, E]) Fork(ctx context.Context, request ForkRequest) (Re
 		RuntimeProfile: r.options.WaitProfile, Progress: progress, EffectsPayload: effects,
 		Activation: 1, RunMeta: newRunMetadata(), Fork: &lineage,
 		Revision: 0, Digest: "", JournalPayload: nil, ChildrenPayload: nil, WaitsPayload: nil,
-		Terminal: nil, Migration: nil, Import: nil}
-	committed, err := r.store.CommitExecution(session.ctx, 0, session.lease, target)
+		Terminal: nil, Migration: nil, Import: nil, Rollover: nil, Transfer: nil}
+	target.RunMeta.TelemetryContext = extractTelemetryContext(session.ctx)
+	committed, err := commitExecution(session.ctx, r.store, 0, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.TargetRevision = LifecycleCommitted, committed.Revision, committed.Revision
 	return ResumeToken{ThreadID: request.TargetID, SnapshotRevision: committed.Revision}, nil
 }
 
@@ -111,32 +121,32 @@ func (r *DurableRunner[T, E]) prepareForkLineage(ctx context.Context, source Exe
 
 func (r *DurableRunner[T, E]) transformForkProgress(ctx context.Context, source ExecutionEnvelope,
 	request ForkRequest,
-) (MigrationState, error) {
+) (ExecutionProgress, error) {
 	if ctx.Err() != nil {
-		return MigrationState{}, context.Cause(ctx)
+		return ExecutionProgress{}, context.Cause(ctx)
 	}
-	progress, err := request.Transform.Transform(cloneMigrationState(source.Progress))
+	progress, err := request.Transform.Transform(cloneExecutionProgress(source.Progress))
 	if err != nil {
-		return MigrationState{}, errors.Join(ErrForkTransform, err)
+		return ExecutionProgress{}, errors.Join(ErrForkTransform, err)
 	}
-	progress = cloneMigrationState(progress)
+	progress = cloneExecutionProgress(progress)
 	if request.Projection != nil {
-		progress, err = request.Projection.Project(cloneMigrationState(progress))
+		progress, err = request.Projection.Project(cloneExecutionProgress(progress))
 		if err != nil {
-			return MigrationState{}, errors.Join(ErrForkTransform, err)
+			return ExecutionProgress{}, errors.Join(ErrForkTransform, err)
 		}
-		progress = cloneMigrationState(progress)
+		progress = cloneExecutionProgress(progress)
 	}
 	progress.ChildCursors, progress.JournalReferences = nil, nil
 	progress.ChildGroupReferences = nil
 	if err = r.validatePointer(progress.ExecutionPointer); err != nil {
-		return MigrationState{}, errors.Join(ErrExecutionIncompatible, err)
+		return ExecutionProgress{}, errors.Join(ErrExecutionIncompatible, err)
 	}
 	if ctx.Err() != nil {
-		return MigrationState{}, context.Cause(ctx)
+		return ExecutionProgress{}, context.Cause(ctx)
 	}
 	if _, err = r.stateCodec.Unmarshal(bytes.Clone(progress.StatePayload)); err != nil {
-		return MigrationState{}, errors.Join(ErrExecutionIncompatible, err)
+		return ExecutionProgress{}, errors.Join(ErrExecutionIncompatible, err)
 	}
 	return progress, nil
 }

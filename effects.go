@@ -7,3 +7,11 @@ type NoEffect struct{}
 type EffectMarker interface {
 	effectMarker()
 }
+
+// WithEffects wraps a base directive with effects in execution order.
+func WithEffects[E any](base Directive, effects []E) Directive {
+	for _, effect := range effects {
+		base = Effect(base, effect)
+	}
+	return base
+}

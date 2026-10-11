@@ -7,26 +7,26 @@ import (
 	"time"
 )
 
-func (r *graphRunner[T, E]) saveSnapshotOCC(
+// prepareSnapshot validates domain state before transforming its storage representation.
+func (r *graphRunner[T, E]) prepareSnapshot(
 	ctx context.Context,
-	expectedRevision uint64,
 	snapshot Snapshot[T, E],
 	inv runInvocationOptions[T, E],
-) (uint64, error) {
+) (Snapshot[T, E], error) {
 	if r.checkpointer == nil {
-		return 0, errors.New("flowy: checkpointer is required")
+		return snapshot, errors.New("flowy: checkpointer is required")
 	}
 	if err := validateInvariant(snapshot.State, inv); err != nil {
-		return 0, err
+		return snapshot, err
 	}
 	state := snapshot.State
 	for _, interceptor := range r.interceptors {
 		if err := interceptor.BeforeSave(ctx, &state); err != nil {
-			return 0, fmt.Errorf("flowy: before_save interceptor: %w", err)
+			return snapshot, fmt.Errorf("flowy: before_save interceptor: %w", err)
 		}
 	}
 	snapshot.State = state
-	return r.checkpointer.Save(ctx, expectedRevision, snapshot)
+	return snapshot, nil
 }
 
 //nolint:nonamedreturns // persisted flag pairs with newRevision for terminal paths
@@ -39,21 +39,53 @@ func (r *graphRunner[T, E]) persistSnapshot(
 	state T,
 	inv runInvocationOptions[T, E],
 ) (newRevision uint64, persisted bool, err error) {
+	_, newRevision, persisted, err = r.persistSnapshotPrepared(
+		ctx,
+		expectedRevision,
+		snapshot,
+		sink,
+		current,
+		state,
+		inv,
+	)
+	return newRevision, persisted, err
+}
+
+func (r *graphRunner[T, E]) persistSnapshotPrepared(
+	ctx context.Context,
+	expectedRevision uint64,
+	snapshot Snapshot[T, E],
+	sink eventSink[T, E],
+	current string,
+	state T,
+	inv runInvocationOptions[T, E],
+) (Snapshot[T, E], uint64, bool, error) {
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
 	defer cancelSave()
-	newRevision, saveErr := r.saveSnapshotOCC(saveCtx, expectedRevision, snapshot, inv)
-	if saveErr == nil {
-		return newRevision, true, nil
+	prepared, prepErr := r.prepareSnapshot(saveCtx, snapshot, inv)
+	if prepErr != nil {
+		return snapshot, 0, false, prepErr
 	}
-	if inv.checkpointPolicy != CheckpointPolicySkipOnSaveError {
-		return 0, false, saveErr
+	newRevision, saveErr := r.checkpointer.Save(saveCtx, expectedRevision, prepared)
+	if saveErr == nil {
+		return prepared, newRevision, true, nil
+	}
+	if inv.checkpointPolicy != CheckpointPolicySkipOnSaveError || checkpointContractError(saveErr) {
+		return prepared, 0, false, saveErr
 	}
 	eventPointer := string(snapshot.ExecutionPointer)
 	if eventPointer == "" {
 		eventPointer = current
 	}
 	r.emitCheckpointFailed(ctx, sink, snapshot.ThreadID, eventPointer, state, saveErr)
-	return 0, false, nil
+	return prepared, 0, false, nil
+}
+
+func checkpointContractError(err error) bool {
+	return errors.Is(err, ErrConcurrencyConflict) || errors.Is(err, ErrInvalidSnapshot) ||
+		errors.Is(err, ErrLeaseLost) || errors.Is(err, ErrThreadLeaseBusy) ||
+		errors.Is(err, ErrExecutionCapability) || errors.Is(err, ErrInvalidHandoffIntent) ||
+		errors.Is(err, ErrTransactionalOutboxUnsupported)
 }
 
 func (r *graphRunner[T, E]) enqueueHandoffIntent(
@@ -91,7 +123,7 @@ func (r *graphRunner[T, E]) patchHandoffStatus(
 	snapshot Snapshot[T, E],
 	meta RunMetadata,
 	status HandoffStatus,
-	inv runInvocationOptions[T, E],
+	_ runInvocationOptions[T, E],
 ) (uint64, error) {
 	meta.HandoffStatus = status
 	if status == HandoffStatusPending {
@@ -102,5 +134,6 @@ func (r *graphRunner[T, E]) patchHandoffStatus(
 	snapshot.RunMeta = meta
 	saveCtx, cancelSave := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
 	defer cancelSave()
-	return r.saveSnapshotOCC(saveCtx, expectedRevision, snapshot, inv)
+	// State already has its persisted representation; metadata changes must not re-encode it.
+	return r.checkpointer.Save(saveCtx, expectedRevision, snapshot)
 }

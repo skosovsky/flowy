@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
@@ -28,32 +29,36 @@ type ActivityResolution struct {
 	Evidence          string
 	Outcome           []byte
 	SafeRetryContract string
+	NotBefore         time.Time
 }
 
 // ActivityResolutionRecord retains the decision without altering old attempts.
 type ActivityResolutionRecord struct {
-	DecisionID        string                   `json:"decision_id"`
-	Attempt           int                      `json:"attempt"`
-	Action            ActivityResolutionAction `json:"action"`
-	PriorState        ActivityState            `json:"prior_state"`
-	SourceRevision    uint64                   `json:"source_revision"`
-	Incarnation       uint64                   `json:"incarnation"`
-	Reason            string                   `json:"reason"`
-	Evidence          string                   `json:"evidence"`
-	SafeRetryContract string                   `json:"safe_retry_contract,omitempty"`
-	At                time.Time                `json:"at"`
+	DecisionID        string                         `json:"decision_id"`
+	Attempt           int                            `json:"attempt"`
+	Action            ActivityResolutionAction       `json:"action"`
+	PriorState        ActivityState                  `json:"prior_state"`
+	SourceRevision    uint64                         `json:"source_revision"`
+	Incarnation       uint64                         `json:"incarnation"`
+	Reason            string                         `json:"reason"`
+	Evidence          string                         `json:"evidence"`
+	SafeRetryContract string                         `json:"safe_retry_contract,omitempty"`
+	RetrySchedule     *ActivityRetryScheduleDecision `json:"retry_schedule,omitempty"`
+	At                time.Time                      `json:"at"`
 }
 
 // ResolveActivity commits a manual decision without node, codec, reconciliation
 // or dispatcher calls. It rejects stale revisions and never migrates implicitly.
+//
+//nolint:nonamedreturns // Preserve the decision token while joining session cleanup errors.
 func (r *DurableRunner[T, E]) ResolveActivity(
 	ctx context.Context,
 	token ResumeToken,
 	resolution ActivityResolution,
-) (ResumeToken, error) {
+) (result ResumeToken, retErr error) {
 	if resolution.Identity == "" || resolution.InputDigest == "" || resolution.Implementation == "" ||
 		!validRuntimeText(resolution.Identity, resolution.InputDigest, resolution.Implementation,
-			resolution.DecisionID, resolution.Evidence, resolution.SafeRetryContract) ||
+			resolution.DecisionID, resolution.Reason, resolution.Evidence, resolution.SafeRetryContract) ||
 		resolution.DecisionID == "" ||
 		resolution.Reason == "" ||
 		resolution.Evidence == "" {
@@ -64,7 +69,7 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 	if err != nil {
 		return ResumeToken{}, err
 	}
-	defer session.finish()
+	defer func() { retErr = errors.Join(retErr, session.finish()) }()
 	source, err := r.store.LoadExecution(session.ctx, token.ThreadID)
 	if err != nil {
 		return ResumeToken{}, err
@@ -94,40 +99,27 @@ func (r *DurableRunner[T, E]) ResolveActivity(
 	if recordErr != nil {
 		return ResumeToken{}, recordErr
 	}
-	priorState := record.State
-	now := r.options.Clock.Now().UTC()
-	if record.State == ActivityRunning {
-		record.Attempts[len(record.Attempts)-1].State = ActivityUnknown
-		record.Attempts[len(record.Attempts)-1].Classification = ActivityAmbiguous
-	}
-	if resolutionErr := applyActivityResolution(&record, resolution, now); resolutionErr != nil {
-		return ResumeToken{}, resolutionErr
-	}
-	record.Resolutions = append(record.Resolutions, ActivityResolutionRecord{
-		DecisionID:        resolution.DecisionID,
-		Attempt:           len(record.Attempts),
-		Action:            resolution.Action,
-		PriorState:        priorState,
-		SourceRevision:    source.Revision,
-		Incarnation:       session.lease.Incarnation,
-		Reason:            resolution.Reason,
-		Evidence:          resolution.Evidence,
-		SafeRetryContract: resolution.SafeRetryContract,
-		At:                now,
-	})
-	journal[record.Identity] = record
-	target := cloneExecutionEnvelope(source)
-	target.JournalPayload, err = json.Marshal(journal)
+	session.ctx = restoreExecutionTelemetry(session.ctx, source)
+	event := executionObservation(source, LifecycleReconcile, LifecycleStarted)
+	event.ActivityID, event.Attempt, event.DecisionID = record.Identity, len(record.Attempts), resolution.DecisionID
+	observeLifecycle(session.ctx, event)
+	event.Stage = LifecycleFailed
+	defer func() { observeLifecycle(session.ctx, event) }()
+	target, resolvedState, err := r.prepareActivityResolutionTarget(source, session.lease, journal, record, resolution)
 	if err != nil {
 		return ResumeToken{}, err
 	}
 	if session.ctx.Err() != nil {
 		return ResumeToken{}, context.Cause(session.ctx)
 	}
-	committed, err := r.store.CommitExecution(session.ctx, source.Revision, session.lease, target)
+	committed, err := commitExecution(session.ctx, r.store, source.Revision, session.lease, target)
 	if err != nil {
 		return ResumeToken{}, err
 	}
+	event.Stage, event.Revision, event.Code = LifecycleCommitted, committed.Revision, activityObservationCode(
+		resolvedState,
+	)
+	observeCommittedRetry(session.ctx, event, resolvedState)
 	return ResumeToken{ThreadID: token.ThreadID, SnapshotRevision: committed.Revision}, nil
 }
 
@@ -157,17 +149,23 @@ func resolutionActivityRecord(
 	return journal, record, nil
 }
 
-func applyActivityResolution(record *ActivityRecord, resolution ActivityResolution, now time.Time) error {
+func applyActivityResolution(
+	record *ActivityRecord,
+	resolution ActivityResolution,
+	now time.Time,
+	random func() uint64,
+) (*ActivityRetryScheduleDecision, error) {
+	var chosen *ActivityRetryScheduleDecision
 	record.Classification, record.NextAttemptAt = "", time.Time{}
 	switch resolution.Action {
 	case ActivityResolveComplete:
-		if resolution.SafeRetryContract != "" {
-			return ErrActivityConflict
+		if resolution.SafeRetryContract != "" || !resolution.NotBefore.IsZero() {
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Outcome = ActivityCompleted, ActivityManual, bytes.Clone(resolution.Outcome)
 	case ActivityResolveFail:
-		if len(resolution.Outcome) != 0 || resolution.SafeRetryContract != "" {
-			return ErrActivityConflict
+		if len(resolution.Outcome) != 0 || resolution.SafeRetryContract != "" || !resolution.NotBefore.IsZero() {
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Classification = ActivityFailed, ActivityManual, ActivityNonRetryable
 	case ActivityResolveRetry:
@@ -175,12 +173,57 @@ func applyActivityResolution(record *ActivityRecord, resolution ActivityResoluti
 			record.Retry.SafeRetryContract == "" ||
 			resolution.SafeRetryContract != record.Retry.SafeRetryContract ||
 			len(record.Attempts) >= record.Retry.MaxAttempts {
-			return ErrActivityConflict
+			return nil, ErrActivityConflict
 		}
 		record.State, record.Origin, record.Classification = ActivityPrepared, ActivityManual, ActivityRetryable
-		record.NextAttemptAt = now.Add(record.Retry.Delay)
+		schedule := chooseActivityRetrySchedule(record.Retry, len(record.Attempts), now, resolution.NotBefore, random)
+		if schedule.Rejection != "" {
+			return nil, ErrActivityScheduleInvalid
+		}
+		chosen = &schedule
+		record.NextAttemptAt = schedule.Deadline
 	default:
-		return ErrActivityConflict
+		return nil, ErrActivityConflict
 	}
-	return nil
+	return chosen, nil
+}
+
+func (r *DurableRunner[T, E]) prepareActivityResolutionTarget(
+	source ExecutionEnvelope,
+	lease ExecutionLease,
+	journal map[string]ActivityRecord,
+	record ActivityRecord,
+	resolution ActivityResolution,
+) (ExecutionEnvelope, ActivityState, error) {
+	priorState := record.State
+	now := r.options.Clock.Now().UTC()
+	if record.State == ActivityRunning {
+		record.Attempts[len(record.Attempts)-1].State = ActivityUnknown
+		record.Attempts[len(record.Attempts)-1].Classification = ActivityAmbiguous
+	}
+	chosen, resolutionErr := applyActivityResolution(&record, resolution, now, r.options.RetryRandom)
+	if resolutionErr != nil {
+		return ExecutionEnvelope{}, "", resolutionErr
+	}
+	record.Resolutions = append(record.Resolutions, ActivityResolutionRecord{
+		DecisionID:        resolution.DecisionID,
+		Attempt:           len(record.Attempts),
+		Action:            resolution.Action,
+		PriorState:        priorState,
+		SourceRevision:    source.Revision,
+		Incarnation:       lease.Incarnation,
+		Reason:            resolution.Reason,
+		Evidence:          resolution.Evidence,
+		SafeRetryContract: resolution.SafeRetryContract,
+		At:                now,
+		RetrySchedule:     chosen,
+	})
+	journal[record.Identity] = record
+	target := cloneExecutionEnvelope(source)
+	payload, err := json.Marshal(journal)
+	target.JournalPayload = payload
+	if err != nil {
+		return ExecutionEnvelope{}, "", err
+	}
+	return target, record.State, nil
 }

@@ -30,7 +30,7 @@ func migrationDemo(ctx context.Context) error {
 	opts := options()
 	opts.Migrations = []flowy.ExecutionMigration{
 		{ID: "host-state-correction", Source: descriptor("old"), Target: descriptor("new"),
-			Transform: correctMigrationState},
+			Transform: correctExecutionProgress},
 	}
 	target, err := bind(store, "new", func(_ context.Context, s state) (state, flowy.Directive, error) {
 		s.Value++
@@ -50,7 +50,7 @@ func migrationDemo(ctx context.Context) error {
 	return importDemo(ctx, target)
 }
 
-func correctMigrationState(progress flowy.MigrationState) (flowy.MigrationState, error) {
+func correctExecutionProgress(progress flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 	codec := checkpoint.JSONSerializer[state]{}
 	value, err := codec.Unmarshal(progress.StatePayload)
 	if err != nil {
@@ -68,7 +68,7 @@ func importDemo(ctx context.Context, runner *flowy.DurableRunner[state, flowy.No
 		Digest: hex.EncodeToString(sum[:]), Payload: payload}
 	importer := flowy.ExecutionImporter{ID: "host-converter", Format: source.Format,
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
-			return flowy.ImportedExecutionState{Progress: flowy.MigrationState{
+			return flowy.ImportedExecutionState{Progress: flowy.ExecutionProgress{
 				ExecutionPointer: workNode, StatePayload: []byte(`{"Value":41}`)}, EffectsPayload: []byte("[]")}, nil
 		}}
 	token, err := runner.Import(ctx, "import-target", source, importer)

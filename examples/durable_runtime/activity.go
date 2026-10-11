@@ -49,6 +49,11 @@ func activityDemo(ctx context.Context) error {
 	return retryDemo(ctx)
 }
 
+const (
+	demoRetryMaxDelay       = 4 * time.Hour
+	demoRetryJitterPermille = 250
+)
+
 type demoClock struct{ at time.Time }
 
 func (c *demoClock) Now() time.Time { return c.at }
@@ -57,18 +62,28 @@ func retryDemo(ctx context.Context) error {
 	clock := &demoClock{at: time.Now().UTC()}
 	opts := options()
 	opts.Clock = clock
+	opts.RetryRandom = func() uint64 { return uint64(time.Minute) }
 	attempts := 0
 	request := flowy.ActivityRequest{
 		Key:            "safe-write",
 		Implementation: "host-idempotent-write",
 		Input:          []byte("input"),
 		Retry: flowy.ActivityRetryPolicy{
-			Label:             "bounded",
-			MaxAttempts:       2,
-			Delay:             time.Hour,
+			Label:       "bounded",
+			MaxAttempts: 2,
+			Schedule: flowy.ActivityRetrySchedule{
+				Kind:           flowy.ActivityRetryExponential,
+				InitialDelay:   time.Hour,
+				MaxDelay:       demoRetryMaxDelay,
+				Multiplier:     2,
+				JitterPermille: demoRetryJitterPermille,
+				HintLabel:      "host-throttle-v1",
+			},
 			SafeRetryContract: "host-deduplicates",
 		},
-		Classify: func(error) flowy.ActivityFailureClass { return flowy.ActivityRetryable },
+		Classify: func(error) flowy.ActivityFailureDecision {
+			return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable, NotBefore: clock.at.Add(2 * time.Hour)}
+		},
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 			attempts++
 			if attempts == 1 {
@@ -97,7 +112,7 @@ func retryDemo(ctx context.Context) error {
 	if !errors.Is(err, flowy.ErrActivityRetryPending) || attempts != 1 {
 		return fmt.Errorf("early retry dispatched: %w", err)
 	}
-	clock.at = clock.at.Add(time.Hour)
+	clock.at = clock.at.Add(2 * time.Hour)
 	completed, err := runner.Resume(ctx, pending.ResumeToken)
 	if err != nil || completed == nil || completed.Status != flowy.RunStatusCompleted || attempts != 2 {
 		return fmt.Errorf("bounded retry failed: %w", err)

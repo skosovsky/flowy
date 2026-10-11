@@ -68,7 +68,7 @@ func forkDemo(ctx context.Context) error {
 			Mode:        flowy.ForkFake,
 			PolicyLabel: opts.ForkPolicy.Label,
 			Transform: flowy.ForkTransform{Label: "host-correction", Source: source.Descriptor,
-				Transform: func(progress flowy.MigrationState) (flowy.MigrationState, error) {
+				Transform: func(progress flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 					codec := checkpoint.JSONSerializer[state]{}
 					s, decodeErr := codec.Unmarshal(progress.StatePayload)
 					if decodeErr != nil {

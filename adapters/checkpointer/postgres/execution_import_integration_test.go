@@ -36,9 +36,9 @@ func TestIntegrationExplicitImportPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID:           "import-test",
-		GraphRevision:     "current",
-		StateCodec:        "json-state",
+		GraphID:       "import-test",
+		GraphRevision: "current",
+		StateCodec:    "json-state", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}
@@ -70,13 +70,13 @@ func TestIntegrationExplicitImportPersistentRestart(t *testing.T) {
 		Format: source.Format,
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
 			return flowy.ImportedExecutionState{
-				Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
+				Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"value":41}`)},
 				EffectsPayload: []byte(`[]`),
 			}, nil
 		},
 	}
 	// Act: close the original pool after import and recover through new connections.
-	token, err := bind(NewExecutionStore(pool)).Import(ctx, id, source, importer)
+	token, err := bind(mustExecutionStore(t, pool)).Import(ctx, id, source, importer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -89,7 +89,7 @@ func TestIntegrationExplicitImportPersistentRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(restartedPool.Close)
-	store := NewExecutionStore(restartedPool)
+	store := mustExecutionStore(t, restartedPool)
 	result, err := bind(store).Resume(ctx, token)
 	// Assert: target resume executes once, while exact source provenance survives.
 	if err != nil || result.State.Value != 42 || calls.Load() != 1 {

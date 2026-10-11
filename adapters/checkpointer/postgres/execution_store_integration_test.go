@@ -17,15 +17,15 @@ func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := testThreadID(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	old, err := store.AcquireExecution(ctx, id, "reused-owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
 	descriptor := flowy.ExecutionDescriptor{
-		GraphID:           "g",
-		GraphRevision:     "old",
-		StateCodec:        "raw",
+		GraphID:       "g",
+		GraphRevision: "old",
+		StateCodec:    "raw", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}
@@ -36,7 +36,7 @@ func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		flowy.ExecutionEnvelope{
 			ExecutionID:    id,
 			Descriptor:     descriptor,
-			Progress:       flowy.MigrationState{ExecutionPointer: "before", StatePayload: []byte("state")},
+			Progress:       flowy.ExecutionProgress{ExecutionPointer: "before", StatePayload: []byte("state")},
 			JournalPayload: []byte("completed outcome"),
 		},
 	)
@@ -46,7 +46,7 @@ func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 	if releaseErr := store.ReleaseExecution(ctx, old); releaseErr != nil {
 		t.Fatal(releaseErr)
 	}
-	restarted := NewExecutionStore(pool)
+	restarted := mustExecutionStore(t, pool)
 	current, err := restarted.AcquireExecution(ctx, id, "reused-owner", time.Minute)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +57,7 @@ func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		ID:     "rename",
 		Source: descriptor,
 		Target: target,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "after"
 			return state, nil
 		},
@@ -116,7 +116,7 @@ func TestIntegrationExecutionStorePersistentMigrationAndFencing(t *testing.T) {
 		string(history.JournalPayload) != "completed outcome" {
 		t.Fatalf("source changed: %+v %v", history, err)
 	}
-	latest, err := NewExecutionStore(pool).LoadExecution(ctx, id)
+	latest, err := mustExecutionStore(t, pool).LoadExecution(ctx, id)
 	if err != nil || latest.Progress.ExecutionPointer != "after" || latest.Revision != result.Revision {
 		t.Fatalf("restart lost progress: %+v %v", latest, err)
 	}

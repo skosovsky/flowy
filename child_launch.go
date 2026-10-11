@@ -28,6 +28,10 @@ type ChildResult struct {
 	WaitID  string
 }
 
+// ChildDispatcher errors are conservatively unknown, even when a host codec
+// fails before worker effects. Context cancellation is not preemption. The host
+// owns global worker limits and must serialize use of inherited parent metadata
+// or establish a separate child run context before using accounting helpers.
 type ChildDispatcher func(context.Context, ChildInvocation) (ChildResult, error)
 
 // RunChildren commits intent and each launch/outcome, with bounded concurrency.
@@ -138,8 +142,11 @@ func (c *executionCheckpointer[T, E]) launchChildGroup(ctx context.Context, iden
 
 func (c *executionCheckpointer[T, E]) dispatchChild(ctx context.Context, identity string, invocation ChildInvocation,
 	dispatch ChildDispatcher, results chan<- childDispatchCompletion) {
+	c.observeChildDispatch(ctx, identity, invocation)
 	outcome, dispatchErr := invokeChildDispatcher(ctx, invocation, dispatch)
-	finishErr := c.finishChild(context.WithoutCancel(ctx), identity, invocation, outcome, dispatchErr)
+	finishCtx, cancelFinish := context.WithTimeout(context.WithoutCancel(ctx), contextCancelSaveTimeout)
+	defer cancelFinish()
+	finishErr := c.finishChild(finishCtx, identity, invocation, outcome, dispatchErr)
 	results <- childDispatchCompletion{err: finishErr}
 }
 
@@ -236,12 +243,10 @@ func (c *executionCheckpointer[T, E]) recoverChildLaunches(
 	return detachedChildGroup(group), nil
 }
 
-func (c *executionCheckpointer[T, E]) beginChild(
+func (c *executionCheckpointer[T, E]) beginChildLocked(
 	ctx context.Context,
 	identity, childID string,
 ) (ChildInvocation, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	groups, err := executionChildGroups(c.envelope)
 	if err != nil {
 		return ChildInvocation{}, err
@@ -282,14 +287,17 @@ func (c *executionCheckpointer[T, E]) beginChild(
 			Allocation:  spec.Allocation,
 		}, nil
 	}
-	return ChildInvocation{}, ErrChildJoinInvalid
+	return ChildInvocation{}, ErrChildInvalid
 }
 
-func (c *executionCheckpointer[T, E]) finishChild(ctx context.Context, identity string, invocation ChildInvocation,
-	result ChildResult, dispatchErr error) error {
+func (c *executionCheckpointer[T, E]) finishChildLocked(
+	ctx context.Context,
+	identity string,
+	invocation ChildInvocation,
+	result ChildResult,
+	dispatchErr error,
+) error {
 	result.Payload = bytes.Clone(result.Payload)
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	groups, err := executionChildGroups(c.envelope)
 	if err != nil {
 		return err
@@ -306,7 +314,7 @@ func (c *executionCheckpointer[T, E]) finishChild(ctx context.Context, identity 
 			result = ChildResult{State: ChildUnknown, Payload: nil, Error: dispatchErr.Error(), WaitID: ""}
 		}
 		if !validChildResultState(result.State) {
-			return ErrChildJoinInvalid
+			return ErrChildInvalid
 		}
 		child.State, child.Result, child.Error, child.WaitID = result.State, result.Payload, result.Error, result.WaitID
 		if child.State == ChildCanceled && child.CancelRequested {
@@ -326,7 +334,7 @@ func (c *executionCheckpointer[T, E]) finishChild(ctx context.Context, identity 
 		}
 		return nil
 	}
-	return ErrChildJoinInvalid
+	return ErrChildInvalid
 }
 
 func validChildResultState(state ChildState) bool {

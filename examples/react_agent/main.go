@@ -31,13 +31,17 @@ func main() {
 		return s, flowy.Completed(), nil
 	}
 
-	const maxReActSteps = 8
-	graph, err := patterns.BuildReAct[agentState, flowy.NoEffect](
+	const maxActionRetries = 8
+	builder, err := patterns.BuildReAct[agentState, flowy.NoEffect](
 		reason,
 		action,
 		func(s agentState) bool { return !s.Done },
-		maxReActSteps,
-	).Compile()
+		maxActionRetries,
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	graph, err := builder.Compile()
 	if err != nil {
 		log.Fatal(err)
 	}

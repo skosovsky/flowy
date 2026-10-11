@@ -36,7 +36,10 @@ func TestBuildReActMaxSteps(t *testing.T) {
 		s.Pending = true
 		return s, flowy.Completed(), nil
 	}
-	b := BuildReAct[state, flowy.NoEffect](reason, action, func(s state) bool { return s.Pending }, 1)
+	b, buildErr := BuildReAct[state, flowy.NoEffect](reason, action, func(s state) bool { return s.Pending }, 1)
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -50,7 +53,7 @@ func TestBuildReActMaxSteps(t *testing.T) {
 	}
 }
 
-func TestBuildSupervisor(t *testing.T) {
+func TestBuildDispatchGraph(t *testing.T) {
 	t.Parallel()
 	type state struct{ Intent string }
 	supervisor := func(_ context.Context, s state) (state, flowy.Directive, error) {
@@ -62,9 +65,12 @@ func TestBuildSupervisor(t *testing.T) {
 			return s, flowy.Completed(), nil
 		},
 	}
-	b := BuildSupervisor(supervisor, workers, func(s state) string { return s.Intent }, RouteMap{
+	b, buildErr := BuildDispatchGraph(supervisor, workers, func(s state) string { return s.Intent }, RouteMap{
 		"sales": "sales_worker",
 	})
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -97,7 +103,15 @@ func TestBuildEvaluatorOptimizerRetriesToGenerator(t *testing.T) {
 	evaluator := func(_ context.Context, s state) (state, flowy.Directive, error) {
 		return s, flowy.Completed(), nil
 	}
-	b := BuildEvaluatorOptimizer[state, flowy.NoEffect](generator, evaluator, func(s state) bool { return s.Valid }, 3)
+	b, buildErr := BuildEvaluatorOptimizer[state, flowy.NoEffect](
+		generator,
+		evaluator,
+		func(s state) bool { return s.Valid },
+		3,
+	)
+	if buildErr != nil {
+		t.Fatal(buildErr)
+	}
 	g, err := b.Compile()
 	if err != nil {
 		t.Fatalf("compile: %v", err)

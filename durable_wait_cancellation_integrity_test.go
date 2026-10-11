@@ -24,7 +24,7 @@ func canceledWaitEnvelope(t *testing.T) ExecutionEnvelope {
 		t.Fatal(err)
 	}
 	envelope := ExecutionEnvelope{ExecutionID: "run", Revision: 4, Activation: 1, WaitsPayload: payload,
-		Progress: MigrationState{ExecutionPointer: "waiting"}, Terminal: &ExecutionTerminal{
+		Progress: ExecutionProgress{ExecutionPointer: "waiting"}, Terminal: &ExecutionTerminal{
 			Status: RunStatusFailed, Reason: durableWaitCanceledReason,
 			Failure: &ExecutionFailure{Message: durableWaitCanceledReason + ": requested"}}}
 	if err = validateExecutionCollections(envelope); err != nil {

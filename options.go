@@ -20,7 +20,8 @@ type buildOpts struct {
 // BuildOption configures the graph at compile time.
 type BuildOption func(*buildOpts)
 
-// WithMaxSteps sets the maximum number of steps (prevents infinite loops). Default is 1000 if <= 0.
+// WithMaxSteps limits admitted handler calls per segment, including failures and Retry.
+// Admission is checked before dispatch. Resume resets the segment. Nonpositive values select 1000.
 func WithMaxSteps(limit int) BuildOption {
 	return func(o *buildOpts) {
 		o.run.maxSteps = limit

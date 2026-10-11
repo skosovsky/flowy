@@ -42,7 +42,7 @@ func main() {
 		},
 	}
 
-	graph, err := patterns.BuildSupervisor[teamState, flowy.NoEffect](
+	builder, err := patterns.BuildDispatchGraph[teamState, flowy.NoEffect](
 		supervisor,
 		workers,
 		func(s teamState) string { return s.Intent },
@@ -50,7 +50,11 @@ func main() {
 			"support": "support_worker",
 			"sales":   "sales_worker",
 		},
-	).Compile()
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	graph, err := builder.Compile()
 	if err != nil {
 		log.Fatal(err)
 	}

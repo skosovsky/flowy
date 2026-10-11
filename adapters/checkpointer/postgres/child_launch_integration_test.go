@@ -34,7 +34,7 @@ func TestIntegrationChildCompletedLaunchPersistentReplayWithoutDispatch(t *testi
 		calls.Add(1)
 		return flowy.ChildResult{State: flowy.ChildCompleted, Payload: []byte("done")}, nil
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	first, err := postgresChildLaunchRunner(t, store, plan, dispatch).Start(ctx, id, intState{})
 	if !errors.Is(err, flowy.ErrChildrenUnresolved) || first == nil {
 		t.Fatalf("parent bypassed join: %v", err)
@@ -45,7 +45,7 @@ func TestIntegrationChildCompletedLaunchPersistentReplayWithoutDispatch(t *testi
 	}
 	pool.Close()
 	restartCtx, restartPool := reopenPool(t, pool)
-	restartedStore := NewExecutionStore(restartPool)
+	restartedStore := mustExecutionStore(t, restartPool)
 	// Act.
 	_, replayErr := postgresChildLaunchRunner(t, restartedStore, plan, dispatch).Resume(restartCtx, first.ResumeToken)
 	latest, err := restartedStore.LoadExecution(restartCtx, id)

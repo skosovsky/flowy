@@ -32,8 +32,16 @@ func TestPendingRetryInspectionDoesNotDispatchOrMutate(t *testing.T) {
 			clock := &testExecutionClock{}
 			clock.set(time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC))
 			var calls atomic.Int32
-			policy := flowy.ActivityRetryPolicy{Label: "inspection", MaxAttempts: tc.max,
-				Delay: time.Hour, SafeRetryContract: "host-idempotent-write"}
+			policy := flowy.ActivityRetryPolicy{
+				Label:       "inspection",
+				MaxAttempts: tc.max,
+				Schedule: flowy.ActivityRetrySchedule{
+					Kind:         flowy.ActivityRetryFixed,
+					InitialDelay: time.Hour,
+					MaxDelay:     time.Hour,
+				},
+				SafeRetryContract: "host-idempotent-write",
+			}
 			_, _ = retryActivityRunner(t, store, clock, policy, tc.class, &calls).Start(ctx, "run", durableTestState{})
 			before, err := store.LoadExecution(ctx, "run")
 			if err != nil {
@@ -76,8 +84,16 @@ func TestPendingRetryInspectionRejectsCorruptEnvelope(t *testing.T) {
 	clock := &testExecutionClock{}
 	clock.set(time.Now().UTC())
 	var calls atomic.Int32
-	policy := flowy.ActivityRetryPolicy{Label: "inspection", MaxAttempts: 2,
-		Delay: time.Hour, SafeRetryContract: "host-idempotent-write"}
+	policy := flowy.ActivityRetryPolicy{
+		Label:       "inspection",
+		MaxAttempts: 2,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
+		SafeRetryContract: "host-idempotent-write",
+	}
 	_, _ = retryActivityRunner(t, store, clock, policy, flowy.ActivityRetryable, &calls).
 		Start(context.Background(), "run", durableTestState{})
 	envelope, err := store.LoadExecution(context.Background(), "run")

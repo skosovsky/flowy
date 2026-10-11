@@ -16,9 +16,9 @@ type durableTestState struct{ Value int }
 
 func durableDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{
-		GraphID:           "test",
-		GraphRevision:     label,
-		StateCodec:        label,
+		GraphID:       "test",
+		GraphRevision: label,
+		StateCodec:    label, EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "test-safe-steps", Mode: flowy.StepReplaySafe},
 	}
@@ -141,7 +141,7 @@ func assertDurableCompatibilityBeforeDecode(t *testing.T, stream bool) {
 		flowy.ExecutionEnvelope{
 			ExecutionID: "run",
 			Descriptor:  durableDescriptor("old"),
-			Progress:    flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte("opaque")},
+			Progress:    flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte("opaque")},
 		},
 	)
 	if err != nil {
@@ -185,5 +185,36 @@ func assertDurableCompatibilityBeforeDecode(t *testing.T, stream bool) {
 	// Assert.
 	if !errors.Is(err, flowy.ErrExecutionIncompatible) || calls.Load() != 0 {
 		t.Fatalf("incompatible execution decoded/dispatched: %v calls=%d", err, calls.Load())
+	}
+}
+
+func TestDurableAtomicHandoffRejectedBeforeMutation(t *testing.T) {
+	t.Parallel()
+	// Arrange: durable aggregate storage cannot fulfil ordinary snapshot/outbox atomicity.
+	ctx := context.Background()
+	store := &faultExecutionStore{ExecutionStore: testutil.NewMemoryExecutionStore(nil)}
+	var calls atomic.Int32
+	runner := activityTestRunner(t, store, &calls, false)
+	option := flowy.WithAtomicHandoff[durableTestState, flowy.NoEffect]()
+	token := flowy.ResumeToken{ThreadID: "atomic-durable", SnapshotRevision: 1}
+	// Act.
+	_, startErr := runner.Start(ctx, token.ThreadID, durableTestState{}, option)
+	_, createStreamErr := runner.Stream(ctx, token.ThreadID, durableTestState{}, option)
+	_, resumeErr := runner.Resume(ctx, token, option)
+	_, resumeStreamErr := runner.ResumeStream(ctx, token, option)
+	// Assert.
+	for _, err := range []error{startErr, createStreamErr, resumeErr, resumeStreamErr} {
+		if !errors.Is(err, flowy.ErrTransactionalOutboxUnsupported) {
+			t.Fatalf("unsupported atomic mode accepted: %v", err)
+		}
+	}
+	_, loadErr := store.LoadExecution(ctx, token.ThreadID)
+	if !errors.Is(loadErr, flowy.ErrThreadNotFound) || store.commits.Load() != 0 || calls.Load() != 0 {
+		t.Fatalf(
+			"rejected mode mutated durable execution: %v commits=%d calls=%d",
+			loadErr,
+			store.commits.Load(),
+			calls.Load(),
+		)
 	}
 }

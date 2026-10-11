@@ -15,6 +15,7 @@ type executionCheckpointer[T, E any] struct {
 	effectsCodec             StateSerializer[[]E]
 	stepRevision             uint64
 	clock                    ExecutionClock
+	retryRandom              func() uint64
 	persistenceFailed        bool
 	childCancellationSignals map[string]chan struct{}
 	waitBackend              DurableWaitBackend
@@ -29,8 +30,11 @@ func (c *executionCheckpointer[T, E]) Save(
 	snapshot Snapshot[T, E],
 ) (uint64, error) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.saveLocked(ctx, expectedRevision, snapshot)
+	event := executionObservation(c.envelope, LifecycleCheckpoint, LifecycleFailed)
+	revision, err := c.saveLocked(ctx, expectedRevision, snapshot)
+	c.mu.Unlock()
+	observeCheckpointOutcome(ctx, event, revision, err)
+	return revision, err
 }
 
 func (c *executionCheckpointer[T, E]) saveLocked(
@@ -64,7 +68,7 @@ func (c *executionCheckpointer[T, E]) persistSnapshotLocked(
 	}
 	target.Progress.StatePayload, target.EffectsPayload = bytes.Clone(state), bytes.Clone(effects)
 	target.Progress.ExecutionPointer, target.RunMeta = snapshot.ExecutionPointer, snapshot.RunMeta
-	committed, err := c.store.CommitExecution(ctx, c.envelope.Revision, c.lease, target)
+	committed, err := commitExecution(ctx, c.store, c.envelope.Revision, c.lease, target)
 	if err != nil {
 		c.persistenceFailed = true
 		return 0, err
@@ -166,7 +170,7 @@ func (*executionCheckpointer[T, E]) DeleteIfIdle(context.Context, string) error 
 	return ErrExecutionCapability
 }
 
-func (c *executionCheckpointer[T, E]) commitStep(
+func (c *executionCheckpointer[T, E]) commitStepLocked(
 	ctx context.Context,
 	step directiveStep[T, E],
 	directive directiveKind,
@@ -174,8 +178,6 @@ func (c *executionCheckpointer[T, E]) commitStep(
 	meta RunMetadata,
 	effects []E,
 ) (uint64, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if directive == directiveWait {
 		// Await already atomically saved state plus arm, or failed recoverably.
 		return c.envelope.Revision, nil

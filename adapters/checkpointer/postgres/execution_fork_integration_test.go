@@ -16,7 +16,7 @@ import (
 
 func pgForkDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{GraphID: "fork-fixture", GraphRevision: label,
-		StateCodec: "json-state", ExecutionContract: "sync",
+		StateCodec: "json-state", EffectsCodec: "host-effects-v1", ExecutionContract: "sync",
 		ReplayPolicy: flowy.StepReplayPolicy{Label: "pure-with-activities", Mode: flowy.StepReplaySafe}}
 }
 
@@ -30,7 +30,7 @@ func seedPersistentForkSource(ctx context.Context, t *testing.T, store *Executio
 	}
 	source, err := store.CommitExecution(ctx, 0, lease, flowy.ExecutionEnvelope{
 		ExecutionID: id, Descriptor: pgForkDescriptor("source"), Activation: 1,
-		Progress:       flowy.MigrationState{ExecutionPointer: "write", StatePayload: []byte(`{"Value":5}`)},
+		Progress:       flowy.ExecutionProgress{ExecutionPointer: "write", StatePayload: []byte(`{"Value":5}`)},
 		EffectsPayload: []byte("[{}]"),
 	})
 	if err != nil {
@@ -89,18 +89,18 @@ func TestIntegrationForkPersistentHistoricalCreationStreamRecoveryAndFakeProvena
 	if _, err := pool.Exec(ctx, ExecutionSchemaSQL()); err != nil {
 		t.Fatal(err)
 	}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	base := testThreadID(t)
 	source, latest := seedPersistentForkSource(ctx, t, store, base+"source")
 	pool.Close()
 	forkCtx, forkPool := reopenPool(t, pool)
-	forkStore := NewExecutionStore(forkPool)
+	forkStore := mustExecutionStore(t, forkPool)
 	var nodes, live, fake atomic.Int32
 	readonly := pgForkRunner(t, forkStore, nil, &nodes, &live)
 	request := flowy.ForkRequest{Source: flowy.HistoricalCheckpointReference{ExecutionID: source.ExecutionID,
 		Revision: source.Revision, Digest: source.Digest}, TargetID: base + "target",
 		Transform: flowy.ForkTransform{Label: "historical-correction", Source: source.Descriptor,
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.StatePayload = []byte(`{"Value":8}`)
 				return state, nil
 			}}}
@@ -113,7 +113,7 @@ func TestIntegrationForkPersistentHistoricalCreationStreamRecoveryAndFakeProvena
 	}
 	forkPool.Close()
 	recoveryCtx, recoveryPool := reopenPool(t, pool)
-	recovered := NewExecutionStore(recoveryPool)
+	recovered := mustExecutionStore(t, recoveryPool)
 	_, denied := pgForkRunner(t, recovered, nil, &nodes, &live).Resume(recoveryCtx, token)
 	if !errors.Is(denied, flowy.ErrForkPolicy) || nodes.Load() != 0 {
 		t.Fatalf("restart forgot fake policy: %v", denied)

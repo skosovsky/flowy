@@ -17,7 +17,7 @@ func TestReusedOwnerIncarnationSurvivesExpiryAndRelease(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	manager := NewLeaseManager(client, Options{})
+	manager := mustLeaseManager(t, client, Options{})
 	ctx := context.Background()
 	old, err := manager.Acquire(ctx, "run", "worker", time.Second)
 	if err != nil {
@@ -51,7 +51,7 @@ func TestFencePrecisionAboveLuaIntegerRange(t *testing.T) {
 	server := miniredis.RunT(t)
 	client := goredis.NewClient(&goredis.Options{Addr: server.Addr()})
 	t.Cleanup(func() { _ = client.Close() })
-	manager := NewLeaseManager(client, Options{})
+	manager := mustLeaseManager(t, client, Options{})
 	ctx := context.Background()
 	if err := client.Set(ctx, manager.fenceKey("run"), "9007199254740992", 0).Err(); err != nil {
 		t.Fatal(err)

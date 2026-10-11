@@ -12,6 +12,7 @@ import (
 
 	"github.com/skosovsky/flowy"
 	"github.com/skosovsky/flowy/checkpoint"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
 //go:embed sql/schema.sql
@@ -52,8 +53,11 @@ type Checkpointer[T, E any] struct {
 }
 
 // NewCheckpointer creates a PostgreSQL-backed checkpointer.
-func NewCheckpointer[T, E any](db DB, serializer flowy.StateSerializer[T]) *Checkpointer[T, E] {
-	return &Checkpointer[T, E]{db: db, serializer: serializer}
+func NewCheckpointer[T, E any](db DB, serializer flowy.StateSerializer[T]) (*Checkpointer[T, E], error) {
+	if nilvalue.IsNil(db) || nilvalue.IsNil(serializer) {
+		return nil, flowy.ErrExecutionCapability
+	}
+	return &Checkpointer[T, E]{db: db, serializer: serializer}, nil
 }
 
 // SchemaSQL returns the schema expected by the adapter.

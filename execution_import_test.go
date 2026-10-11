@@ -75,7 +75,7 @@ func legacyImporter() flowy.ExecutionImporter {
 		Format: "opaque-host-format",
 		Transform: func([]byte) (flowy.ImportedExecutionState, error) {
 			return flowy.ImportedExecutionState{
-				Progress:       flowy.MigrationState{ExecutionPointer: "node", StatePayload: []byte(`{"Value":41}`)},
+				Progress:       flowy.ExecutionProgress{ExecutionPointer: "node", StatePayload: []byte(`{"Value":41}`)},
 				EffectsPayload: []byte(`[]`),
 			}, nil
 		},

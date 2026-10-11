@@ -27,12 +27,18 @@ func TestIntegrationActivityMigratedRetryPersistentRestart(t *testing.T) {
 		Implementation: "host",
 		Input:          []byte("input"),
 		Retry: flowy.ActivityRetryPolicy{
-			Label:             "bounded",
-			MaxAttempts:       2,
-			Delay:             time.Hour,
+			Label:       "bounded",
+			MaxAttempts: 2,
+			Schedule: flowy.ActivityRetrySchedule{
+				Kind:         flowy.ActivityRetryFixed,
+				InitialDelay: time.Hour,
+				MaxDelay:     time.Hour,
+			},
 			SafeRetryContract: "idempotent",
 		},
-		Classify: func(error) flowy.ActivityFailureClass { return flowy.ActivityRetryable },
+		Classify: func(error) flowy.ActivityFailureDecision {
+			return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable}
+		},
 		Dispatch: func(_ context.Context, invocation flowy.ActivityInvocation) ([]byte, error) {
 			if calls.Add(1) == 1 {
 				identity = invocation.Identity
@@ -45,7 +51,7 @@ func TestIntegrationActivityMigratedRetryPersistentRestart(t *testing.T) {
 		},
 	}
 	options := flowy.DurableOptions{Owner: "worker", LeaseTTL: time.Minute, Clock: persistedRetryClock{at: now}}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	old := persistentReferenceRunnerOptions(t, store, referenceDescriptor("old"), "old-node", request, options)
 	if _, err := old.Start(ctx, id, intState{}); !errors.Is(err, flowy.ErrActivityRetryPending) {
 		t.Fatal(err)
@@ -57,14 +63,14 @@ func TestIntegrationActivityMigratedRetryPersistentRestart(t *testing.T) {
 	pool.Close()
 	options.Migrations = []flowy.ExecutionMigration{
 		{ID: "move", Source: source.Descriptor, Target: referenceDescriptor("new"),
-			Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+			Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 				state.ExecutionPointer = "new-node"
 				state.JournalReferences = map[string]string{"operation": identity}
 				return state, nil
 			}},
 	}
 	earlyCtx, earlyPool := reopenPool(t, pool)
-	earlyStore := NewExecutionStore(earlyPool)
+	earlyStore := mustExecutionStore(t, earlyPool)
 	earlyRunner := persistentReferenceRunnerOptions(
 		t,
 		earlyStore,
@@ -87,7 +93,7 @@ func TestIntegrationActivityMigratedRetryPersistentRestart(t *testing.T) {
 	earlyPool.Close()
 	resumeCtx, resumePool := reopenPool(t, pool)
 	options.Clock, options.Migrations = persistedRetryClock{at: now.Add(time.Hour)}, nil
-	restartedStore := NewExecutionStore(resumePool)
+	restartedStore := mustExecutionStore(t, resumePool)
 	restarted := persistentReferenceRunnerOptions(
 		t,
 		restartedStore,

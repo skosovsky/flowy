@@ -25,6 +25,7 @@ type ExecutionDescriptor struct {
 	GraphID           string           `json:"graph_id"`
 	GraphRevision     string           `json:"graph_revision"`
 	StateCodec        string           `json:"state_codec"`
+	EffectsCodec      string           `json:"effects_codec"`
 	ExecutionContract string           `json:"execution_contract"`
 	ReplayPolicy      StepReplayPolicy `json:"replay_policy"`
 }
@@ -45,8 +46,16 @@ type StepReplayPolicy struct {
 
 // Validate requires every explicit compatibility label.
 func (d ExecutionDescriptor) Validate() error {
-	if d.GraphID == "" || d.GraphRevision == "" || d.StateCodec == "" || d.ExecutionContract == "" ||
-		!validRuntimeText(d.GraphID, d.GraphRevision, d.StateCodec, d.ExecutionContract, d.ReplayPolicy.Label) ||
+	if d.GraphID == "" || d.GraphRevision == "" || d.StateCodec == "" || d.EffectsCodec == "" ||
+		d.ExecutionContract == "" ||
+		!validRuntimeText(
+			d.GraphID,
+			d.GraphRevision,
+			d.StateCodec,
+			d.EffectsCodec,
+			d.ExecutionContract,
+			d.ReplayPolicy.Label,
+		) ||
 		d.ReplayPolicy.Label == "" ||
 		d.ReplayPolicy.Mode != StepReplaySafe {
 		return ErrExecutionIncompatible
@@ -68,9 +77,9 @@ func (d ExecutionDescriptor) Check(target ExecutionDescriptor) error {
 	return nil
 }
 
-// MigrationState contains only the runtime fields a pure migration may change.
+// ExecutionProgress is current execution data also supplied to pure migration/fork projections.
 // Activities and persisted outcomes are intentionally not part of this input.
-type MigrationState struct {
+type ExecutionProgress struct {
 	StatePayload     []byte                      `json:"state_payload"`
 	ExecutionPointer ExecutionPointer            `json:"execution_pointer"`
 	ChildCursors     map[string]ExecutionPointer `json:"child_cursors,omitempty"`
@@ -87,7 +96,6 @@ type MigrationProvenance struct {
 	SourceRevision uint64   `json:"source_revision"`
 	SourceDigest   string   `json:"source_digest"`
 	Chain          []string `json:"chain"`
-	Digest         string   `json:"digest"`
 }
 
 // ExecutionEnvelope can be loaded without invoking a domain codec. Persistence
@@ -99,7 +107,7 @@ type ExecutionEnvelope struct {
 	Digest          string                 `json:"digest"`
 	Descriptor      ExecutionDescriptor    `json:"descriptor"`
 	RuntimeProfile  *WaitCapabilityProfile `json:"runtime_profile,omitempty"`
-	Progress        MigrationState         `json:"progress"`
+	Progress        ExecutionProgress      `json:"progress"`
 	EffectsPayload  []byte                 `json:"effects_payload,omitempty"`
 	JournalPayload  []byte                 `json:"journal_payload,omitempty"`
 	ChildrenPayload []byte                 `json:"children_payload,omitempty"`
@@ -109,6 +117,8 @@ type ExecutionEnvelope struct {
 	Terminal        *ExecutionTerminal     `json:"terminal,omitempty"`
 	Migration       *MigrationProvenance   `json:"migration,omitempty"`
 	Import          *ImportProvenance      `json:"import,omitempty"`
+	Rollover        *RolloverLineage       `json:"rollover,omitempty"`
+	Transfer        *RolloverReceipt       `json:"transfer,omitempty"`
 	Fork            *ForkLineage           `json:"fork,omitempty"`
 }
 
@@ -142,6 +152,9 @@ func terminalFailureError(terminal *ExecutionTerminal) error {
 	if terminal == nil {
 		return nil
 	}
+	if terminal.Status == RunStatusTransferred && terminal.Failure == nil {
+		return ErrExecutionTransferred
+	}
 	if terminal.Status == RunStatusCompleted && terminal.Failure == nil {
 		return nil
 	}
@@ -158,7 +171,10 @@ type ExecutionMigration struct {
 	ID        string
 	Source    ExecutionDescriptor
 	Target    ExecutionDescriptor
-	Transform func(MigrationState) (MigrationState, error)
+	Transform func(ExecutionProgress) (ExecutionProgress, error)
+	// EffectsTransform is required when EffectsCodec changes. It receives detached
+	// accumulated effects; external activity/child outcomes are excluded.
+	EffectsTransform func([]byte) ([]byte, error)
 }
 
 // EnvelopeDigest is the integrity digest of the complete raw envelope. It is not
@@ -177,14 +193,20 @@ func EnvelopeDigest(envelope ExecutionEnvelope) (string, error) {
 // dispatch. validatePointer must validate the final cursor against the target
 // graph. Caller commits with the source revision and fencing token; returning
 // this value alone is never a committed migration.
+// Source must be an addressed sealed envelope. Integrity is checked before any
+// callback; the caller must also establish collection and source-metadata validity
+// through its trusted store/runtime admission before invoking this raw helper.
 func PrepareExecutionMigration(
 	source ExecutionEnvelope,
 	target ExecutionDescriptor,
 	registry []ExecutionMigration,
 	validatePointer func(ExecutionPointer) error,
 ) (ExecutionEnvelope, error) {
-	if source.ExecutionID == "" || source.Revision == 0 || validatePointer == nil {
+	if validatePointer == nil {
 		return ExecutionEnvelope{}, ErrMigrationInvalid
+	}
+	if err := ValidateExecutionIntegrity(source, source.ExecutionID, source.Revision); err != nil {
+		return ExecutionEnvelope{}, errors.Join(ErrMigrationInvalid, err)
 	}
 	if err := source.Descriptor.Validate(); err != nil {
 		return ExecutionEnvelope{}, err
@@ -196,15 +218,16 @@ func PrepareExecutionMigration(
 	if err != nil {
 		return ExecutionEnvelope{}, err
 	}
+	if effectsContractErr := validateEffectsMigrationChain(chain); effectsContractErr != nil {
+		return ExecutionEnvelope{}, effectsContractErr
+	}
 	result := cloneExecutionEnvelope(source)
 	ids := make([]string, 0, len(chain))
 	for _, migration := range chain {
-		progress, transformErr := migration.Transform(cloneMigrationState(result.Progress))
-		if transformErr != nil {
-			return ExecutionEnvelope{}, fmt.Errorf("%w: %s: %w", ErrMigrationInvalid, migration.ID, transformErr)
+		result, err = applyExecutionMigration(result, migration)
+		if err != nil {
+			return ExecutionEnvelope{}, err
 		}
-		result.Progress = cloneMigrationState(progress)
-		result.Descriptor = migration.Target
 		ids = append(ids, migration.ID)
 	}
 	if result.Progress.ExecutionPointer == "" || !validMigrationText(result.Progress) {
@@ -216,19 +239,10 @@ func PrepareExecutionMigration(
 	if len(chain) == 0 {
 		return result, nil
 	}
-	digest, err := EnvelopeDigest(source)
-	if err != nil {
-		return ExecutionEnvelope{}, err
-	}
 	result.Migration = &MigrationProvenance{
 		SourceRevision: source.Revision,
-		SourceDigest:   digest,
+		SourceDigest:   source.Digest,
 		Chain:          ids,
-		Digest:         "",
-	}
-	result.Migration.Digest, err = EnvelopeDigest(result)
-	if err != nil {
-		return ExecutionEnvelope{}, err
 	}
 	return result, nil
 }
@@ -268,7 +282,7 @@ func executionMigrationChain(
 	return chain, nil
 }
 
-func cloneMigrationState(state MigrationState) MigrationState {
+func cloneExecutionProgress(state ExecutionProgress) ExecutionProgress {
 	state.StatePayload = bytes.Clone(state.StatePayload)
 	state.ChildCursors = maps.Clone(state.ChildCursors)
 	state.JournalReferences = maps.Clone(state.JournalReferences)
@@ -277,6 +291,14 @@ func cloneMigrationState(state MigrationState) MigrationState {
 }
 
 func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
+	if envelope.Rollover != nil {
+		incoming := *envelope.Rollover
+		envelope.Rollover = &incoming
+	}
+	if envelope.Transfer != nil {
+		outgoing := *envelope.Transfer
+		envelope.Transfer = &outgoing
+	}
 	if envelope.Fork != nil {
 		lineage := *envelope.Fork
 		envelope.Fork = &lineage
@@ -285,7 +307,7 @@ func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
 		profile := *envelope.RuntimeProfile
 		envelope.RuntimeProfile = &profile
 	}
-	envelope.Progress = cloneMigrationState(envelope.Progress)
+	envelope.Progress = cloneExecutionProgress(envelope.Progress)
 	envelope.EffectsPayload = bytes.Clone(envelope.EffectsPayload)
 	envelope.JournalPayload = bytes.Clone(envelope.JournalPayload)
 	envelope.ChildrenPayload = bytes.Clone(envelope.ChildrenPayload)
@@ -312,4 +334,31 @@ func cloneExecutionEnvelope(envelope ExecutionEnvelope) ExecutionEnvelope {
 		envelope.Import = &provenance
 	}
 	return envelope
+}
+
+// Validate the entire chain before invoking any host transformation.
+func validateEffectsMigrationChain(chain []ExecutionMigration) error {
+	for _, migration := range chain {
+		if migration.Source.EffectsCodec != migration.Target.EffectsCodec && migration.EffectsTransform == nil {
+			return fmt.Errorf("%w: effects transform required: %s", ErrMigrationInvalid, migration.ID)
+		}
+	}
+	return nil
+}
+
+func applyExecutionMigration(result ExecutionEnvelope, migration ExecutionMigration) (ExecutionEnvelope, error) {
+	progress, err := migration.Transform(cloneExecutionProgress(result.Progress))
+	if err != nil {
+		return ExecutionEnvelope{}, fmt.Errorf("%w: %s: %w", ErrMigrationInvalid, migration.ID, err)
+	}
+	result.Progress = cloneExecutionProgress(progress)
+	if migration.EffectsTransform != nil {
+		effects, err := migration.EffectsTransform(bytes.Clone(result.EffectsPayload))
+		if err != nil {
+			return ExecutionEnvelope{}, fmt.Errorf("%w: effects %s: %w", ErrMigrationInvalid, migration.ID, err)
+		}
+		result.EffectsPayload = bytes.Clone(effects)
+	}
+	result.Descriptor = migration.Target
+	return result, nil
 }

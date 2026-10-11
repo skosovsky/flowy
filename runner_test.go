@@ -490,7 +490,7 @@ func TestSubgraphSuspendPropagates(t *testing.T) {
 	}
 
 	parentBuilder := NewGraph[parentState, NoEffect](func(_ parentState, u parentState) parentState { return u })
-	parentBuilder.AddNode("sub", SubgraphNode(
+	parentBuilder.AddNode("sub", StatelessSubgraphNode(
 		sub,
 		func(s parentState) childState { return s.Child },
 		func(s parentState, c childState) parentState {
@@ -557,23 +557,6 @@ func TestBuilderUseAppliesOnionOrder(t *testing.T) {
 	want := "[before:one before:two node after:two after:one]"
 	if got != want {
 		t.Fatalf("unexpected middleware order: got %s want %s", got, want)
-	}
-}
-
-func TestRecoverMiddlewareConvertsPanicToError(t *testing.T) {
-	t.Parallel()
-	type state struct{}
-	b := NewGraph[state, NoEffect](func(_ state, u state) state { return u })
-	b.Use(RecoverMiddleware[state, NoEffect]())
-	b.AddNode("panic", func(_ context.Context, _ state) (state, Directive, error) {
-		panic("boom")
-	})
-	b.SetEntryPoint("panic")
-	b.AllowNoOutgoingRoute("panic")
-	g, _ := b.Compile()
-	_, err := g.NewRunner(newMemoryCP[state, NoEffect]()).Start(context.Background(), "panic-1", state{})
-	if err == nil {
-		t.Fatal("expected error from recovered panic")
 	}
 }
 
@@ -757,14 +740,14 @@ type testTelemetryBridge struct {
 	inject  func(ctx context.Context, metadata map[string]string) context.Context
 }
 
-func (t testTelemetryBridge) Extract(ctx context.Context) map[string]string {
+func (t testTelemetryBridge) Capture(ctx context.Context) map[string]string {
 	if t.extract == nil {
 		return nil
 	}
 	return t.extract(ctx)
 }
 
-func (t testTelemetryBridge) Inject(ctx context.Context, metadata map[string]string) context.Context {
+func (t testTelemetryBridge) Restore(ctx context.Context, metadata map[string]string) context.Context {
 	if t.inject == nil {
 		return ctx
 	}

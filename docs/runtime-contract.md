@@ -1,8 +1,128 @@
-# Durable execution design
+# Runtime ownership and recovery contract
+
+This is the canonical ordinary/durable ownership, callback and error/recovery
+index. Detailed capability contracts linked here refine these rules; historical
+task22–27 records are evidence archives, not current API specifications.
+
+## Ownership and concurrency matrix
+
+| Resource or callback | Owner and required behavior |
+| --- | --- |
+| GraphBuilder, routes, pattern registrations | Host constructs before Compile; callbacks/host objects must be frozen before concurrent runs. Pattern constructors reject missing callbacks/config and capture routes. |
+| Ordinary state updates/reducer/overlay/hooks | Host owns BYOT aliasing; replace shared maps/slices/resources with detached values before mutation. Reducer/overlay/invariants/codecs are synchronous, may repeat, and are outside node RecoverMiddleware unless invoked within that node chain. |
+| Durable codecs/transforms/projections/merges | Pure host work on detached representations; may repeat after uncommitted preparation. Labels must change when compatibility changes. No external effect or inferred permission. |
+| StreamHandle/context/session | Handle owns its run context; stale handles cannot cancel another session. WaitResult owns terminal outcome; events are best-effort. Early collection return does not join a running host consumer callback; returned slices are detached. |
+| RunBindings | One slot per type, build/freeze before sharing; concurrent reads only. Resources remain host-owned, unpersisted and are not cloned by reflection. |
+| Activity Dispatch/Classify/Reconcile | Dispatch uses persisted identity/downstream idempotency. Reconcile is read-only/idempotent/concurrency-safe; overlapping probes are possible. Unknown and panics never prove no remote effect. Nested CallActivity inside callbacks is prohibited. |
+| Child dispatcher/cancel/usage | Host owns worker pool/quota/termination and truthful usage evidence. Group concurrency bounds dispatch admission; cancellation notification does not stop noncooperative work. Serialize shared parent UseBudget accounting. |
+| Wait Match/Apply/clock/transport | Pure labelled callbacks; may repeat before commit. Host authenticates inputs, bounds unique delivery IDs and owns clock/business cutoff/scheduler liveness. First valid committed decision wins. |
+| Store/lease/outbox | Capability implementation owns atomic OCC/fence/anchors and transaction publication. Native paired stores share coordination. Advisory precheck cannot upgrade an arbitrary store to native fencing. |
+| Observer/telemetry bridge | Synchronous bounded host callbacks; observer panic is contained, blocking blocks caller. Context-scoped observer/bridge or synchronized default; carrier copied. Telemetry is not a commit journal. |
+
+Callback purity is a host contract, not generic Go enforcement. Freeze registrations
+and make shared callbacks concurrency-safe across runners. Host code must honor
+context cancellation; lease expiry cannot prove it stopped. Node RecoverMiddleware
+has the exact boundary described below; surrounding reducer/router/codec/storage
+work has no blanket recovery. See [observations](runtime-observation-contract.md),
+[children](typed-child-contract.md), [waits](durable-wait-contract.md) and
+[storage admission](storage-admission.md).
+
+## Typed errors and recovery recipes
+
+| Error/result | Meaning and next action |
+| --- | --- |
+| ErrInvalidSnapshot / ErrSnapshotEnvelopeInvalid / ErrExecutionCorrupt | Invalid header/wire/address/seal; reject and inspect source. Never treat as absent or Start a replacement under the same identity. Ordinary StateSerializer requires JSON, with PostgreSQL JSONB's narrower domain. |
+| ErrThreadNotFound / ErrExecutionCheckpointUnavailable | Unknown identity or future revision versus known pruned/deleted exact payload; no fallback to latest. Durable IDs/fences/anchors survive deletion. |
+| ErrExecutionIncompatible / ErrMigrationInvalid / ErrMigrationMissing | Labels/source/chain/target do not meet the selected contract. Route to compatible code, drain/archive or perform an explicit pure migration/offline conversion. No node/dispatch fallback. |
+| ErrConcurrencyConflict / ErrLeaseLost / ErrThreadLeaseBusy | OCC or ownership refusal. Reload authority and coordinate retry; no blind redispatch and no inference that old external work stopped. |
+| ErrRunCleanup / retention error with successful outcome | Outcome may already be committed. Inspect RunResult/token and joined cause; cleanup uses a detached five-second context and can fail after partial release/prune/delete. Retry only the identified safe maintenance operation. |
+| ErrCheckpointSkipped / checkpoint_skipped reason | Explicit ordinary Save degradation, no new persisted token. Invariant/interceptor/OCC/fence failures and atomic outbox failures are not suppressible. |
+| ErrActivityJournalUnavailable / ErrWaitRegistration / ambiguous store ACK | Confirmation unavailable, not rollback. Inspect sealed latest head and addressed journal/wait before recovery. Never acknowledge an unconfirmed decision or replay remote dispatch solely because ACK was lost. |
+| ErrDurableStateUnavailable | Restoring committed entry state failed. Local State/Effects/metadata are not authoritative; inspect/redecode the confirmed envelope/token. Both the original error and restore cause remain joined. |
+| ErrActivityUnknown / ErrChildrenUnresolved | Resolve using downstream read-only evidence or addressed manual decision; do not relaunch or return retained allocation on timeout alone. |
+| ErrActivityConflict | Activity DecisionID is unique, not exact-replay idempotence. After lost ACK inspect latest journal/resolution identity/evidence with current token; a repeated ID must not invent success. |
+| Wait/child cancellation replay or conflict | Identical addressed cancellation preserves recorded evidence; changed identity/reason/evidence conflicts. Wait deliveries replay their immutable decision with compatible labels, no Match/Apply. Cancellation never proves remote termination. |
+| ErrChildCodec after committed merged bytes | Inspect and decode authoritative merged result. An unhandled node failure becomes persisted ErrExecutionFailed; a new Resume cannot reenter that terminal node. In-activation handled recovery obtains a fresh assertion before cached JoinChildren. |
+| PersistedExecutionError / ErrExecutionFailed | Stored definitive failure, no host sentinel reconstructed from text. Fix graph/input through explicit new lineage or host procedure; terminal replay invokes no node. |
+| Rollover receipt token / retention receipt | Rollover replay returns original creation revision; explicitly load current target to continue. Retention counts newly deleted bytes/revisions, not exactly-once metrics after lost ACK. |
+
+An ambiguous commit recipe is: keep the execution identity and operation ID,
+load sealed current authority, verify descriptor and addressed outcome, obtain the
+current token, then choose the operation-specific replay/reconciliation/manual
+resolution path. Inspection is not a new business authorization. Activity manual
+resolution rejects duplicate IDs; wait deliveries/cancellations and immutable
+rollover receipts have their explicitly defined replay rules. Do not generalize
+one command's idempotency to another.
+
+[Executable memory recipes](../examples/durable_runtime) demonstrate unknown
+activity recovery, child resolution/cached result and waits/forks. The
+[PostgreSQL blueprint](../examples/durable_agent/README.md) demonstrates real
+lost-ACK recovery across fresh pools using deterministic external fakes.
+[Lifecycle](durable-lifecycle.md) describes retention/anchors/partial discovery
+repair; [validation](validation.md) states actual module and backend gates.
+
+## Node panic boundary
+
+RecoverMiddleware catches panics only inside its wrapped node/middleware chain.
+The first registered middleware is outermost: place Recover before middleware
+whose panic should be caught. A middleware outside that boundary can still panic.
+Recovery preserves the supplied input state, returns a failure directive and a
+nonnil error; an error panic is wrapped so errors.Is retains its cause. Reducer,
+effect commit and checkpoint persistence do not proceed as successful node work.
+
+The surrounding runner's reducer, routing, checkpoint preparation/save/load and
+lifecycle publication are outside this wrapper. Synchronous callbacks invoked by
+the node itself (including nested graph or activity tooling) are within its call
+chain and still retain their own effect/recovery contracts. Shared mutable input
+and external effects already performed by a callback are not rolled back. Panic
+does not establish absence of remote dispatch and does not justify retrying an
+unknown external outcome. Recovery adds no blanket catch around the surrounding
+runner callbacks.
+
+## Ordinary snapshot preparation and atomic handoff
+
+Save and SaveWithOutbox use the same state preparation: validate domain state,
+then invoke StateInterceptor.BeforeSave once in registration order. The prepared
+representation belongs to persistence; RunResult retains runtime/domain state.
+An encoded/redacted representation need not satisfy the domain invariant.
+AfterLoad restores the domain representation before resume validation/overlay.
+For reference-backed BYOT values, hooks must replace shared state with detached
+representations: Flowy cannot generically roll back in-place host mutations.
+
+Non-atomic handoff commits pending, patches enqueued, then enqueues the intent;
+enqueue failure attempts an orphaned patch. These metadata-only patches reuse
+the exact prepared state, including recovery from Load. They do not invoke
+BeforeSave or domain validation again. Non-idempotent encoding is therefore
+applied once to each prepared checkpoint state, not once per metadata revision.
+OCC and adapter-native fencing still apply to every write.
+
+WithHandoffOutbox uses transactional snapshot/outbox commit when both collaborators
+support it, otherwise the documented multi-phase protocol. To require atomic
+publication, add `WithAtomicHandoff[T, E]()` to Start/Resume/Stream/ResumeStream
+options, with a transactional outbox (invocation or runner default). Missing
+TransactionalCheckpointer or TransactionalHandoffOutbox returns
+ErrTransactionalOutboxUnsupported before lease acquisition, node callbacks or
+persistence. Capability declarations do not verify arbitrary host implementations.
+DurableRunner uses the ExecutionStore profile and rejects WithAtomicHandoff with
+ErrTransactionalOutboxUnsupported before acquiring its execution session or
+committing initial state; this option applies to the ordinary snapshot/outbox profile.
+
+CheckpointPolicySkipOnSaveError is explicit degradation for adapter Save errors.
+Invariant/interceptor rejection is always returned before persistence. Known
+ErrInvalidSnapshot (including envelope errors), ErrConcurrencyConflict,
+ErrLeaseLost, ErrThreadLeaseBusy, ErrExecutionCapability, ErrInvalidHandoffIntent
+and ErrTransactionalOutboxUnsupported are never suppressed. Other arbitrary
+adapter errors may be suppressed: BYOT Checkpointer errors do not provide a
+universal infrastructure classification. SaveWithOutbox errors always fail.
+Suppression yields no new ResumeToken and never asserts resumability; streams
+emit EventCheckpointFailed and terminal reasons carry checkpoint_skipped.
+Sync callers must inspect the terminal reason. No suppressed save enqueues an
+outbox intent. Hook rejection preserves its cause through errors.Is; it does not
+publish a snapshot or outbox entry.
 
 ## Scope and ownership
 
-Implement BUG-01–04, then FLW-003/001/002/004/005. Core owns execution consistency; host owns domain types, codecs, permissions and transport. No stage is deferred. Clear break is allowed and required where existing API cannot express the contract.
+Core owns execution consistency; host owns domain types, codecs, permissions and transport. Ordinary snapshots and durable aggregates are explicit separate profiles. Historical BUG/FLW stage labels below identify origin, not a current delivery schedule.
 
 Runtime identity strings and compatibility labels are UTF-8 text, not arbitrary byte keys. Invalid UTF-8 must reject before hashing, persistence or dispatch; JSON replacement-character normalization is not an identity conversion. Valid Unicode, including the replacement character itself, is allowed unchanged. Host payload bytes remain opaque and need not be UTF-8. Address validation applies to execution/node/activity/group/child identities and their compatibility labels.
 
@@ -30,7 +150,7 @@ Redis snapshot wire revisions are canonical positive decimal strings, compared e
 
 Durable persistence uses a raw envelope. Descriptor metadata is readable before invoking a host state codec. Descriptor contains explicit graph identity, graph revision label, state codec label and execution contract label; digest is a separate integrity/provenance field. An absent descriptor never means current. Ordinary non-durable execution remains opt-in independent.
 
-The descriptor also requires a labelled StepReplayPolicy with mode replay_safe. This is the host's explicit graph-wide declaration that all node computation and routing may repeat after an uncommitted step, and that external effects use the activity boundary rather than arbitrary node I/O. Runtime does not infer purity or intercept I/O. No empty/default policy is accepted. The synchronous durable profile supports only this declared replay-safe mode: node computations may run again while completed activities replay their committed outcomes and unknown activities require recovery. This is not a second activity retry owner. Policy label/mode participate in exact descriptor compatibility and migration-chain keys; changing them rejects before codec/node calls unless an explicit pure migration commits the new target descriptor. Legacy envelopes missing the policy require explicit import, not an implicit replay-safe upgrade. Ordinary execution is unchanged.
+The descriptor also requires a labelled StepReplayPolicy with mode replay_safe. This is the host's explicit graph-wide declaration that all node computation and routing may repeat after an uncommitted step, and that external effects use the activity boundary rather than arbitrary node I/O. Runtime does not infer purity or intercept I/O. No empty/default policy is accepted. The durable profile supports only this declared replay-safe mode: node computations may run again while completed activities replay their committed outcomes and unknown activities require recovery. This is not a second activity retry owner. Policy label/mode participate in exact descriptor compatibility and migration-chain keys; changing them rejects before codec/node calls unless an explicit pure migration commits the new target descriptor. Legacy envelopes missing the policy require explicit import, not an implicit replay-safe upgrade. Ordinary execution is unchanged.
 
 The durable store atomically commits a full execution aggregate against expected revision and a live lease incarnation/fencing token. Aggregate includes cursor, state bytes, effect bytes, activity intents/outcomes, child join progress and wait decisions. No separate successful journal write is treated as a checkpoint commit. Each logical activity transition may advance aggregate revision while retaining the same step cursor until the step is committed. A crash after outcome commit replays the stored outcome and commits the step without dispatch.
 
@@ -42,7 +162,7 @@ An unclassified storage failure while committing an activity transition returns 
 
 Acquire returns a unique incarnation and monotonically increasing fence per execution. Renew/release/commit compare that incarnation, not only owner text. Expiry preserves the fence counter; deletion/recreation cannot recycle a live fencing identity. Store validation and write occur in one storage transaction. Host codec supplies domain types; runtime never examines application references inside opaque payload.
 
-Migration loads the raw source revision and runs a registered pure chain without node/dispatcher invocation. Chain edges use explicit source/target descriptors and stable migration identity. Reject cycles, ambiguous/missing chains and invalid target before commit. Callback receives a detached copy; source checkpoint identity and successful activity results are immutable. Commit records source revision plus chain identity/digest and retains source history. Runtime validates the target cursor, runtime collections and detached target state/effects using the selected target codecs before publication. Target codecs must be pure and may be called again during execution. Incompatible source bytes are never decoded using target codecs before an explicit chain is selected. Invalid target encoding returns ErrMigrationInvalid and leaves latest/source history unchanged. A failed transformation or OCC/fencing conflict exposes no partial target.
+Migration loads the raw source revision and runs a registered pure chain without node/dispatcher invocation. Chain edges use explicit source/target descriptors and stable migration identity. Reject cycles, ambiguous/missing chains and invalid target before commit. Callback receives a detached copy; source checkpoint identity and successful activity results are immutable. Commit records source revision, validated source digest and chain identities and retains source history. Runtime validates the target cursor, runtime collections and detached target state/effects using the selected target codecs before publication. Target codecs must be pure and may be called again during execution. Incompatible source bytes are never decoded using target codecs before an explicit chain is selected. Invalid target encoding returns ErrMigrationInvalid and leaves latest/source history unchanged. A failed transformation or OCC/fencing conflict exposes no partial target.
 
 Explicit legacy import creates a new execution identity rather than guessing the descriptor of an existing record. The host supplies a frozen, addressed source artifact (source ID, nonzero revision, explicit format label, raw bytes and SHA-256 digest) and a named pure importer for that format. Runtime validates the digest before calling that importer, passes detached bytes, validates the resulting target cursor and target codecs, then commits revision zero-to-one under a live target lease. Import returns a continuation token but never invokes nodes/dispatchers. Source artifact, digest and importer identity are retained in the target envelope; the caller's original artifact is untouched. Import never fabricates activities or completed outcomes for old side effects. Host owns atomic capture of a legacy source from its original storage and permissions to import it; importing does not imply freezing a mutable remote source. Any transform, target decode, cancellation, OCC or fencing failure leaves no partial target.
 
@@ -68,7 +188,7 @@ Manual activity resolution is an explicit addressed operation, separate from Res
 
 PrepareChildren persists the detached plan as child-group intent in the same sealed/fenced/OCC execution aggregate. Repeating the same current group address replays the original plan; incompatible input/policy/allocation labels reject without reset. The returned copy cannot mutate persisted inputs. No child dispatch is authorized before this commit. A parent cannot advance or publish terminal completion while a current group is unjoined, even if node code ignores the group. Intent-only planning does not launch children or prove the full child runtime capability. Persisted group metadata is validated before domain decoding and migration; a cursor migration cannot strand an unresolved group.
 
-RunChildren launches planned/queued children in stable-ID order up to the concurrency bound. Queue/running/outcome transitions each advance child revision within the aggregate; running records retain the owning lease incarnation. Results commit independently, preserving siblings. Dispatcher error is unknown, not definitive failure. Waiting outcomes need an explicit wait ID. Completed/failed children replay without dispatch; abandoned running children become unknown on owner recovery and cannot relaunch blindly. Dispatcher context masks parent activity/group/lease capabilities: a host child runner must establish its own execution boundary. Parent cancellation notifies workers and returns without awaiting non-cooperative callbacks; late writes remain fenced. JoinChildren, ConfirmChildCancellation, ResolveChildWait and ReturnChildBudget provide separate persisted boundaries; launch alone does not perform them.
+RunChildren launches planned/queued children in stable-ID order up to the concurrency bound. Queue/running/outcome transitions each advance child revision within the aggregate; running records retain the owning lease incarnation. Results commit independently, preserving siblings. Dispatcher error is unknown, not definitive failure. Waiting outcomes need an explicit wait ID. Completed/failed children replay without dispatch; abandoned running children become unknown on owner recovery and cannot relaunch blindly. Dispatcher context masks parent activity/group/lease capabilities: a host child runner must establish its own execution boundary. Parent cancellation notifies workers and returns without awaiting non-cooperative callbacks; late writes remain fenced and use a detached context with a five-second I/O deadline. Store implementations must honor that context or their own stricter I/O bound. JoinChildren, ConfirmChildCancellation, ResolveChildWait and ReturnChildBudget provide separate persisted boundaries; launch alone does not perform them.
 
 Child-group design decision: the group belongs to one parent execution/node/activation and logical group key. Child execution identities derive from that full address plus stable child IDs; sorted IDs define launch/join order, not arrival time. Host codecs/projection provide detached input bytes per child. Group compatibility includes explicit merge, budget and cancellation labels, bounded concurrency, and fail-fast/collect-errors policy. Named allocations are fixed before launch, their sum cannot exceed available parent counters, and invalid/negative/unknown allocations reject before dispatch. They are not monetary reservations: host owns the external reservation port and its evidence. Unused counters return only after a confirmed resolved child; unknown/non-cooperative work retains allocation until explicit recovery evidence. Restart never blindly relaunches running work: it becomes unknown and requires reconciliation or addressed operator action. Cancellation persists a request, stops new launches and notifies active children; only worker confirmation permits canceled, while completed effects/results remain retained. No detached mode or implicit upgrade of inline subgraphs is introduced.
 
@@ -109,3 +229,220 @@ The armed aggregate is committed before registration acknowledgement. Event/time
 Structured child wait resolution is a separate safe boundary: ResolveChildWait addresses the parent token, node/activation/group key, child execution ID and revision, wait ID and unique decision ID. It requires the latest parent revision, matching descriptor and a currently waiting child. Host authentication and meaning of the supplied completed/failed result remain outside core. Runtime persists the result and addressed decision provenance in the same fenced aggregate commit, without state codec, node or dispatcher calls. A stale/duplicate/wrong address is rejected; sibling outcomes/waits remain unchanged. Resolution does not automatically resume a parent or acknowledge transport delivery before its commit. Event/timer arbitration for general durable waits remains a separate capability.
 
 Fork loads an exact raw checkpoint, checks its digest/descriptor, runs the host projection and atomically creates a fresh target with source lineage. Activity identities incorporate target execution ID; source intents, unresolved descendants and live runtime handles cannot be copied. Inspection is a separate operation with no node calls. Live policy and a compatibility-labelled projection are mandatory where opaque state may carry external references.
+
+
+## Invocation admission and BYOT composition
+
+MaxSteps limits handler invocations in one compute segment. The runner checks admission before NodeStarted and before the handler. Every admitted handler invocation, including a returned error or Retry, consumes one segment step. Completion on the Nth admitted call succeeds; a required N+1th call fails without dispatch. Nonpositive configured values select the default 1000. Resume resets segment counters; it does not reset persistent named budget usage. Persisted durable metadata retains the committed entry count until a step or definitive failure terminal commits. A live recoverable handler error can report the admitted attempt; interruption or a failed step commit returns authoritative entry metadata. Neither case claims an uncommitted attempt in storage.
+
+UseBudget is accounting, not reservation. Empty/invalid UTF-8 names, negative units, negative existing counters and integer overflow return ErrBudgetInvalid without mutation. Missing metadata returns ErrBudgetContext. A valid previously unseen name creates a counter; only compile-time declared limits are checked after a successful node. Zero is a valid no-op. Calls are serialized within one node; host goroutines must not concurrently mutate run metadata. No runtime accounting guarantee establishes provider usage, prices or a pre-dispatch spending cap.
+
+Effect wrappers preserve inner-to-outer order when a pattern changes the base directive. Inline graphs export only newly produced effects at each successful parent boundary. SubgraphSlot requires Contract == InlineSlotContract and retains an ExportedEffects cursor across suspend/handoff; completion clears the slot. Reentry after completion starts a new inner execution. Failed inner computation does not replace a prior confirmed slot; context cancellation restores a saved inner continuation through the parent cancellation boundary. Inline runners have their own counters and graph defaults, inherit ephemeral context bindings, and do not inherit parent RunOptions. Inline execution under a durable activity capability is unsupported and rejected before inner dispatch: distributed durable work must use the child boundary with its own ownership. No parent activity, child or lease capability is passed to an inner ordinary runner.
+
+Stream events are bounded best-effort observations: full buffers drop events immediately, independently of Wait. WaitResult is the authoritative outcome. Delivery is not a committed event log; even a terminal event can be absent. RequestStop cancels execution, while Wait only waits and never changes delivery policy.
+
+BYOT values are immutable across shared boundaries by default. Hosts using mutable maps, slices or pointers supply WithEventCloners for state and reference-valued effects. Pure cloners run synchronously on the producer before publication, must return detached values, and must not panic or mutate their input; only the host knows how to clone its domain. They isolate events, not arbitrary host goroutines mutating a node state. Checkpointers own snapshot detachment; MemoryCheckpointer provides explicit state/effect cloners to model serialized adapters. A serializer Unmarshal must return detached values; WithSanitizer round-trips through its base serializer before mutating a value during Marshal. Runtime metadata collections are always copied by memory storage. Inline mapIn/mapOut/loadSlot/storeSlot share the same host ownership obligation; runtime does not infer deep copy of arbitrary domain types.
+
+Inline slot format transition is explicit: persisted nonempty slots without the current Contract marker are rejected with ErrInvalidSnapshot before inner execution. Drain old executions before upgrading, or perform a host-owned offline conversion that reconstructs state, cursor and the exact number of already exported effects from authoritative evidence. Missing evidence requires rejecting or discarding that execution; the runtime never assumes a missing effect cursor means zero. Empty slots are valid fresh executions. AsStatelessNode uses the same inline boundary and effect/capability policy as StatelessSubgraphNode.
+
+## Child outcome reconciliation
+
+Unknown child outcomes have an addressed raw boundary described in [child outcome resolution](child_outcome_resolution.md). It accepts opaque completed/failed results under exact parent/child revisions and live fencing. Original group identity and current migration binding are both checked. Resolution does not dispatch, decode, merge, resume, return budget or infer absence of remote work. Decision provenance and terminal child outcome commit atomically; stale parent tokens never silently advance to latest.
+
+## Persisted retry schedules
+
+[Activity retry scheduling](activity_retry_scheduling.md) defines explicit fixed/exponential configuration, bounded jitter and compatibility-labelled host not-before hints. The deadline and its provenance commit once with the prepared retry, survive restart and never cause dispatch through discovery. Old active Delay-only policies are rejected; recovery does not guess schedule semantics.
+
+State and accumulated effects have independent mandatory compatibility labels; changing either requires the corresponding explicit pure transformation. See [durable lifecycle](durable-lifecycle.md). Activity/child outcomes are immutable throughout these representation changes.
+
+
+### Cancellation ownership and cleanup
+
+Each stream stop cancels its own context, including before session registration.
+Completed and rejected handles cannot stop a later run with the same thread ID.
+Every execute-owned context is canceled on return, after heartbeat shutdown and
+session completion/unregistration; the caller's context remains independently owned.
+An active-run Canceled or DeadlineExceeded node error, raw or wrapped, checkpoints
+continuation. A node-local timeout with a live run remains a failure. Lease loss
+and explicit handoff preserve their existing precedence; durable interruption
+restores the committed entry rather than an aliased pre-node value.
+
+Lease release and post-run terminal prune/delete use detached contexts bounded to
+five seconds per operation, preserving caller context values. Rejected resume
+admission releases under the same bound. Failures wrap ErrRunCleanup and the
+original cause and are joined with execution errors; a returned completed or
+failed RunResult still describes execution. Busy DeleteIfIdle is a cleanup error.
+RequestLocalHandoff acknowledges execution/checkpoint completion; Start and stream
+WaitResult also report subsequent cleanup. Durable Start/Resume and streams,
+DeliverWait, CancelWait, activity/child resolution and fork/import/rollover
+preserve a committed result/token alongside a cleanup error. Such an error does not mean the preceding durable write failed. Timeouts
+require context-cooperative adapters; no background retry or detached goroutine is
+used to pretend uncooperative I/O completed.
+
+All failed live RunResults close Segment with a UTC EndTime and EndReason fail.
+The Retry-route restriction is retained: AddRetryRoute requires an
+AllowNoOutgoingRoute node, which cannot also route Completed. Split mixed behavior
+into separate graph nodes; directive Retry provides no implicit I/O retry safety.
+
+
+### Collection ownership and callback lifetime
+
+CollectEventsAndWait returns a synchronized, detached snapshot of the events
+collected so far. After an early canceled return, the drain may still append to
+its private collection; it cannot change the returned slice storage or header.
+This is a shallow copy of RunEvent values. Arbitrary BYOT state/effect references
+still require host ownership or WithEventCloners when events are produced.
+Successful collection includes every delivered event and reports Wait's error;
+cancellation requests stop and preserves the collection context's error without
+waiting indefinitely for an uncooperative producer.
+
+ConsumeEventsAndWait callbacks run on its drain goroutine. If collection context
+cancellation causes an early return, callbacks already in progress or queued on
+the event source may continue afterwards until the source closes. Returning from
+the function is not a callback join: keep captures alive and synchronize concurrent
+access, or arrange your own completion signal. Callbacks must not panic or block
+indefinitely. BeginStreamCollect transfers a complete private collection through
+its result channel; AwaitStreamCollect can return early without transferring an
+unfinished slice. WaitResult remains execution authority because the bounded event
+stream may drop a terminal event. None of these helpers provides durable delivery.
+
+
+### Snapshot storage admission
+
+ValidateSnapshotHeader is the pure storage-header boundary: nonempty UTF-8 thread
+ID/execution pointer and a positive stored revision. Save computes its new revision
+from expectedRevision/OCC; caller Snapshot.Revision does not override that decision.
+EncodeRecord and DecodeRecord share this check, and the memory test helper checks
+before invoking cloners or changing history. PostgreSQL checks before starting its
+SaveWithOutbox transaction; malformed metadata cannot invoke enqueue. Standalone
+snapshot StateSerializer.Marshal produces valid JSON bytes; validation never calls
+host Unmarshal merely to check headers. BYOT describes state/effect types and does
+not imply support for arbitrary wire bytes. PostgreSQL additionally applies its
+JSONB storage domain, and its errors must not publish a partial head/outbox.
+
+Cancellation/budget-return reasons and manual decision provenance are valid UTF-8
+text before store/backend/notification work. Malformed bytes are rejected rather
+than normalized to replacement characters; actual U+FFFD remains valid input.
+Exact recorded equality remains the replay authority. Host runtime errors used only
+as audit diagnostics may render lossily; their strings are not decision identities.
+
+Storage admission, JSON wire domains, constructor failures, historical errors and
+TTL/counter limits are specified in [storage admission](storage-admission.md).
+Child duplicate and lost-ACK semantics are specified in
+[decision namespaces](decision-namespaces.md).
+
+## Explicit execution and inline composition profiles
+
+Ordinary Graph runners persist typed snapshots through Checkpointer. DurableRunner
+persists a versioned execution aggregate through ExecutionStore, with activities,
+children, waits and fenced decisions. Construction selects the profile; runtime
+does not infer an upgrade from the presence of a checkpointer or lease manager.
+
+AsStatelessNode and StatelessSubgraphNode are invocation-only composition. Every
+invocation starts the inner entry with mapped parent state. Suspend/Handoff pause
+the parent and do not preserve an inner cursor; on parent resume the inner entry
+runs again. This is useful only when that restart is safe for the host's nodes.
+SubgraphNodeWithSlot instead stores inner pointer, state, metadata and the exported
+effect cursor in parent state. Neither profile creates an independently durable
+child or inherits parent RunOptions. Inline use inside DurableRunner remains
+ErrExecutionCapability; use its recorded child execution contract instead.
+
+The synthetic parent::node identifier and capture checkpointer exist only during
+one invocation. SubgraphSlot.Revision describes that capture's progress, not a
+separate OCC authority. Parent publication protects the persisted slot; each inner
+resume seeds a fresh capture at expected revision zero and uses the returned
+revision, never a durable lookup by the synthetic ID.
+
+NewAdvisoryLeaseGuardCheckpointer performs Holder followed by DeleteIfIdle. Its
+separate reads and delete can race with acquisition in another coordination store.
+It supplies an advisory check, not native atomic fencing. Distributed hosts use
+the adapters' native common coordination domain. The wrapper forwards its inner
+transactional outbox capability but does not manufacture it or weaken the explicit
+atomic-handoff requirement. A nil collaborator retains the documented no-wrapper
+behavior; it is not evidence that fencing was installed.
+
+EndNode is exclusively a routing sentinel. Registering a handler with that name
+fails Compile. Compile joins every validation diagnostic after sorting its text,
+so node/map registration order does not change the reported diagnostic sequence.
+
+The clean-break names replace AsNode, SubgraphNode and NewLeaseGuardCheckpointer;
+there are no aliases. Use the slot variant when an inner cursor must survive.
+
+## Pattern helpers and ephemeral bindings
+
+Pattern constructors return (builder,error) and reject missing callbacks or
+nonpositive retry budgets before any node runs. BuildReAct uses react_reason and
+react_action with replacement updates: callbacks return the entire new state.
+Its maxActionRetries limits action fallback rounds; Retry semantics allow at most
+maxActionRetries+1 action callbacks, never a total graph-step bound. The pending
+predicate runs once per Completed reason route and is not called for other
+directives. BuildEvaluatorOptimizer uses generator/evaluator replacement updates
+and maxCorrectionRetries domain correction fallbacks, not transport retries.
+Predicates/accessors are pure, prompt and concurrency-safe across graph runs.
+
+BuildDispatchGraph replaces BuildSupervisor without an alias. Its dispatch node
+selects one terminal worker; workers do not route back into a supervisor loop.
+Routes/worker definitions are captured during construction; caller mutations after
+construction cannot affect compiled routing. Worker IDs must not conflict with
+dispatch or EndNode; Compile validates remaining topology. Existing persisted
+ordinary cursors at the old supervisor node require explicit host migration or
+draining before this clean break. No automatic cursor rename occurs.
+
+RunBindings has one slot per Go type T. Two BindingKey[T] sentinels of the same
+type address the same slot. Bind during setup, then freeze by discipline before
+WithContext/WithBindings or concurrent reads. Concurrent mutation is unsupported.
+Use distinct host wrapper types for multiple same-resource-type dependencies;
+resource concurrency/lifetime belongs to the host. Bindings are never persisted
+or reflectively cloned by the runtime.
+
+Observation and bridge scope, callback policies and bounded default dimensions
+are canonical in [runtime observation](runtime-observation-contract.md).
+
+
+## Child state and ownership boundaries
+
+Child copies use explicit detached maps/slices/bytes and copies of provenance
+pointers. Copying does not validate wire representation, rewrite invalid text/time,
+or collapse nil/empty collections. Admission still validates the flat DTO before
+publication. MaxConcurrency bounds admission within one group; active callbacks
+left after cancellation can coexist with later groups. A host-wide worker pool,
+quota and termination mechanism belong to the host. Cancellation signals intent
+and cannot preempt arbitrary Go callbacks. See [child budget](child-budget-contract.md)
+for parent metadata capability and serialized accounting requirements.
+
+| Current state | Allowed publication | Recovery/authority |
+|---|---|---|
+| planned, revision0 | queued after intent; local canceled on committed request | No external dispatch before queue/running commit |
+| queued | running under live incarnation; local canceled on request | Admission and allocation stay fixed |
+| running | completed/failed/waiting/unknown; confirmed canceled on request | Dispatcher error/panic is unknown; abandoned owner becomes unknown |
+| waiting | addressed completed/failed wait resolution; confirmed canceled on request | Exact wait and child revision required |
+| unknown | addressed completed/failed outcome resolution; confirmed canceled on request | No automatic redispatch or budget release |
+| completed/failed | retained outcome, explicit join and eligible usage return | No worker redispatch; partial/empty bytes retain explicit state |
+| canceled | retained confirmed stop, explicit join and eligible usage return | Confirmation is host evidence; not rollback proof |
+
+Every persisted transition validates revision/incarnation, outcome fields and
+provenance centrally; join is a group boundary, not a new child state. Migration
+keeps original group addresses plus exact current activation bindings. Missing,
+foreign or dangling references reject before node/dispatch; never infer a renamed
+identity. Late finish uses WithoutCancel only to permit bounded outcome I/O; it
+still requires the original live lease and exact child revision. A successor or
+confirmation can fence it out. Store context compliance is required; core cannot
+preempt a backend ignoring cancellation. See [child migration](child-migration-contract.md)
+and [typed composition](typed-child-contract.md) for cached join recovery.
+
+## Host approval before durable external actions
+
+[Approval/recovery composition](approval-recovery-contract.md) defines the host-owned
+protocol and optional executable recipe. Preparation checkpoints a bound challenge
+before Await; authenticated DeliverWait and pure continuation callbacks do not
+consume grants or execute actions. CallActivity journals the effect only after
+current host authorization. Reconcile reads complete addressed outcome evidence;
+unknown does not imply safe retry. Capture has its own persisted continuation.
+No business approval policy or concrete backend is added to core.
+
+Read-only `InspectExecutionResume` issues an exact latest ResumeToken after validating
+the sealed execution and lifecycle collections. It invokes no host codecs, nodes,
+leases or recovery callbacks. This supports recovery after a process lost the
+result/token delivery. The token is an observed address, not authorization or
+permission to retry unknown work; a concurrent commit can make it stale and Resume
+still performs all compatibility, latest-revision and fencing checks.

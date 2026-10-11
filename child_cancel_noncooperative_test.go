@@ -15,7 +15,14 @@ import (
 type childLateOutcomeStore struct {
 	flowy.ExecutionStore
 
-	late chan error
+	late chan childLateOutcomeObservation
+}
+
+type childLateOutcomeObservation struct {
+	err         error
+	deadline    time.Time
+	hasDeadline bool
+	contextErr  error
 }
 
 func (s *childLateOutcomeStore) CommitExecution(ctx context.Context, revision uint64, lease flowy.ExecutionLease,
@@ -26,7 +33,8 @@ func (s *childLateOutcomeStore) CommitExecution(ctx context.Context, revision ui
 		for _, group := range groups {
 			for _, child := range group.Children {
 				if child.State == flowy.ChildCompleted {
-					s.late <- err
+					deadline, hasDeadline := ctx.Deadline()
+					s.late <- childLateOutcomeObservation{err: err, deadline: deadline, hasDeadline: hasDeadline, contextErr: ctx.Err()}
 				}
 			}
 		}
@@ -39,7 +47,7 @@ func TestChildCancellationReleasesNonCooperativeCoordinatorAndFencesLateOutcome(
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	base := testutil.NewMemoryExecutionStore(nil)
-	store := &childLateOutcomeStore{ExecutionStore: base, late: make(chan error, 1)}
+	store := &childLateOutcomeStore{ExecutionStore: base, late: make(chan childLateOutcomeObservation, 1)}
 	gate := make(chan struct{})
 	defer func() {
 		select {
@@ -146,8 +154,12 @@ func assertChildCancelNonCooperativeRecovery(ctx context.Context, t *testing.T,
 	}
 	close(gate)
 	select {
-	case lateErr := <-store.late:
-		if lateErr == nil {
+	case late := <-store.late:
+		if !late.hasDeadline || late.deadline.IsZero() || time.Until(late.deadline) > 5*time.Second ||
+			late.contextErr != nil {
+			t.Fatalf("late outcome I/O lacks detached bounded context: %+v", late)
+		}
+		if late.err == nil {
 			t.Fatal("old worker committed after confirmation")
 		}
 	case <-ctx.Done():

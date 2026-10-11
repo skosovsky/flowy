@@ -7,9 +7,9 @@ type leaseGuardCheckpointer[T, E any] struct {
 	lease LeaseManager
 }
 
-// NewLeaseGuardCheckpointer wraps a checkpointer with best-effort lease checks on DeleteIfIdle.
+// NewAdvisoryLeaseGuardCheckpointer wraps a checkpointer with best-effort lease checks on DeleteIfIdle.
 // Not atomic across separate stores; use adapter-native DeleteIfIdle for distributed deployments.
-func NewLeaseGuardCheckpointer[T, E any](
+func NewAdvisoryLeaseGuardCheckpointer[T, E any](
 	inner Checkpointer[T, E],
 	lease LeaseManager,
 ) Checkpointer[T, E] {

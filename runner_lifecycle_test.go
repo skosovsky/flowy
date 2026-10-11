@@ -1492,7 +1492,7 @@ func TestDeleteIfIdleBlockedByOtherOwnerLease(t *testing.T) {
 	}
 
 	lease := NewMemoryLeaseManager()
-	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	guarded := NewAdvisoryLeaseGuardCheckpointer[state, NoEffect](cp, lease)
 	if _, err := lease.Acquire(context.Background(), "lease-del-th", "worker-a", time.Minute); err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
@@ -1765,7 +1765,7 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 		t.Fatalf("seed snapshot: %v", saveErr)
 	}
 	lease := NewMemoryLeaseManager()
-	guarded := NewLeaseGuardCheckpointer[state, NoEffect](cp, lease)
+	guarded := NewAdvisoryLeaseGuardCheckpointer[state, NoEffect](cp, lease)
 	if _, acquireErr := lease.Acquire(
 		context.Background(), "del-busy-th", "other-worker", time.Minute,
 	); acquireErr != nil {
@@ -1773,9 +1773,12 @@ func TestDeleteOnSuccessBlockedWhenLeaseHeldByOther(t *testing.T) {
 	}
 	runner := g.NewRunner(guarded)
 
-	_, err = runner.Start(context.Background(), "del-busy-th", state{})
-	if err != nil {
-		t.Fatalf("start: %v", err)
+	// Act: completion succeeds but busy cleanup is explicitly reported.
+	result, startErr := runner.Start(context.Background(), "del-busy-th", state{})
+	// Assert: the execution outcome and skipped cleanup are separate.
+	if result == nil || result.Status != RunStatusCompleted || !errors.Is(startErr, ErrRunCleanup) ||
+		!errors.Is(startErr, ErrThreadLeaseBusy) {
+		t.Fatalf("result=%+v err=%v", result, startErr)
 	}
 
 	if _, _, loadErr := cp.Load(context.Background(), "del-busy-th"); loadErr != nil {

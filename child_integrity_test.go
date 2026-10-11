@@ -75,7 +75,7 @@ func TestChildGroupsRejectForgedJoinAndCancellationProvenance(t *testing.T) {
 				t.Fatal(marshalErr)
 			}
 			parsed, parseErr := executionChildGroups(ExecutionEnvelope{ExecutionID: "run", Revision: 4, Activation: 1,
-				Progress: MigrationState{ExecutionPointer: "node"}, ChildrenPayload: originalPayload})
+				Progress: ExecutionProgress{ExecutionPointer: "node"}, ChildrenPayload: originalPayload})
 			if parseErr != nil || len(parsed) != 1 || parsed[originalIdentity].Children[0].State != ChildCanceled {
 				t.Fatalf("valid fixture did not decode: %v", parseErr)
 			}
@@ -87,7 +87,7 @@ func TestChildGroupsRejectForgedJoinAndCancellationProvenance(t *testing.T) {
 				t.Fatal(err)
 			}
 			_, err = executionChildGroups(ExecutionEnvelope{ExecutionID: "run", Revision: 4, Activation: 1,
-				Progress: MigrationState{ExecutionPointer: "node"}, ChildrenPayload: payload})
+				Progress: ExecutionProgress{ExecutionPointer: "node"}, ChildrenPayload: payload})
 			// Assert.
 			if !errors.Is(err, ErrExecutionCorrupt) {
 				t.Fatalf("forged group accepted: %v", err)

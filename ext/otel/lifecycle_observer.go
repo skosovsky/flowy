@@ -2,50 +2,50 @@ package otel
 
 import (
 	"context"
-	"log/slog"
+	"errors"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
 	"github.com/skosovsky/flowy"
+	"github.com/skosovsky/flowy/internal/nilvalue"
 )
 
-func newLifecycleMetricsObserver() (*lifecycleObserver, error) {
-	meter := otel.Meter("github.com/skosovsky/flowy")
-	handoffEnqueued, err1 := meter.Int64Counter(
-		"flowy.handoff_enqueued_total",
-		metric.WithDescription("Handoff outbox enqueue attempts after checkpoint save"),
-	)
-	resumeRejected, err2 := meter.Int64Counter(
-		"flowy.resume_rejected_total",
-		metric.WithDescription("Resume attempts rejected by runner validation"),
-	)
-	checkpointSoftError, err3 := meter.Int64Counter(
-		"flowy.checkpoint_soft_error_total",
-		metric.WithDescription("Checkpoint save failures handled by skip-on-save-error policy"),
-	)
-	if err1 != nil {
-		return nil, err1
+const otherDimension = "other"
+
+// ErrConfiguration rejects missing observation providers before installation.
+var ErrConfiguration = errors.New("flowy/otel: invalid configuration")
+
+func newLifecycleMetricsObserver(provider metric.MeterProvider) (*lifecycleObserver, error) {
+	if nilvalue.IsNil(provider) {
+		return nil, ErrConfiguration
 	}
-	if err2 != nil {
-		return nil, err2
+	meter := provider.Meter("github.com/skosovsky/flowy")
+	events, err := meter.Int64Counter(
+		"flowy.lifecycle_total",
+		metric.WithDescription("Runtime observations by bounded operation and stage"),
+	)
+	if err != nil {
+		return nil, err
 	}
-	if err3 != nil {
-		return nil, err3
-	}
-	return &lifecycleObserver{
-		handoffEnqueued:     handoffEnqueued,
-		resumeRejected:      resumeRejected,
-		checkpointSoftError: checkpointSoftError,
-	}, nil
+	return &lifecycleObserver{events: events}, nil
 }
 
-// InstallLifecycleObserver registers OTel counters for flowy lifecycle events.
-func InstallLifecycleObserver() error {
-	obs, err := newLifecycleMetricsObserver()
+// NewLifecycleObserver binds bounded metrics to an explicit provider without
+// changing the process-wide observer. Use flowy.WithLifecycleObserver per run.
+func NewLifecycleObserver(provider metric.MeterProvider) (flowy.LifecycleObserver, error) {
+	observer, err := newLifecycleMetricsObserver(provider)
 	if err != nil {
-		slog.Default().ErrorContext(context.Background(), "InstallLifecycleObserver", "err", err)
+		return nil, err
+	}
+	return observer, nil
+}
+
+// InstallLifecycleObserver registers the bounded runtime observation counter.
+func InstallLifecycleObserver() error {
+	obs, err := NewLifecycleObserver(otel.GetMeterProvider())
+	if err != nil {
 		return err
 	}
 	flowy.SetLifecycleObserver(obs)
@@ -53,55 +53,40 @@ func InstallLifecycleObserver() error {
 }
 
 type lifecycleObserver struct {
-	handoffEnqueued     metric.Int64Counter
-	resumeRejected      metric.Int64Counter
-	checkpointSoftError metric.Int64Counter
+	events metric.Int64Counter
 }
 
-func (o *lifecycleObserver) HandoffEnqueued(
-	ctx context.Context,
-	threadID string,
-	pointer flowy.ExecutionPointer,
-	status string,
-) {
-	if o == nil || o.handoffEnqueued == nil {
+func (o *lifecycleObserver) ObserveLifecycle(ctx context.Context, event flowy.LifecycleObservation) {
+	if o == nil || o.events == nil {
 		return
 	}
-	o.handoffEnqueued.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("thread_id", threadID),
-		attribute.String("node", string(pointer)),
-		attribute.String("status", status),
-	))
+	attrs := metric.WithAttributes(
+		attribute.String("operation", boundedOperation(event.Operation)),
+		attribute.String("stage", boundedStage(event.Stage)),
+	)
+	o.events.Add(ctx, 1, attrs)
 }
 
-func (o *lifecycleObserver) ResumeRejected(
-	ctx context.Context,
-	threadID string,
-	pointer flowy.ExecutionPointer,
-	reason string,
-) {
-	if o == nil || o.resumeRejected == nil {
-		return
+func boundedStage(stage flowy.LifecycleStage) string {
+	switch stage {
+	case flowy.LifecycleStarted, flowy.LifecycleFailed, flowy.LifecycleCommitted, flowy.LifecycleReplayed:
+		return string(stage)
+	default:
+		return otherDimension
 	}
-	o.resumeRejected.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("thread_id", threadID),
-		attribute.String("node", string(pointer)),
-		attribute.String("reason", reason),
-	))
 }
 
-func (o *lifecycleObserver) CheckpointSoftError(
-	ctx context.Context,
-	threadID string,
-	pointer flowy.ExecutionPointer,
-) {
-	if o == nil || o.checkpointSoftError == nil {
-		return
+func boundedOperation(operation flowy.LifecycleOperation) string {
+	switch operation {
+	case flowy.LifecycleExecution, flowy.LifecycleTerminal, flowy.LifecycleCheckpoint, flowy.LifecycleHandoff,
+		flowy.LifecycleResume, flowy.LifecycleActivity, flowy.LifecycleReconcile, flowy.LifecycleRetry,
+		flowy.LifecycleChildLaunch, flowy.LifecycleChildResolve, flowy.LifecycleChildJoin, flowy.LifecycleChildCancel,
+		flowy.LifecycleWaitArm, flowy.LifecycleWaitDelivery, flowy.LifecycleWaitCancel, flowy.LifecycleLease,
+		flowy.LifecycleMigration, flowy.LifecycleImport, flowy.LifecycleFork, flowy.LifecycleRollover, flowy.LifecycleRetention:
+		return string(operation)
+	default:
+		return otherDimension
 	}
-	o.checkpointSoftError.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("thread_id", threadID),
-		attribute.String("node", string(pointer)),
-	))
 }
 
 var _ flowy.LifecycleObserver = (*lifecycleObserver)(nil)

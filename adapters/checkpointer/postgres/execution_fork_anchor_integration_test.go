@@ -15,7 +15,7 @@ import (
 func TestIntegrationForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T) {
 	// Arrange: retain a later head, remove only this fixture's initial history row.
 	ctx, pool := racePool(t)
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	var nodes, live atomic.Int32
 	creation := createForkLineageFixture(ctx, t, pool, store, testThreadID(t), &nodes, &live)
 	lease, err := store.AcquireExecution(ctx, creation.ExecutionID, "advance", time.Minute)
@@ -36,7 +36,7 @@ func TestIntegrationForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T
 	pool.Close()
 	// Act: independent recovery uses the head anchor, not revision-one fallback.
 	recoveryCtx, recoveryPool := reopenPool(t, pool)
-	recovered := NewExecutionStore(recoveryPool)
+	recovered := mustExecutionStore(t, recoveryPool)
 	loaded, loadErr := recovered.LoadExecution(recoveryCtx, head.ExecutionID)
 	_, absentErr := recovered.LoadCheckpoint(recoveryCtx, head.ExecutionID, creation.Revision)
 	policy := &flowy.ForkExecutionPolicy{Label: "fake", Mode: flowy.ForkFake,
@@ -45,7 +45,7 @@ func TestIntegrationForkPersistentAnchorSurvivesCreationHistoryLoss(t *testing.T
 		flowy.ResumeToken{ThreadID: head.ExecutionID, SnapshotRevision: head.Revision})
 	// Assert: retained head runs only fake; exact missing history still returns absence.
 	if loadErr != nil || loaded.Digest != head.Digest || loaded.Fork == nil || *loaded.Fork != *creation.Fork ||
-		!errors.Is(absentErr, flowy.ErrThreadNotFound) || resumeErr != nil || result == nil ||
+		!errors.Is(absentErr, flowy.ErrExecutionCheckpointUnavailable) || resumeErr != nil || result == nil ||
 		nodes.Load() != 1 || live.Load() != 0 {
 		t.Fatalf("anchor lost with history: load=%v absent=%v resume=%v nodes/live=%d/%d",
 			loadErr, absentErr, resumeErr, nodes.Load(), live.Load())
@@ -61,7 +61,7 @@ func TestIntegrationForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *
 		t.Run(name, func(t *testing.T) {
 			// Arrange: only the separate creation anchor is corrupted, envelope seal remains valid.
 			ctx, pool := racePool(t)
-			store := NewExecutionStore(pool)
+			store := mustExecutionStore(t, pool)
 			base := testThreadID(t)
 			var nodes, live atomic.Int32
 			before := createForkLineageFixture(ctx, t, pool, store, base, &nodes, &live)
@@ -70,7 +70,7 @@ func TestIntegrationForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *
 			}
 			pool.Close()
 			recoveryCtx, recoveryPool := reopenPool(t, pool)
-			recovered := NewExecutionStore(recoveryPool)
+			recovered := mustExecutionStore(t, recoveryPool)
 			lease, err := recovered.AcquireExecution(recoveryCtx, before.ExecutionID, "writer", time.Minute)
 			if err != nil {
 				t.Fatal(err)
@@ -79,12 +79,13 @@ func TestIntegrationForkPersistentCorruptAnchorRejectsLoadCommitAndDiscovery(t *
 			_, loadErr := recovered.LoadExecution(recoveryCtx, before.ExecutionID)
 			_, exactErr := recovered.LoadCheckpoint(recoveryCtx, before.ExecutionID, before.Revision)
 			_, commitErr := recovered.CommitExecution(recoveryCtx, before.Revision, lease, before)
-			visited := 0
-			_, scanErr := recovered.scanExecutionHeads(recoveryCtx, base+"source", 1,
-				func(flowy.ExecutionEnvelope) error { visited++; return nil })
+			_, scanErr := recovered.validateDueCandidate(
+				recoveryCtx,
+				dueCandidate{ExecutionID: before.ExecutionID, Revision: before.Revision},
+			)
 			// Assert: no callback or new head is acknowledged, and the writer can release.
 			assertForkAnchorErrors(t, loadErr, exactErr, commitErr, scanErr)
-			if visited != 0 || nodes.Load() != 0 || live.Load() != 0 {
+			if nodes.Load() != 0 || live.Load() != 0 {
 				t.Fatal("corrupt anchor reached host code")
 			}
 			if err = recovered.ReleaseExecution(recoveryCtx, lease); err != nil {

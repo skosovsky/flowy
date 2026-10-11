@@ -22,17 +22,21 @@ func TestManualRetryThenAutomaticRetryRetainsDecisionWithoutManualOrigin(t *test
 	var calls atomic.Int32
 	ambiguous, retryable := errors.New("ambiguous"), errors.New("retryable")
 	policy := flowy.ActivityRetryPolicy{
-		Label:             "bounded",
-		MaxAttempts:       3,
-		Delay:             time.Hour,
+		Label:       "bounded",
+		MaxAttempts: 3,
+		Schedule: flowy.ActivityRetrySchedule{
+			Kind:         flowy.ActivityRetryFixed,
+			InitialDelay: time.Hour,
+			MaxDelay:     time.Hour,
+		},
 		SafeRetryContract: "idempotent",
 	}
 	request := flowy.ActivityRequest{Key: "operation", Implementation: "host", Input: []byte("input"), Retry: policy,
-		Classify: func(err error) flowy.ActivityFailureClass {
+		Classify: func(err error) flowy.ActivityFailureDecision {
 			if errors.Is(err, ambiguous) {
-				return flowy.ActivityAmbiguous
+				return flowy.ActivityFailureDecision{Class: flowy.ActivityAmbiguous}
 			}
-			return flowy.ActivityRetryable
+			return flowy.ActivityFailureDecision{Class: flowy.ActivityRetryable}
 		},
 		Dispatch: func(context.Context, flowy.ActivityInvocation) ([]byte, error) {
 			switch calls.Add(1) {

@@ -27,7 +27,7 @@ func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *
 			dispatches.Add(1)
 			return nil, errors.New("ambiguous delivery")
 		}}
-	store := NewExecutionStore(pool)
+	store := mustExecutionStore(t, pool)
 	oldDescriptor := referenceDescriptor("old")
 	old := persistentReferenceRunner(t, store, oldDescriptor, "old-node", request, nil)
 	if _, err := old.Start(ctx, id, intState{}); !errors.Is(err, flowy.ErrActivityUnknown) {
@@ -42,12 +42,12 @@ func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *
 	migrateCtx, migratePool := reopenPool(t, pool)
 	targetDescriptor := referenceDescriptor("new")
 	migration := flowy.ExecutionMigration{ID: "move", Source: oldDescriptor, Target: targetDescriptor,
-		Transform: func(state flowy.MigrationState) (flowy.MigrationState, error) {
+		Transform: func(state flowy.ExecutionProgress) (flowy.ExecutionProgress, error) {
 			state.ExecutionPointer = "new-node"
 			state.JournalReferences = map[string]string{"operation": entry.Identity}
 			return state, nil
 		}}
-	migratedStore := NewExecutionStore(migratePool)
+	migratedStore := mustExecutionStore(t, migratePool)
 	target := persistentReferenceRunner(
 		t,
 		migratedStore,
@@ -69,7 +69,7 @@ func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *
 	operatorCtx, operatorPool := reopenPool(t, pool)
 	operator := persistentReferenceRunner(
 		t,
-		NewExecutionStore(operatorPool),
+		mustExecutionStore(t, operatorPool),
 		targetDescriptor,
 		"new-node",
 		request,
@@ -94,7 +94,7 @@ func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *
 	}
 	operatorPool.Close()
 	replayCtx, replayPool := reopenPool(t, pool)
-	replayedStore := NewExecutionStore(replayPool)
+	replayedStore := mustExecutionStore(t, replayPool)
 	replayed := persistentReferenceRunner(t, replayedStore, targetDescriptor, "new-node", request, nil)
 	handle, err := replayed.ResumeStream(replayCtx, token)
 	if err != nil {
@@ -126,9 +126,9 @@ func TestIntegrationActivityMigrationReferencePersistentManualStreamRecovery(t *
 
 func referenceDescriptor(label string) flowy.ExecutionDescriptor {
 	return flowy.ExecutionDescriptor{
-		GraphID:           "reference-test",
-		GraphRevision:     label,
-		StateCodec:        "json",
+		GraphID:       "reference-test",
+		GraphRevision: label,
+		StateCodec:    "json", EffectsCodec: "host-effects-v1",
 		ExecutionContract: "sync",
 		ReplayPolicy:      flowy.StepReplayPolicy{Label: "safe", Mode: flowy.StepReplaySafe},
 	}
