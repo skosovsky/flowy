@@ -101,8 +101,3 @@ release-resume:
 # Archive a successfully published and verified release.
 release-finish:
 	@./scripts/release.sh finish
-
-# Optional long-running handoff/resume/orphan campaign; outside release gates.
-.PHONY: verify-stress
-verify-stress:
-	@go test -race -count=20 -timeout=10m -run='Handoff|Resume|Orphan' .
