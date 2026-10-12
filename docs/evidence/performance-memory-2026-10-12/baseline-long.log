@@ -1,0 +1,60 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/skosovsky/flowy
+cpu: Apple M1 Max
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   41340	     26479 ns/op	   70402 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   59502	     19597 ns/op	   70401 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   66495	     18806 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   66014	     18396 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   67092	     19002 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	   53796	     21535 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   22070	     53193 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   23562	     50792 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   21373	     54108 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   10000	    104227 ns/op	   70401 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   10000	    303561 ns/op	   70404 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	   10000	    273053 ns/op	   70403 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    2036	    530802 ns/op	   70402 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    2163	    548284 ns/op	   70403 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    3984	    420653 ns/op	   70402 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    7332	    334835 ns/op	   70402 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    5094	    224938 ns/op	   70401 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	    7105	    170888 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    4198	    511181 ns/op	 2167600 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    3544	    395703 ns/op	 2167591 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    4227	    313697 ns/op	 2167586 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    3495	    380651 ns/op	 2167586 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    4477	    408693 ns/op	 2167583 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	    3862	    404001 ns/op	 2167586 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     474	   2367613 ns/op	16847715 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     510	   2072706 ns/op	16847726 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     616	   1835070 ns/op	16847709 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     669	   1887869 ns/op	16847714 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     637	   1830427 ns/op	16847713 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	     663	   1910501 ns/op	16847739 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	     163	   7292543 ns/op	67179560 B/op	    1044 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	     100	  13869349 ns/op	67179579 B/op	    1044 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      78	  16593386 ns/op	67179498 B/op	    1043 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      39	  25862653 ns/op	67179949 B/op	    1047 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	     100	  22741855 ns/op	67179944 B/op	    1047 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      34	  29866456 ns/op	67179860 B/op	    1047 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 2148590	       514.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 7348414	       186.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 8341869	       142.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 8419237	       146.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 8349817	       143.3 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	 8398665	       143.0 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6950470	       173.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6961797	       174.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6984378	       173.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6958497	       194.9 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6100260	       281.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	 6821329	       179.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	  149332	      9907 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	   90188	     12373 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	   98935	     10468 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	  102152	     11761 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	  124885	     10244 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	  109437	      9661 ns/op	    6956 B/op	      49 allocs/op
+PASS
+ok  	github.com/skosovsky/flowy	78.122s

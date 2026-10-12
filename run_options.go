@@ -193,6 +193,7 @@ func UseBudget(ctx context.Context, name string, amount int) error {
 type ValueCloner[T any] func(T) T
 
 // WithEventCloners isolates stream state/effects using pure host cloners.
+// Ordinary stream events dropped at a full buffer do not invoke cloners.
 // It does not clone node inputs or change checkpoint storage ownership.
 func WithEventCloners[T, E any](state ValueCloner[T], effect ValueCloner[E]) RunOption[T, E] {
 	return runOptionFunc[T, E](func(opts *runInvocationOptions[T, E]) {

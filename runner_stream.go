@@ -6,6 +6,18 @@ import (
 	"sync"
 )
 
+// streamEventCanceled observes cancellation without blocking the producer.
+func streamEventCanceled(ctx context.Context, stop <-chan struct{}) bool {
+	select {
+	case <-stop:
+		return true
+	case <-ctx.Done():
+		return true
+	default:
+		return false
+	}
+}
+
 func streamConsumerClosed(ctx context.Context) bool {
 	type stopChecker interface {
 		stopped() bool
@@ -46,6 +58,40 @@ func (s *streamHandle[T, E]) stopped() bool {
 	}
 }
 
+func (s *streamHandle[T, E]) publishEvent(
+	eventCtx context.Context, event RunEvent[T, E], inv runInvocationOptions[T, E],
+) bool {
+	if streamEventCanceled(eventCtx, s.stop) {
+		return false
+	}
+	// This sink has one serialized producer. Concurrent consumers can only
+	// free capacity, so a free slot remains available during detachment.
+	// A full-buffer observation drops immediately without cloning.
+	if len(s.events) == cap(s.events) {
+		return true
+	}
+	if inv.cloneState != nil {
+		event.State = inv.cloneState(event.State)
+	}
+	if event.HasEffect && inv.cloneEffect != nil {
+		event.Effect = inv.cloneEffect(event.Effect)
+	}
+	// Prefer cancellation already observed during a host clone to publication.
+	if streamEventCanceled(eventCtx, s.stop) {
+		return false
+	}
+	select {
+	case <-s.stop:
+		return false
+	case <-eventCtx.Done():
+		return false
+	case s.events <- event:
+		return true
+	default:
+		return true
+	}
+}
+
 func (r *graphRunner[T, E]) startStream(
 	ctx context.Context,
 	inv runInvocationOptions[T, E],
@@ -68,29 +114,7 @@ func (r *graphRunner[T, E]) startStream(
 		defer close(stream.events)
 		defer close(stream.done)
 		sink := func(eventCtx context.Context, event RunEvent[T, E]) bool {
-			select {
-			case <-stream.stop:
-				return false
-			case <-eventCtx.Done():
-				return false
-			default:
-			}
-			if inv.cloneState != nil {
-				event.State = inv.cloneState(event.State)
-			}
-			if event.HasEffect && inv.cloneEffect != nil {
-				event.Effect = inv.cloneEffect(event.Effect)
-			}
-			select {
-			case <-stream.stop:
-				return false
-			case <-eventCtx.Done():
-				return false
-			case stream.events <- event:
-				return true
-			default:
-				return true
-			}
+			return stream.publishEvent(eventCtx, event, inv)
 		}
 		runCtx := context.WithValue(streamCtx, streamCloseKey{}, stream)
 		result, err := runFn(runCtx, sink)

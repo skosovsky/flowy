@@ -1,0 +1,46 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/skosovsky/flowy
+cpu: Apple M1 Max
+                                                │ docs/evidence/performance-memory-2026-10-12/baseline-long.log │ docs/evidence/performance-memory-2026-10-12/candidate-long.log │
+                                                │                            sec/op                             │                 sec/op                   vs base               │
+AuditStreamSaturated/clone=false/events=32-10                                                     19.30µ ±  37%                              20.93µ ±  7%        ~ (p=0.485 n=6)
+AuditStreamSaturated/clone=false/events=256-10                                                    79.17µ ± 283%                              38.49µ ±  4%  -51.39% (p=0.002 n=6)
+AuditStreamSaturated/clone=false/events=1024-10                                                  377.74µ ±  55%                              96.92µ ±  6%  -74.34% (p=0.002 n=6)
+AuditStreamSaturated/clone=true/events=32-10                                                      399.9µ ±  28%                              532.5µ ± 47%        ~ (p=0.093 n=6)
+AuditStreamSaturated/clone=true/events=256-10                                                    1899.2µ ±  25%                              513.6µ ± 13%  -72.95% (p=0.002 n=6)
+AuditStreamSaturated/clone=true/events=1024-10                                                  19667.6µ ±  63%                              635.3µ ± 15%  -96.77% (p=0.002 n=6)
+ExecuteNode_NoMiddleware-10                                                                       145.1n ± 254%                              252.5n ± 44%        ~ (p=0.310 n=6)
+ExecuteNode_With5Middlewares-10                                                                   177.1n ±  59%                              171.9n ±  2%   -2.94% (p=0.013 n=6)
+OrdinaryStreaming-10                                                                             10.356µ ±  19%                              7.911µ ±  4%  -23.61% (p=0.002 n=6)
+geomean                                                                                           50.90µ                                     25.56µ        -49.78%
+
+                                                │ docs/evidence/performance-memory-2026-10-12/baseline-long.log │ docs/evidence/performance-memory-2026-10-12/candidate-long.log │
+                                                │                             B/op                              │                 B/op                   vs base                 │
+AuditStreamSaturated/clone=false/events=32-10                                                    68.75Ki ± 0%                              68.73Ki ± 0%   -0.02% (p=0.002 n=6)
+AuditStreamSaturated/clone=false/events=256-10                                                   68.75Ki ± 0%                              68.73Ki ± 0%   -0.02% (p=0.002 n=6)
+AuditStreamSaturated/clone=false/events=1024-10                                                  68.75Ki ± 0%                              68.73Ki ± 0%   -0.03% (p=0.002 n=6)
+AuditStreamSaturated/clone=true/events=32-10                                                     2.067Mi ± 0%                              2.067Mi ± 0%        ~ (p=0.061 n=6)
+AuditStreamSaturated/clone=true/events=256-10                                                   16.067Mi ± 0%                              2.067Mi ± 0%  -87.13% (p=0.002 n=6)
+AuditStreamSaturated/clone=true/events=1024-10                                                  64.068Mi ± 0%                              2.067Mi ± 0%  -96.77% (p=0.002 n=6)
+ExecuteNode_NoMiddleware-10                                                                        0.000 ± 0%                                0.000 ± 0%        ~ (p=1.000 n=6) ¹
+ExecuteNode_With5Middlewares-10                                                                    0.000 ± 0%                                0.000 ± 0%        ~ (p=1.000 n=6) ¹
+OrdinaryStreaming-10                                                                             6.793Ki ± 0%                              6.793Ki ± 0%        ~ (p=1.000 n=6) ¹
+geomean                                                                                                       ²                                          -45.63%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean
+
+                                                │ docs/evidence/performance-memory-2026-10-12/baseline-long.log │ docs/evidence/performance-memory-2026-10-12/candidate-long.log │
+                                                │                           allocs/op                           │               allocs/op                vs base                 │
+AuditStreamSaturated/clone=false/events=32-10                                                      17.00 ± 0%                                17.00 ± 0%        ~ (p=1.000 n=6) ¹
+AuditStreamSaturated/clone=false/events=256-10                                                     17.00 ± 0%                                17.00 ± 0%        ~ (p=1.000 n=6) ¹
+AuditStreamSaturated/clone=false/events=1024-10                                                    17.00 ± 0%                                17.00 ± 0%        ~ (p=1.000 n=6) ¹
+AuditStreamSaturated/clone=true/events=32-10                                                       50.00 ± 0%                                50.00 ± 0%        ~ (p=1.000 n=6) ¹
+AuditStreamSaturated/clone=true/events=256-10                                                     274.00 ± 0%                                50.00 ± 0%  -81.75% (p=0.002 n=6)
+AuditStreamSaturated/clone=true/events=1024-10                                                   1045.50 ± 0%                                50.00 ± 0%  -95.22% (p=0.002 n=6)
+ExecuteNode_NoMiddleware-10                                                                        0.000 ± 0%                                0.000 ± 0%        ~ (p=1.000 n=6) ¹
+ExecuteNode_With5Middlewares-10                                                                    0.000 ± 0%                                0.000 ± 0%        ~ (p=1.000 n=6) ¹
+OrdinaryStreaming-10                                                                               49.00 ± 0%                                49.00 ± 0%        ~ (p=1.000 n=6) ¹
+geomean                                                                                                       ²                                          -40.95%               ²
+¹ all samples are equal
+² summaries must be >0 to compute geomean

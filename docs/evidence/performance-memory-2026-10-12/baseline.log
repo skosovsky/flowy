@@ -1,0 +1,33 @@
+goos: darwin
+goarch: arm64
+pkg: github.com/skosovsky/flowy
+cpu: Apple M1 Max
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	    6603	     17301 ns/op	   70403 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	    7182	     17433 ns/op	   70401 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=32-10         	    6927	     17427 ns/op	   70401 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	    2290	     51075 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	    2390	     51318 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=256-10        	    2511	     50599 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	     730	    163847 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	     756	    164258 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=false/events=1024-10       	     733	    165203 ns/op	   70400 B/op	      17 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	     397	    315368 ns/op	 2167608 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	     382	    310793 ns/op	 2167596 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=32-10          	     382	    308059 ns/op	 2167591 B/op	      50 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	      62	   1735427 ns/op	16847737 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	      62	   1718622 ns/op	16847724 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=256-10         	      61	   1736678 ns/op	16847740 B/op	     274 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      15	   6757336 ns/op	67179691 B/op	    1045 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      18	   6681356 ns/op	67179624 B/op	    1044 allocs/op
+BenchmarkAuditStreamSaturated/clone=true/events=1024-10        	      15	   6720406 ns/op	67180013 B/op	    1045 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	  835776	       142.8 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	  861166	       142.6 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_NoMiddleware-10                           	  823963	       142.4 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	  673179	       171.5 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	  672614	       172.7 ns/op	       0 B/op	       0 allocs/op
+BenchmarkExecuteNode_With5Middlewares-10                       	  714019	       172.1 ns/op	       0 B/op	       0 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	   15805	      7515 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	   16006	      7416 ns/op	    6956 B/op	      49 allocs/op
+BenchmarkOrdinaryStreaming-10                                  	   16138	      7567 ns/op	    6956 B/op	      49 allocs/op
+PASS
+ok  	github.com/skosovsky/flowy	4.139s
