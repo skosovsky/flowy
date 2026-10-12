@@ -1,5 +1,0 @@
-=== RUN   TestAuditDroppedEventClones
-    audit_performance_test.go:35: attempts=1024 clones=1024 delivered=32 dropped=992 copied_bytes=67108864
---- PASS: TestAuditDroppedEventClones (0.01s)
-PASS
-ok  	github.com/skosovsky/flowy	0.739s

@@ -24,8 +24,8 @@ consumers are migrated. The module editor uses Python and Go, with no BSD sed
 dependency. Release preparation must pass the seven-module clean consumer gate
 before real publication: build consumers against prepared module artifacts in a
 local Go module proxy, with `GOWORK=off`, no local replace directives and fresh
-module caches. The final remediation verification records this evidence; local
-Git fixtures alone do not prove real package installability.
+module caches. Release verification must record the consumer checks; local Git fixtures
+alone do not prove real package installability.
 
 For preparation before consumer verification, pass `--prepare-only` to
 `scripts/release.sh patch "<all tracked module directories>"`. This writes the
